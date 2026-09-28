@@ -1,0 +1,18 @@
+{
+	"name": "anofox-decide",
+	"version-string": "0.1.0",
+	"description": "DuckDB extension evaluating natural-language predicates and answer sets (TypeSafe remote + local NLI)",
+	"dependencies": [
+		"openssl"
+	],
+	"vcpkg-configuration": {
+		"overlay-ports": [
+			"./vcpkg_ports",
+			"./extension-ci-tools/vcpkg_ports"
+		],
+		"overlay-triplets": [
+			"./toolchains",
+			"./extension-ci-tools/toolchains"
+		]
+	}
+}

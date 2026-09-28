@@ -1,0 +1,5 @@
+build/
+vcpkg_installed/
+.venv/
+*.duckdb
+*.duckdb.wal

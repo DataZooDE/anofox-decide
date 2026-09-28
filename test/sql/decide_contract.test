@@ -1,0 +1,31 @@
+# name: test/sql/decide_contract.test
+# description: anofox_decide scaffold contract (RED first). Extension loads and
+#              exposes the MVP scalar surface with the BRD error contract.
+# group: [anofox_decide]
+
+require anofox_decide
+
+statement ok
+LOAD anofox_decide
+
+# Registry lists at least the stub provider so model selection is explicit.
+query I
+SELECT count(*) FROM decide_models()
+----
+1
+
+# Binary proposition returns a probability in [0,1], never a silent boolean.
+query R
+SELECT decide_probability('The customer requests a refund.', 'A refund is requested.', model := 'stub') AS p
+----
+0.5
+
+# NULL state returns NULL by default.
+query I
+SELECT decide_probability(NULL, 'A refund is requested.', model := 'stub') IS NULL AS is_null
+----
+1
+
+# Empty option sets are actionable errors, not empty results.
+statement error
+SELECT decide_choice('Primary issue?', [], model := 'stub')
