@@ -534,7 +534,10 @@ DecideRemoteConfig DecideResolveConfig(ClientContext &context, const string &mod
 	// 1. Stored secret (preferred: write-only, redacted in duckdb_secrets(),
 	//    optionally scoped to an endpoint host prefix).
 	{
-		KeyValueSecretReader reader(context, "anofox_decide", cfg.host);
+		// DatabaseInstance overload on purpose: DuckDB's ClientContext overload
+		// never initialises the reader's db handle, so it silently finds no
+		// secret at all.
+		KeyValueSecretReader reader(*context.db, "anofox_decide", cfg.host);
 		Value secret_key;
 		if (reader.TryGetSecretKey("api_key", secret_key) && !secret_key.IsNull() &&
 		    !secret_key.ToString().empty()) {
