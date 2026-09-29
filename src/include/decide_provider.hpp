@@ -35,6 +35,11 @@ struct DecideModelEntry {
 	// Local NLI only: graph + tokenizer paths (empty otherwise).
 	string graph_path;
 	string tokenizer_path;
+	// Local model profile: "julia-1" (default) or "laya". Selects option
+	// rendering, sequence limits and calibration (see decide_local_nli.cpp).
+	string profile = "julia-1";
+	// laya profile only: rl_agent_config.json (limits + temperatures).
+	string config_path;
 };
 
 // DB-instance-level model registry (tabfm TabFMState pattern): lives in
@@ -64,8 +69,11 @@ public:
 	//! take a graph path (+ optional tokenizer path, defaulting to
 	//! <graph_dir>/tokenizer/tokenizer.json); both files are opened through
 	//! DuckDB's filesystem here (fail fast on missing/forbidden paths, F4).
+	//! `profile` (local only) picks the model family: "julia-1" or "laya"
+	//! (which also needs <graph_dir>/rl_agent_config.json).
 	void RegisterModel(ClientContext &context, const string &id, const string &provider,
-	                   const string &graph_path = "", const string &tokenizer_path = "");
+	                   const string &graph_path = "", const string &tokenizer_path = "",
+	                   const string &profile = "");
 	//! Ordered snapshot for decide_models().
 	vector<DecideModelEntry> List();
 	//! Validated lookup for the scalar surface. Throws unknown-model error.

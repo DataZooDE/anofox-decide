@@ -6,6 +6,7 @@
 #include "decide_tokenizer.hpp"
 
 #include "onnxruntime_cxx_api.h"
+#include "yyjson.hpp"
 
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/storage/object_cache.hpp"
@@ -15,10 +16,21 @@
 #include <map>
 #include <mutex>
 
+using namespace duckdb_yyjson; // NOLINT (same precedent as decide_tokenizer.cpp)
+
 namespace duckdb {
 namespace anofox {
 
 namespace {
+
+//--- Laya profile config (rl_agent_config.json) -----------------------------
+
+struct LayaConfig {
+	int64_t max_len = 1024;
+	int64_t head_max_len = 256;
+	double temperature[3] = {1.0, 1.0, 1.0};      // per qtype: choice, score, noul
+	std::map<string, double> temperature_by_options; // "choice:3-5" -> T
+};
 
 //--- Session cache (per database instance, tabfm state pattern) -------------
 
@@ -36,10 +48,76 @@ struct DecideLocalCache : public ObjectCacheEntry {
 	std::mutex lock;
 	std::map<string, shared_ptr<DecideLocalSession>> sessions;
 	std::map<string, shared_ptr<DecideTokenizer>> tokenizers;
+	std::map<string, shared_ptr<LayaConfig>> laya_configs;
 };
 
 shared_ptr<DecideLocalCache> LocalCache(ClientContext &context) {
 	return ObjectCache::GetObjectCache(context).GetOrCreate<DecideLocalCache>(DecideLocalCache::OBJECT_CACHE_KEY);
+}
+
+
+shared_ptr<LayaConfig> LoadLayaConfig(ClientContext &context, const string &path) {
+	auto cache = LocalCache(context);
+	{
+		std::lock_guard<std::mutex> guard(cache->lock);
+		auto it = cache->laya_configs.find(path);
+		if (it != cache->laya_configs.end()) {
+			return it->second;
+		}
+	}
+	auto raw = DecideReadLocalFile(context, path, "laya config");
+	auto doc = yyjson_read(raw.data(), raw.size(), 0);
+	if (!doc) {
+		throw InvalidInputException("decide: laya config '%s' is not valid JSON", path);
+	}
+	auto cfg = make_shared_ptr<LayaConfig>();
+	auto root = yyjson_doc_get_root(doc);
+	auto num = [&](yyjson_val *v, double &out) {
+		if (v && (yyjson_is_real(v) || yyjson_is_int(v))) {
+			out = yyjson_get_num(v);
+		}
+	};
+	double tmp = 0;
+	tmp = (double)cfg->max_len;
+	num(yyjson_obj_get(root, "max_len"), tmp);
+	cfg->max_len = (int64_t)tmp;
+	tmp = (double)cfg->head_max_len;
+	num(yyjson_obj_get(root, "head_max_len"), tmp);
+	cfg->head_max_len = (int64_t)tmp;
+	auto temps = yyjson_obj_get(root, "temperature");
+	if (temps && yyjson_is_arr(temps)) {
+		size_t idx, max;
+		yyjson_val *v;
+		yyjson_arr_foreach(temps, idx, max, v) {
+			if (idx < 3) {
+				num(v, cfg->temperature[idx]);
+			}
+		}
+	}
+	auto by_opts = yyjson_obj_get(root, "temperature_by_options");
+	if (by_opts && yyjson_is_obj(by_opts)) {
+		size_t idx, max;
+		yyjson_val *k, *v;
+		yyjson_obj_foreach(by_opts, idx, max, k, v) {
+			double t = 1.0;
+			num(v, t);
+			cfg->temperature_by_options[yyjson_get_str(k)] = t;
+		}
+	}
+	yyjson_doc_free(doc);
+	if (cfg->max_len < 32 || cfg->head_max_len < 8 || cfg->head_max_len + 4 >= cfg->max_len) {
+		throw InvalidInputException("decide: laya config '%s' has unusable max_len/head_max_len", path);
+	}
+	std::lock_guard<std::mutex> guard(cache->lock);
+	cache->laya_configs[path] = cfg;
+	return cfg;
+}
+
+// Laya temp_bucket(): "<type>:<2|3-5|6-10|11+>".
+string LayaTempBucket(int qtype, size_t k) {
+	const char *type = qtype == 2 ? "noul" : qtype == 1 ? "score" : "choice";
+	const char *size = k <= 2 ? "2" : k <= 5 ? "3-5" : k <= 10 ? "6-10" : "11+";
+	return string(type) + ":" + size;
 }
 
 } // namespace
@@ -160,7 +238,8 @@ static std::string CleanText(const DecideTokenizer &tok, const std::string &text
 
 DecideCollatedRow DecideCollateRow(const DecideTokenizer &tok, const std::string &state,
                                    const std::string &question, const duckdb::vector<string> &options,
-                                   int qtype, int64_t max_length, int64_t head_length) {
+                                   int qtype, int64_t max_length, int64_t head_length,
+                                   bool allow_empty_state_room) {
 	if (options.size() < 2 || options.size() > 20) {
 		throw InvalidInputException("decide: local questions need 2..20 options, got %d "
 		                            "(upstream Julia validate_row rule)",
@@ -225,9 +304,12 @@ DecideCollatedRow DecideCollateRow(const DecideTokenizer &tok, const std::string
 	row.ids.push_back(sp.sep);
 	auto state_ids = tok.Encode(CleanText(tok, state));
 	int64_t room = max_length - (int64_t)row.ids.size() - 1;
-	if (room < 1) {
+	if (room < 1 && !allow_empty_state_room) {
 		throw InvalidInputException("decide: question/options exceed the local sequence budget; shorten the "
 		                            "instruction or options, or raise anofox_decide_max_length");
+	}
+	if (room < 0) {
+		room = 0;
 	}
 	if ((int64_t)state_ids.size() > room) {
 		state_ids.resize((size_t)room);
@@ -248,13 +330,24 @@ vector<DecideAnswer> DecideLocalScore(ClientContext &context, const DecideModelE
 	if (questions.empty()) {
 		throw InvalidInputException("decide: refusing a local batch with no questions");
 	}
+	const bool laya = entry.profile == "laya";
 	Value max_v, head_v;
 	int64_t max_length = 8192, head_length = 512; // spec collation defaults
-	if (context.TryGetCurrentSetting("anofox_decide_max_length", max_v) && !max_v.IsNull()) {
-		max_length = BigIntValue::Get(max_v.DefaultCastAs(LogicalType::BIGINT));
-	}
-	if (context.TryGetCurrentSetting("anofox_decide_head_length", head_v) && !head_v.IsNull()) {
-		head_length = BigIntValue::Get(head_v.DefaultCastAs(LogicalType::BIGINT));
+	shared_ptr<LayaConfig> laya_cfg;
+	if (laya) {
+		// The laya profile fixes its limits from rl_agent_config.json (the
+		// checkpoint was trained/calibrated at these); the settings apply
+		// to julia-1 only.
+		laya_cfg = LoadLayaConfig(context, entry.config_path);
+		max_length = laya_cfg->max_len;
+		head_length = laya_cfg->head_max_len;
+	} else {
+		if (context.TryGetCurrentSetting("anofox_decide_max_length", max_v) && !max_v.IsNull()) {
+			max_length = BigIntValue::Get(max_v.DefaultCastAs(LogicalType::BIGINT));
+		}
+		if (context.TryGetCurrentSetting("anofox_decide_head_length", head_v) && !head_v.IsNull()) {
+			head_length = BigIntValue::Get(head_v.DefaultCastAs(LogicalType::BIGINT));
+		}
 	}
 	const auto &tok = TokenizerFor(context, entry);
 	struct Row {
@@ -267,7 +360,11 @@ vector<DecideAnswer> DecideLocalScore(ClientContext &context, const DecideModelE
 		vector<string> options;
 		int qtype = 0;
 		if (q.kind == "noul") {
-			options = {"false", "true"};
+			// julia-1 scores the literal labels; laya was trained on
+			// rendered "false: ..." / "true: ..." descriptions (rl_common.py
+			// render_options), so it needs them to score correctly.
+			options = laya ? vector<string> {"false: no, the statement does not hold", "true: yes, the statement holds"}
+			               : vector<string> {"false", "true"};
 			qtype = 2;
 		} else if (q.kind == "choice") {
 			options = q.options;
@@ -277,7 +374,7 @@ vector<DecideAnswer> DecideLocalScore(ClientContext &context, const DecideModelE
 			                            "(supported: 'noul', 'choice')",
 			                            q.id, q.kind);
 		}
-		rows.push_back({DecideCollateRow(tok, state, q.instruction, options, qtype, max_length, head_length), &q});
+		rows.push_back({DecideCollateRow(tok, state, q.instruction, options, qtype, max_length, head_length, laya), &q});
 		T = std::max<int64_t>(T, rows.back().c.ids.size());
 		M = std::max<int64_t>(M, rows.back().c.markers.size());
 	}
@@ -308,18 +405,32 @@ vector<DecideAnswer> DecideLocalScore(ClientContext &context, const DecideModelE
 	vector<DecideAnswer> out;
 	for (size_t b = 0; b < rows.size(); b++) {
 		const auto *q = rows[b].q;
+		// Rows in a mixed batch are padded to the widest question: keep only
+		// this row's own markers (masked slots carry -1e4).
+		const std::vector<float> row_scores(scores[b].begin(), scores[b].begin() + (long)rows[b].c.markers.size());
 		DecideAnswer a;
 		a.id = q->id;
 		a.kind = q->kind;
 		a.model = entry.id;
+		// Calibration (laya): logits / T, T by (type, option count) bucket,
+		// falling back to the per-type temperature. julia-1: raw softmax.
+		double temp = 1.0;
+		if (laya) {
+			int qt = q->kind == "noul" ? 2 : 0;
+			auto bucket = laya_cfg->temperature_by_options.find(LayaTempBucket(qt, row_scores.size()));
+			temp = bucket != laya_cfg->temperature_by_options.end() ? bucket->second : laya_cfg->temperature[qt];
+			if (!(temp > 0.0)) {
+				temp = 1.0;
+			}
+		}
 		double mx = -1e30;
-		for (auto s : scores[b]) {
-			mx = std::max(mx, (double)s);
+		for (auto s : row_scores) {
+			mx = std::max(mx, (double)s / temp);
 		}
 		double tot = 0.0;
 		std::vector<double> probs;
-		for (auto s : scores[b]) {
-			probs.push_back(std::exp((double)s - mx));
+		for (auto s : row_scores) {
+			probs.push_back(std::exp((double)s / temp - mx));
 			tot += probs.back();
 		}
 		if (q->kind == "noul") {

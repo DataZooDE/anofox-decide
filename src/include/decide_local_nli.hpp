@@ -52,7 +52,8 @@ struct DecideCollatedRow {
 // nonempty strings (upstream validate_row rule); qtype is 0/1/2.
 DecideCollatedRow DecideCollateRow(const DecideTokenizer &tok, const string &state,
                                   const string &question, const vector<string> &options,
-                                  int qtype, int64_t max_length, int64_t head_length);
+                                  int qtype, int64_t max_length, int64_t head_length,
+                                  bool allow_empty_state_room = false);
 
 // ORT session handle (per graph path, cached per database instance).
 class DecideLocalSession {

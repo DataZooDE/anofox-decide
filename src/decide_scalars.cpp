@@ -198,7 +198,7 @@ void DecideManyFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 }
 
-// decide_register_model(id[, provider[, graph_path[, tokenizer_path]]]) -> BOOLEAN.
+// decide_register_model(id[, provider[, graph_path[, tokenizer_path[, profile]]]]) -> BOOLEAN.
 void DecideRegisterModelFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	ClientContext &context = state.GetContext();
 	auto count = args.size();
@@ -211,8 +211,9 @@ void DecideRegisterModelFun(DataChunk &args, ExpressionState &state, Vector &res
 		string provider = "stub";
 		string graph_path;
 		string tokenizer_path;
-		const char *names[3] = {"provider", "graph path", "tokenizer path"};
-		for (idx_t a = 1; a < args.ColumnCount() && a <= 3; a++) {
+		string profile;
+		const char *names[4] = {"provider", "graph path", "tokenizer path", "profile"};
+		for (idx_t a = 1; a < args.ColumnCount() && a <= 4; a++) {
 			auto v = args.data[a].GetValue(i);
 			if (v.IsNull()) {
 				throw InvalidInputException("decide_register_model: %s cannot be NULL", names[a - 1]);
@@ -221,11 +222,14 @@ void DecideRegisterModelFun(DataChunk &args, ExpressionState &state, Vector &res
 				provider = v.ToString();
 			} else if (a == 2) {
 				graph_path = v.ToString();
-			} else {
+			} else if (a == 3) {
 				tokenizer_path = v.ToString();
+			} else {
+				profile = v.ToString();
 			}
 		}
-		DecideRegistry::Get(context)->RegisterModel(context, id_v.ToString(), provider, graph_path, tokenizer_path);
+		DecideRegistry::Get(context)->RegisterModel(context, id_v.ToString(), provider, graph_path, tokenizer_path,
+		                                            profile);
 		result.SetValue(i, Value::BOOLEAN(true));
 	}
 	result.SetVectorType(VectorType::FLAT_VECTOR);
@@ -305,6 +309,10 @@ void RegisterDecideScalars(ExtensionLoader &loader) {
 	reg.AddFunction(DecideScalar("decide_register_model",
 	                            {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
 	                             LogicalType::VARCHAR},
+	                            LogicalType::BOOLEAN, DecideRegisterModelFun));
+	reg.AddFunction(DecideScalar("decide_register_model",
+	                            {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
+	                             LogicalType::VARCHAR, LogicalType::VARCHAR},
 	                            LogicalType::BOOLEAN, DecideRegisterModelFun));
 	loader.RegisterFunction(reg);
 

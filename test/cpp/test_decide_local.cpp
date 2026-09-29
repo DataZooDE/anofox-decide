@@ -166,3 +166,47 @@ TEST_CASE("local end-to-end over real Julia-1", "[anofox_decide][local]") {
 	REQUIRE(choice[0].choice == "other");
 	REQUIRE(std::fabs(choice[0].probability - 0.893489) < 1e-4);
 }
+
+TEST_CASE("local end-to-end over real Laya multilingual", "[anofox_decide][local]") {
+	const char *dir = std::getenv("LAYA_MULTILINGUAL_DIR");
+	const char *graph = std::getenv("LAYA_ONNX");
+	if (!dir || !graph) {
+		WARN("skipped (needs LAYA_MULTILINGUAL_DIR + LAYA_ONNX: 1.3GB graph, not committed)");
+		return;
+	}
+	DuckDB db(nullptr);
+	Connection con(db);
+	DecideModelEntry entry;
+	entry.id = "laya-ml";
+	entry.provider = "local";
+	entry.mode = "local";
+	entry.profile = "laya";
+	entry.graph_path = graph;
+	entry.tokenizer_path = std::string(dir) + "/tokenizer/tokenizer.json";
+	entry.config_path = std::string(dir) + "/rl_agent_config.json";
+
+	DecideQuestion refund;
+	refund.id = "refund";
+	refund.kind = "noul";
+	refund.instruction = "A refund is requested.";
+	DecideQuestion team;
+	team.id = "team";
+	team.kind = "choice";
+	team.instruction = "Which team owns this?";
+	team.options = {"billing", "defect", "other"};
+
+	// Values recorded from the upstream RLAgent.system_one (rl_agent_api.py,
+	// CPU fp32) on the same texts; upstream rounds to 4 decimals.
+	auto a = DecideLocalScore(*con.context, entry,
+	                          "I was charged twice for my March invoice, please refund the extra 49 EUR.",
+	                          {refund, team});
+	REQUIRE(std::fabs(a[0].probability - 0.9948) < 2e-4);
+	REQUIRE(a[1].choice == "billing");
+	auto b = DecideLocalScore(*con.context, entry, "Thanks for the quick help yesterday, everything works now!",
+	                          {refund, team});
+	REQUIRE(b[0].probability < 0.01);
+	REQUIRE(b[1].choice == "other");
+	// Mixed batch: 2-marker noul next to a 3-marker choice keeps per-row
+	// distributions sized to their own options.
+	REQUIRE(b[1].distribution.size() == 3);
+}

@@ -74,7 +74,8 @@ string DecideReadLocalFile(ClientContext &context, const string &path, const cha
 }
 
 void DecideRegistry::RegisterModel(ClientContext &context, const string &id, const string &provider,
-                                   const string &graph_path, const string &tokenizer_path) {
+                                   const string &graph_path, const string &tokenizer_path,
+                                   const string &profile) {
 	if (id.empty()) {
 		throw InvalidInputException("decide_register_model: id cannot be empty "
 		                            "(pass a text id, e.g. SELECT decide_register_model('my-model', 'stub'))");
@@ -87,6 +88,16 @@ void DecideRegistry::RegisterModel(ClientContext &context, const string &id, con
 	if (provider == "local" && graph_path.empty()) {
 		throw InvalidInputException("decide_register_model: local models need a graph path "
 		                            "(SELECT decide_register_model('<id>', 'local', '<julia1.onnx path>'))");
+	}
+	if (!profile.empty() && provider != "local") {
+		throw InvalidInputException("decide_register_model: a profile only applies to local models "
+		                            "(provider is '%s')",
+		                            provider);
+	}
+	if (!profile.empty() && profile != "julia-1" && profile != "laya") {
+		throw InvalidInputException("decide_register_model: profile '%s' is not supported "
+		                            "(supported: 'julia-1', 'laya')",
+		                            profile);
 	}
 	lock_guard<mutex> guard(lock);
 	if (models.find(id) != models.end()) {
@@ -113,6 +124,16 @@ void DecideRegistry::RegisterModel(ClientContext &context, const string &id, con
 		// not at first scoring.
 		DecideCheckLocalFile(context, entry.graph_path, "graph");
 		DecideCheckLocalFile(context, entry.tokenizer_path, "tokenizer");
+		if (!profile.empty()) {
+			entry.profile = profile;
+		}
+		if (entry.profile == "laya") {
+			// Limits and calibration temperatures ship next to the graph.
+			auto slash = graph_path.find_last_of("/\\");
+			string dir = (slash == string::npos) ? "." : graph_path.substr(0, slash);
+			entry.config_path = dir + "/rl_agent_config.json";
+			DecideCheckLocalFile(context, entry.config_path, "laya config");
+		}
 	}
 	models[id] = entry;
 }

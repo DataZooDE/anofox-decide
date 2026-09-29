@@ -1,0 +1,46 @@
+# name: test/sql/decide_profile.test
+# description: Local model profiles (julia-1 default, laya). Registration
+#              validation only; scoring parity against the upstream Python
+#              runs in the gated C++ / tools tests (needs real weights).
+# group: [anofox_decide]
+
+require anofox_decide
+
+statement ok
+LOAD anofox_decide
+
+# Default profile registers as before.
+query I
+SELECT decide_register_model('prof-default', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json')
+----
+1
+
+# Explicit julia-1 profile is accepted.
+query I
+SELECT decide_register_model('prof-julia', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json', 'julia-1')
+----
+1
+
+# laya needs rl_agent_config.json next to the graph: fail fast at registration.
+statement error
+SELECT decide_register_model('prof-laya', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json', 'laya')
+----
+<REGEX>:.*cannot open laya config file.*
+
+# Unknown profile names the supported ones.
+statement error
+SELECT decide_register_model('prof-bad', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json', 'nope')
+----
+<REGEX>:.*profile 'nope' is not supported.*julia-1.*laya.*
+
+# A profile only applies to local models.
+statement error
+SELECT decide_register_model('prof-remote', 'typesafe', '', '', 'laya')
+----
+<REGEX>:.*profile only applies to local models.*
+
+# NULL profile is an actionable error like the other arguments.
+statement error
+SELECT decide_register_model('prof-null', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json', NULL)
+----
+<REGEX>:.*profile cannot be NULL.*
