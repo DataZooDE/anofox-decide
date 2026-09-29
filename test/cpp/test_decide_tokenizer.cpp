@@ -1,4 +1,5 @@
 #include "catch.hpp"
+#include "decide_local_nli.hpp"
 #include "decide_tokenizer.hpp"
 
 #include <cstdlib>
@@ -80,4 +81,43 @@ TEST_CASE("Julia-1 tokenizer matches HF goldens", "[anofox_decide][tokenizer]") 
 	REQUIRE(tok.Encode("Refund \xF0\x9F\x99\x8F please") == std::vector<int32_t> {93114, 68226, 3743});
 	REQUIRE(tok.Encode("Ticket #4711 \xE2\x80\x94 Stra\xC3\x9F" "e") ==
 	        std::vector<int32_t> {40624, 1700, 235310, 235324, 235274, 235274, 2062, 52721});
+}
+
+TEST_CASE("Julia-1 collation matches upstream data.sequence goldens", "[anofox_decide][tokenizer]") {
+	const char *weights = std::getenv("JULIA_WEIGHTS_DIR");
+	if (!weights) {
+		WARN("skipped (needs JULIA_WEIGHTS_DIR: 34MB tokenizer.json, not committed)");
+		return;
+	}
+	DecideTokenizer tok;
+	tok.Load(std::string(weights) + "/tokenizer/tokenizer.json");
+	const duckdb::vector<string> opts = {"billing", "defect", "other"};
+
+	// Goldens produced by upstream julia.data.sequence (strict=False,
+	// max_length=8192) with the live HF tokenizer.
+	std::vector<int32_t> plain = {2,      6241,   2872,  235292, 12236, 2970,  33241, 736,   235336, 1,
+	                              4,      54972,  4,     37730,  4,     1156,  1,     590,   729,    12497,
+	                              11594,  604,    970,   4482,   42529, 235269, 3743,  19745, 573,    3437,
+	                              235248, 235310, 235315, 34228, 235265, 1};
+	auto row = DecideCollateRow(tok, "I was charged twice for my March invoice, please refund the extra 49 EUR.",
+	                            "Which team owns this?", opts, 0, 8192, 512);
+	REQUIRE(std::vector<int32_t>(row.ids.begin(), row.ids.end()) == plain);
+	REQUIRE(row.markers == duckdb::vector<int64_t> {10, 12, 14});
+
+	std::string long_q;
+	for (int i = 0; i < 60; i++) {
+		long_q += "word ";
+	}
+	long_q += "?";
+	auto lr = DecideCollateRow(tok, "Ticket #4711 \xE2\x80\x94 Stra\xC3\x9F"
+	                                "e \xC6\xB9 \xF0\x9F\x99\x8F",
+	                           long_q, opts, 0, 8192, 24);
+	// head cut to max(8, head_length - options) = 17 tokens after the
+	// 4-token "choice question:" prefix... upstream keeps 15 "word" tokens.
+	std::vector<int32_t> golden_b24 = {2,     6241,  2872,  235292, 2204,  2204,   2204, 2204,  2204,  2204,
+	                                   2204,  2204,  2204,  2204,   2204,  2204,   2204, 2204,  2204,  1,
+	                                   4,     54972, 4,     37730,  4,     1156,   1,    40624, 1700,  235310,
+	                                   235324, 235274, 235274, 2062, 52721, 235248, 415,  402,   68226, 1};
+	REQUIRE(std::vector<int32_t>(lr.ids.begin(), lr.ids.end()) == golden_b24);
+	REQUIRE(lr.markers == duckdb::vector<int64_t> {20, 22, 24});
 }

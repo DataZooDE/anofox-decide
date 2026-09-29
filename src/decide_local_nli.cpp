@@ -177,11 +177,6 @@ DecideCollatedRow DecideCollateRow(const DecideTokenizer &tok, const std::string
 	const auto &sp = tok.Specials();
 	const char *type_name = (qtype == 2) ? "noul" : (qtype == 1) ? "score" : "choice";
 	auto head = tok.Encode(std::string(type_name) + " question: " + CleanText(tok, question));
-	// Head cap (spec head_length): a long instruction never crowds out the
-	// options and state.
-	if (head_length > 0 && (int64_t)head.size() > head_length) {
-		head.resize((size_t)head_length);
-	}
 	std::vector<std::vector<int32_t>> opt_ids;
 	for (auto &o : options) {
 		auto ids = tok.Encode(" " + CleanText(tok, o));
@@ -191,23 +186,30 @@ DecideCollatedRow DecideCollateRow(const DecideTokenizer &tok, const std::string
 		opt_ids.push_back(std::move(ids));
 	}
 
-	// Budget split mirrors Collator.sequence (strict=False).
-	int64_t budget = max_length - (int64_t)head.size() - (int64_t)opt_ids.size() - 3;
-	int64_t per_option = 0;
-	if (budget < 16) {
-		int64_t width = budget / (int64_t)opt_ids.size();
+	// Head budget mirrors upstream data.sequence (strict=False): the head
+	// shares head_length with the options (each carries its MASK marker).
+	auto head_budget = [&]() {
+		int64_t b = head_length;
 		for (auto &o : opt_ids) {
-			if ((int64_t)o.size() > width) {
-				o.resize((size_t)std::max<int64_t>(width, 0));
+			b -= (int64_t)o.size() + 1;
+		}
+		return b;
+	};
+	int64_t budget = head_budget();
+	if (budget < 16) {
+		int64_t per_option = std::max<int64_t>(4, (head_length - 16) / (int64_t)opt_ids.size());
+		for (auto &o : opt_ids) {
+			if ((int64_t)o.size() > per_option) {
+				o.resize((size_t)per_option);
 			}
 		}
-		if ((int64_t)head.size() > std::max<int64_t>(8, budget)) {
-			head.resize((size_t)std::max<int64_t>(8, budget));
-		}
-		per_option = 0;
-		budget = max_length - (int64_t)head.size() - (int64_t)opt_ids.size() - 3;
+		budget = head_budget();
 	}
-	(void)per_option;
+	bool head_cut = false;
+	if ((int64_t)head.size() > std::max<int64_t>(8, budget)) {
+		head.resize((size_t)std::max<int64_t>(8, budget));
+		head_cut = true;
+	}
 
 	DecideCollatedRow row;
 	row.qtype = qtype;
@@ -223,8 +225,9 @@ DecideCollatedRow DecideCollateRow(const DecideTokenizer &tok, const std::string
 	row.ids.push_back(sp.sep);
 	auto state_ids = tok.Encode(CleanText(tok, state));
 	int64_t room = max_length - (int64_t)row.ids.size() - 1;
-	if (room < 0) {
-		room = 0;
+	if (room < 1) {
+		throw InvalidInputException("decide: question/options exceed the local sequence budget; shorten the "
+		                            "instruction or options, or raise anofox_decide_max_length");
 	}
 	if ((int64_t)state_ids.size() > room) {
 		state_ids.resize((size_t)room);
@@ -232,7 +235,7 @@ DecideCollatedRow DecideCollateRow(const DecideTokenizer &tok, const std::string
 	}
 	row.ids.insert(row.ids.end(), state_ids.begin(), state_ids.end());
 	row.ids.push_back(sp.sep);
-	row.truncated = truncated || (budget < 0);
+	row.truncated = truncated || head_cut;
 	return row;
 }
 

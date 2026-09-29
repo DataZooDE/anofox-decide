@@ -85,7 +85,7 @@ TEST_CASE("local collation mirrors data.sequence", "[anofox_decide][local]") {
 	}
 	REQUIRE_FALSE(row.truncated);
 
-	SECTION("head_length caps a long instruction; state survives") {
+	SECTION("head budget cuts a long instruction; state survives") {
 		string long_q;
 		for (int i = 0; i < 200; i++) {
 			long_q += "cd ";
@@ -95,7 +95,7 @@ TEST_CASE("local collation mirrors data.sequence", "[anofox_decide][local]") {
 		REQUIRE(capped.ids.size() < uncapped.ids.size());
 		// cls + head(16) + sep + 2*(mask+opt) + sep + state + sep, bounded.
 		REQUIRE(capped.ids.size() <= 1 + 16 + 1 + 2 * 3 + 1 + 4 + 1);
-		REQUIRE_FALSE(capped.truncated);
+		REQUIRE(capped.truncated); // head was cut
 	}
 	SECTION("long state truncates at max_length and flags it") {
 		string long_state;
