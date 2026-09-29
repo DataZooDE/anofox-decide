@@ -13,3 +13,6 @@ __pycache__/
 *.ses
 vcpkg_installed/
 .venv/
+
+# Internal BRD/HLD: kept locally, never published
+doc/*.docx
