@@ -72,9 +72,19 @@ correct refund / team:
 | TypeSafe Jev (remote) | 8/8 | 7/8 |
 | Laya multilingual (local) | 8/8 | 7/8 |
 | Laya typed-decisions (local) | 7/8 | 6/8 |
+| Kev-0.8B (local server, remote provider) | 6/8 | 6/8 |
 | Julia-1 (local) | 4/8 | 4/8 |
 
-Each local model reproduces its upstream Python reference to within 5e-5
+[Kev](https://github.com/jaredpalmer/kev) (Qwen3.5 + LoRA, Apache 2.0) serves
+TypeSafe's `/v1/systemone` contract, so it needs no extra code: run
+`python -m kev.serve --run jaredpalmer/kev-0.8b --port 8009`, then
+`SET anofox_decide_endpoint='http://127.0.0.1:8009'; SET anofox_decide_api_key='local';`
+and register `decide_register_model('kev-latest', 'typesafe')`. The endpoint
+setting is per session, so use one DuckDB connection per endpoint if you
+mix Jev and Kev. Kev-4B/9B/27B are more accurate than 0.8B and need a GPU
+or a large Mac.
+
+Each local ONNX model reproduces its upstream Python reference to within 5e-5
 in probability on these tickets. Eight tickets is a smoke test, not a
 benchmark: evaluate on your own data.
 

@@ -88,3 +88,12 @@ Jev 8/8, 7/8; Laya multilingual 8/8, 7/8; Laya typed-decisions 7/8, 6/8;
 Julia-1 4/8, 4/8. Also fixed an out-of-bounds read for mixed-width
 questions in one local batch. Not done: `score` questions locally, larger
 labelled evaluation, Von.
+
+## Kev via the remote provider (29 Sept 2026)
+
+Kev-0.8B (jaredpalmer/kev, Apache 2.0) ran on this CPU-only machine through
+`python -m kev.serve` and the existing `typesafe` provider with
+`anofox_decide_endpoint=http://127.0.0.1:8009` and no code change. 8-ticket
+smoke test: refund 6/8, team 6/8 (Jev 8/8, 7/8; Laya multilingual 8/8, 7/8).
+Larger Kev sizes (4B/9B/27B) were not tried (no GPU). Von needs order-invariant
+attention masking in the export and was not attempted.
