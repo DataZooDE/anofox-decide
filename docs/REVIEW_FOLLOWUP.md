@@ -61,3 +61,15 @@ and scoring reads bytes through the same gate.
   `decide_local_access.test` covers baseline, missing file, allowlist,
   denial, and load-time denial; wired into `make test_*_internal`. The
   Catch2 missing-graph assertion now expects "cannot open graph file".
+
+## Julia-1 local scoring investigation (29 Sept 2026)
+
+Realistic 8-ticket set (`test/fixtures/support_tickets.csv`): TypeSafe 8/8
+refund, 7/8 team; local Julia-1 4/8 refund, 3/8 team. Real-text parity
+(`test_real_ticket_parity`): torch vs ORT raw logits agree, single vs padded
+batch agree, so the export/padding path is faithful. `[false,true]` option
+order swings raw logits by ~4.8, so the 0.5 threshold is unreliable for the
+local model; treat weak local discrimination as model behaviour (upstream
+model.py parity still unverified). Fixed along the way: max_length/head_length
+defaults (8192/512), head cap, `<0xXX>` byte fallback. The agent-crew run was
+partial (claude OAuth expired, muse quota); codex members only.
