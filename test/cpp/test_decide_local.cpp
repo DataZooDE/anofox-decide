@@ -210,3 +210,46 @@ TEST_CASE("local end-to-end over real Laya multilingual", "[anofox_decide][local
 	// distributions sized to their own options.
 	REQUIRE(b[1].distribution.size() == 3);
 }
+
+TEST_CASE("local end-to-end over real Laya typed-decisions", "[anofox_decide][local]") {
+	const char *dir = std::getenv("LAYA_TYPED_DIR");
+	const char *graph = std::getenv("LAYA_TYPED_ONNX");
+	if (!dir || !graph) {
+		WARN("skipped (needs LAYA_TYPED_DIR + LAYA_TYPED_ONNX: 1.7GB graph, not committed)");
+		return;
+	}
+	DuckDB db(nullptr);
+	Connection con(db);
+	DecideModelEntry entry;
+	entry.id = "laya-td";
+	entry.provider = "local";
+	entry.mode = "local";
+	entry.profile = "laya";
+	entry.graph_path = graph;
+	entry.tokenizer_path = std::string(dir) + "/tokenizer/tokenizer.json";
+	entry.config_path = std::string(dir) + "/rl_agent_config.json";
+
+	DecideQuestion refund;
+	refund.id = "refund";
+	refund.kind = "noul";
+	refund.instruction = "A refund is requested.";
+	DecideQuestion team;
+	team.id = "team";
+	team.kind = "choice";
+	team.instruction = "Which team owns this?";
+	team.options = {"billing", "defect", "other"};
+
+	// Recorded from upstream RLAgent.system_one (CPU fp32). Exercises the
+	// ByteLevel tokenizer, the rendered noul options and the calibration
+	// temperatures (noul:2 -> 1.98, choice:3-5 -> 1.76).
+	auto a = DecideLocalScore(*con.context, entry,
+	                          "I was charged twice for my March invoice, please refund the extra 49 EUR.",
+	                          {refund, team});
+	REQUIRE(std::fabs(a[0].probability - 0.7312) < 2e-4);
+	REQUIRE(a[1].choice == "billing");
+	REQUIRE(std::fabs(a[1].probability - 0.7051) < 2e-4);
+	auto b = DecideLocalScore(*con.context, entry, "Do you have an office in Munich? We would like to visit.",
+	                          {refund, team});
+	REQUIRE(std::fabs(b[0].probability - 0.1038) < 2e-4);
+	REQUIRE(b[1].choice == "other");
+}

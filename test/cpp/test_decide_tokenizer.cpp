@@ -121,3 +121,46 @@ TEST_CASE("Julia-1 collation matches upstream data.sequence goldens", "[anofox_d
 	REQUIRE(std::vector<int32_t>(lr.ids.begin(), lr.ids.end()) == golden_b24);
 	REQUIRE(lr.markers == duckdb::vector<int64_t> {20, 22, 24});
 }
+
+TEST_CASE("Laya ModernBERT byte-level tokenizer matches HF goldens", "[anofox_decide][tokenizer]") {
+	const char *dir = std::getenv("LAYA_TYPED_DIR");
+	if (!dir) {
+		WARN("skipped (needs LAYA_TYPED_DIR: laya typed-decisions snapshot)");
+		return;
+	}
+	DecideTokenizer tok;
+	tok.Load(std::string(dir) + "/tokenizer/tokenizer.json");
+	REQUIRE(tok.Specials().cls == 50281);
+	REQUIRE(tok.Specials().sep == 50282);
+	REQUIRE(tok.Specials().mask == 50284);
+	REQUIRE(tok.Specials().pad == 50283);
+	// Goldens from the live HF tokenizer (add_special_tokens=false): GPT-2
+	// pre-tokenizer edge cases, NFC, multi-space added tokens, byte
+	// sequences beyond the BMP, raw specials.
+	const std::vector<std::pair<std::string, std::vector<int32_t>>> cases = {
+		{std::string("\x41""\x20""\x72""\x65""\x66""\x75""\x6e""\x64""\x20""\x69""\x73""\x20""\x72""\x65""\x71""\x75""\x65""\x73""\x74""\x65""\x64""\x2e"), {34, 23005, 310, 9521, 15}},
+		{std::string("\x49""\x20""\x77""\x61""\x73""\x20""\x63""\x68""\x61""\x72""\x67""\x65""\x64""\x20""\x74""\x77""\x69""\x63""\x65""\x20""\x66""\x6f""\x72""\x20""\x6d""\x79""\x20""\x4d""\x61""\x72""\x63""\x68""\x20""\x69""\x6e""\x76""\x6f""\x69""\x63""\x65""\x2c""\x20""\x70""\x6c""\x65""\x61""\x73""\x65""\x20""\x72""\x65""\x66""\x75""\x6e""\x64""\x20""\x74""\x68""\x65""\x20""\x65""\x78""\x74""\x72""\x61""\x20""\x34""\x39""\x20""\x45""\x55""\x52""\x2e"), {42, 369, 6636, 7019, 323, 619, 3919, 45156, 13, 4496, 23005, 253, 4465, 7584, 38928, 15}},
+		{std::string("\x49""\x74""\x27""\x73""\x20""\x64""\x6f""\x6e""\x27""\x74""\x20""\x77""\x65""\x27""\x76""\x65""\x20""\x49""\x27""\x6d""\x20""\x74""\x68""\x65""\x79""\x27""\x6c""\x6c""\x20""\x73""\x68""\x65""\x27""\x64""\x20""\x59""\x4f""\x55""\x27""\x52""\x45"), {1147, 434, 1053, 626, 359, 1849, 309, 1353, 597, 1833, 703, 1871, 8702, 8, 1848}},
+		{std::string("\x4c""\x69""\x6e""\x65""\x20""\x6f""\x6e""\x65""\x0a""\x0a""\x4c""\x69""\x6e""\x65""\x20""\x74""\x77""\x6f""\x09""\x20""\x74""\x61""\x62""\x62""\x65""\x64""\x20""\x20""\x20""\x61""\x6e""\x64""\x20""\x20""\x73""\x70""\x61""\x63""\x65""\x64""\x2e"), {7557, 581, 187, 187, 7557, 767, 186, 10334, 3026, 50275, 395, 50276, 1033, 2575, 15}},
+		{std::string("\x74""\x72""\x61""\x69""\x6c""\x69""\x6e""\x67""\x20""\x73""\x70""\x61""\x63""\x65""\x73""\x20""\x20""\x20"), {7604, 4837, 8470, 50275}},
+		{std::string("\x20""\x20""\x20""\x6c""\x65""\x61""\x64""\x69""\x6e""\x67"), {50275, 16378}},
+		{std::string("\x78""\x20""\x20""\x79"), {89, 50276, 90}},
+		{std::string("\x54""\x69""\x63""\x6b""\x65""\x74""\x20""\x23""\x34""\x37""\x31""\x31""\x20""\xe2""\x80""\x94""\x20""\x53""\x74""\x72""\x61""\xc3""\x9f""\x65""\x20""\xc6""\xb9""\x20""\xf0""\x9f""\x99""\x8f"), {53, 21315, 1852, 2504, 883, 1905, 19967, 44366, 209, 130, 119, 22692, 236, 226}},
+		{std::string("\x63""\x61""\x66""\xc3""\xa9""\x20""\x76""\x73""\x20""\x63""\x61""\x66""\x65""\xcc""\x81"), {68, 2320, 860, 4632, 36241}},
+		{std::string("\xe6""\x97""\xa5""\xe6""\x9c""\xac""\xe8""\xaa""\x9e""\xe3""\x81""\xae""\xe3""\x83""\x81""\xe3""\x82""\xb1""\xe3""\x83""\x83""\xe3""\x83""\x88"), {49868, 19119, 241, 3917, 39009, 49201, 38906}},
+		{std::string("\x33""\x2e""\x31""\x34""\x31""\x35""\x39""\x20""\x61""\x6e""\x64""\x20""\x31""\x2c""\x30""\x30""\x30""\x2c""\x30""\x30""\x30""\x20""\x75""\x6e""\x69""\x74""\x73"), {20, 15, 1047, 17220, 285, 337, 13, 933, 13, 933, 5085}},
+		{std::string("\x65""\x6d""\x61""\x69""\x6c""\x3a""\x20""\x61""\x2e""\x62""\x40""\x63""\x2e""\x69""\x6f""\x3b""\x20""\x75""\x72""\x6c""\x20""\x68""\x74""\x74""\x70""\x73""\x3a""\x2f""\x2f""\x78""\x2e""\x79""\x2f""\x7a""\x3f""\x71""\x3d""\x31"), {12812, 27, 247, 15, 67, 33, 68, 15, 900, 28, 9688, 5987, 1358, 89, 15, 90, 16, 91, 32, 82, 30, 18}},
+		{std::string("\x63""\x68""\x6f""\x69""\x63""\x65""\x20""\x71""\x75""\x65""\x73""\x74""\x69""\x6f""\x6e""\x3a""\x20""\x57""\x68""\x69""\x63""\x68""\x20""\x74""\x65""\x61""\x6d""\x20""\x6f""\x77""\x6e""\x73""\x20""\x74""\x68""\x69""\x73""\x3f"), {22122, 1953, 27, 6758, 2285, 21186, 436, 32}},
+		{std::string("\x20""\x62""\x69""\x6c""\x6c""\x69""\x6e""\x67"), {33484}},
+		{std::string("\x5b""\x4d""\x41""\x53""\x4b""\x5d""\x20""\x69""\x6e""\x73""\x69""\x64""\x65"), {50284, 3304}},
+		{std::string("\x3c""\x7c""\x65""\x6e""\x64""\x6f""\x66""\x74""\x65""\x78""\x74""\x7c""\x3e""\x20""\x72""\x61""\x77""\x20""\x73""\x70""\x65""\x63""\x69""\x61""\x6c"), {50279, 9305, 2714}},
+		{std::string(""), {}},
+		{std::string("\x20"), {209}},
+		{std::string("\x0a"), {187}},
+		{std::string("\xc2""\xa0""\x6e""\x62""\x73""\x70""\xc2""\xa0"), {575, 6732, 575}},
+	};
+	for (auto &c : cases) {
+		INFO("text bytes: " << c.first);
+		REQUIRE(tok.Encode(c.first) == c.second);
+	}
+}

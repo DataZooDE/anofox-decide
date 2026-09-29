@@ -73,3 +73,18 @@ local model; treat weak local discrimination as model behaviour (upstream
 model.py parity still unverified). Fixed along the way: max_length/head_length
 defaults (8192/512), head cap, `<0xXX>` byte fallback. The agent-crew run was
 partial (claude OAuth expired, muse quota); codex members only.
+
+## Laya local profile (29 Sept 2026)
+
+Laya (convaiinnovations, Apache 2.0) shares Julia-1's marker-head
+architecture, so `tools/export_julia` exports it unchanged. Added: registry
+`profile` argument (`julia-1` | `laya`), laya rendering (`false: no, the
+statement does not hold` / `true: ...`), limits + temperatures from
+`rl_agent_config.json`, and a ByteLevel BPE tokenizer (GPT-2 pre-tokenizer,
+NFC, added-token extraction) verified against HF goldens. Both the
+multilingual and typed-decisions checkpoints reproduce upstream
+`RLAgent.system_one` within 5e-5. 8-ticket smoke test (refund/team):
+Jev 8/8, 7/8; Laya multilingual 8/8, 7/8; Laya typed-decisions 7/8, 6/8;
+Julia-1 4/8, 4/8. Also fixed an out-of-bounds read for mixed-width
+questions in one local batch. Not done: `score` questions locally, larger
+labelled evaluation, Von.

@@ -8,6 +8,10 @@
 //   longest-match splitting. fuse_unk and offsets are decode-side concerns
 //   and do not affect emitted ids.
 //
+// A second mode covers ByteLevel BPE tokenizers (pre_tokenizer ByteLevel):
+// specials then resolve as [CLS]/[SEP]/[MASK]/[PAD]/[UNK] when the caller
+// leaves the default (Gemma-style) content names.
+//
 // Special ids (cls/sep/mask/pad) resolve by content through added_tokens
 // using tokenizer_config.json names. NOTE: the live HF tokenizer reports
 // cls=2 (<bos>), NOT the encoder config's cls_token_id=1 — the golden file
@@ -78,6 +82,13 @@ private:
 	// special content -> id (longest match wins at split time)
 	std::vector<std::pair<std::string, int32_t>> specials_by_content;
 	bool byte_fallback = true;
+	// ByteLevel BPE (ModernBERT/GPT-2 family, e.g. Laya English/typed-decisions):
+	// NFC normalizer, GPT-2 pre-tokenizer regex, bytes-to-unicode alphabet,
+	// and extraction of ALL added tokens (special or not) before BPE.
+	bool byte_level = false;
+	std::vector<std::pair<std::string, int32_t>> added_raw;  // normalized=false, longest first
+	std::vector<std::pair<std::string, int32_t>> added_norm; // normalized=true, longest first
+	std::vector<int32_t> EncodeByteLevel(const std::string &text) const;
 	DecideSpecialIds specials;
 	std::string unk_token = "<unk>";
 	size_t vocab_size = 0;

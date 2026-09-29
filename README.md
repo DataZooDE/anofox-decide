@@ -44,6 +44,40 @@ SELECT decide_register_model('julia-1', 'local', '<path>/julia1.onnx', '<path>/t
 SELECT decide_probability('...', '...', model := 'julia-1');
 ```
 
+Local models take an optional 5th argument, the **profile**: `julia-1`
+(default) or `laya`. The profile fixes how questions are rendered for that
+model family, the sequence limits, and calibration. Laya
+([convaiinnovations/laya](https://huggingface.co/convaiinnovations/laya),
+Apache 2.0, ModernBERT / mmBERT encoders) needs `rl_agent_config.json` next
+to the graph (limits + calibration temperatures):
+
+```sql
+SELECT decide_register_model('laya', 'local', '<dir>/julia1.onnx',
+                             '<snapshot>/multilingual/tokenizer/tokenizer.json', 'laya');
+```
+
+Export any of the marker-head checkpoints with `tools/export_julia`
+(`python -m export_julia.export --spec <spec.json> --weights <snapshot subdir> --out <dir>`;
+the weights dir holds `encoder/config.json` + `model.safetensors`; the
+spec needs `{"head": {"head_layers": 2, "dropout": 0.1}}`) and copy the
+checkpoint's `rl_agent_config.json` beside the graph. Tokenizers: the
+SentencePiece-style one (Julia-1, Laya multilingual) and ByteLevel BPE (Laya
+English / typed-decisions) are both supported.
+
+Measured on 8 labelled support tickets (`test/fixtures/support_tickets.csv`),
+correct refund / team:
+
+| Model | Refund | Team |
+|---|---|---|
+| TypeSafe Jev (remote) | 8/8 | 7/8 |
+| Laya multilingual (local) | 8/8 | 7/8 |
+| Laya typed-decisions (local) | 7/8 | 6/8 |
+| Julia-1 (local) | 4/8 | 4/8 |
+
+Each local model reproduces its upstream Python reference to within 5e-5
+in probability on these tickets. Eight tickets is a smoke test, not a
+benchmark: evaluate on your own data.
+
 ## Status
 
 Providers: `stub` (deterministic) + `typesafe` remote (DuckDB-bundled httplib/yyjson, no vcpkg)
@@ -66,7 +100,8 @@ make test-live                       # live TypeSafe E2E; explicit SKIP without 
 ```
 
 Gated (need weights/network, WARN-and-pass without): Catch2 `[tokenizer]` goldens
-(`JULIA_WEIGHTS_DIR`), `[local]` real graph (`JULIA_ONNX`), export pytest
+(`JULIA_WEIGHTS_DIR`, `LAYA_TYPED_DIR`), `[local]` real graphs (`JULIA_ONNX`,
+`LAYA_MULTILINGUAL_DIR` + `LAYA_ONNX`, `LAYA_TYPED_DIR` + `LAYA_TYPED_ONNX`), export pytest
 (`tools/export_julia`: `JULIA_WEIGHTS_DIR`/`JULIA_SRC_MODEL`/`JULIA_ONNX`).
 
 Tests always run with `DATAZOO_DISABLE_TELEMETRY=1` (Makefile does this).
