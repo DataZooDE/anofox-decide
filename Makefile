@@ -15,6 +15,14 @@ EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 DUCKDB_VER ?= v1.5.5
 CI_TOOLS_BRANCH ?= v1.5-variegata
 
+# Release/distribution builds link ONNX Runtime statically via the vcpkg
+# "ort-vcpkg" manifest feature (single self-contained loadable extension).
+# Local dev against a prebuilt/system ORT: `make release DECIDE_ORT_VCPKG=0`.
+DECIDE_ORT_VCPKG ?= 1
+ifeq ($(DECIDE_ORT_VCPKG),1)
+EXT_RELEASE_FLAGS += -DVCPKG_MANIFEST_FEATURES=ort-vcpkg
+endif
+
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
 BUILD_ROOT:=$(or $(DECIDE_BUILD_ROOT),build)

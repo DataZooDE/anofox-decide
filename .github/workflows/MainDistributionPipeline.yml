@@ -1,0 +1,58 @@
+#
+# Builds, tests and (on version tags) releases the extension via DuckDB's
+# reusable distribution pipeline.
+#
+name: Main Extension Distribution Pipeline
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}-${{ github.ref != 'refs/heads/main' && github.sha || '' }}
+  cancel-in-progress: true
+
+jobs:
+  duckdb-v1_5_5-build:
+    name: Build extension binaries (v1.5.5)
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5-variegata
+    with:
+      duckdb_version: v1.5.5
+      ci_tools_version: v1.5-variegata
+      extension_name: anofox_decide
+      # ONNX Runtime is linked statically from the vcpkg overlay port (the
+      # "ort-vcpkg" manifest feature, on by default in the Makefile), so the
+      # loadable extension is one self-contained file.
+      # Excluded: WASM/musl (ORT), MinGW (vcpkg OpenSSL, house pattern), and
+      # osx_amd64 (ONNX Runtime ships no macOS x86_64 archive after v1.23.2).
+      exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;osx_amd64
+
+  duckdb-v1_5_5-smoke-test:
+    name: Smoke test (v1.5.5)
+    needs: duckdb-v1_5_5-build
+    uses: ./.github/workflows/_extension_smoke_test.yml
+    with:
+      duckdb_version: v1.5.5
+      extension_name: anofox_decide
+      exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;osx_amd64'
+
+  duckdb-v1_5_5-deploy:
+    name: Deploy extension binaries (v1.5.5)
+    needs: [duckdb-v1_5_5-build, duckdb-v1_5_5-smoke-test]
+    # Releases only: a version tag. Uploading needs the org's AWS OIDC role to
+    # trust this repository and the DEPLOY_S3_BUCKET variable; until that is
+    # set up the job would fail on `main`, so it is tag-gated (success() is
+    # explicit because a job-level `if:` replaces the implicit check).
+    if: success() && startsWith(github.ref, 'refs/tags/v')
+    uses: ./.github/workflows/_extension_deploy.yml
+    secrets: inherit
+    with:
+      duckdb_version: v1.5.5
+      extension_name: anofox_decide
+      exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;osx_amd64
+      deploy_latest: true
+      deploy_versioned: true

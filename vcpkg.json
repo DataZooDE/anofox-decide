@@ -5,6 +5,17 @@
 	"dependencies": [
 		"openssl"
 	],
+	"features": {
+		"ort-vcpkg": {
+			"description": "Build ONNX Runtime (CPU EP) from the vcpkg overlay port so the loadable extension links it statically (single file). Heavy first build; CI uses binary caching.",
+			"dependencies": [
+				{
+					"name": "onnxruntime",
+					"default-features": false
+				}
+			]
+		}
+	},
 	"vcpkg-configuration": {
 		"overlay-ports": [
 			"./vcpkg_ports",

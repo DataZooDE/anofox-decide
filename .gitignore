@@ -1,5 +1,15 @@
+build-*/
 build/
+.cache/
+.crew/
+.DS_Store
+*.duckdb
+duckdb_unittest_tempdir/
+*.duckdb.wal
+.idea
+*.onnx.data
+__pycache__/
+.pytest_cache/
+*.ses
 vcpkg_installed/
 .venv/
-*.duckdb
-*.duckdb.wal
