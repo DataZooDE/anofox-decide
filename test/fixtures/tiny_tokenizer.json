@@ -1,0 +1,27 @@
+{
+  "version": "1.0",
+  "added_tokens": [
+    {"id": 0, "content": "<pad>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+    {"id": 1, "content": "<eos>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+    {"id": 2, "content": "<bos>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+    {"id": 3, "content": "<mask>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+    {"id": 4, "content": "<unk>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}
+  ],
+  "normalizer": {"type": "Replace", "pattern": {"String": " "}, "content": "▁"},
+  "pre_tokenizer": {"type": "Metaspace", "replacement": "▁", "prepend_scheme": "always", "split": true},
+  "decoder": null,
+  "model": {
+    "type": "BPE",
+    "unk_token": "<unk>",
+    "continuing_subword_prefix": null,
+    "end_of_word_suffix": null,
+    "fuse_unk": true,
+    "byte_fallback": true,
+    "ignore_merges": false,
+    "vocab": {
+      "<pad>": 0, "<eos>": 1, "<bos>": 2, "<mask>": 3, "<unk>": 4,
+      "▁": 5, "a": 6, "b": 7, "c": 8, "▁a": 9, "ab": 10, "▁ab": 11, "▁b": 12, "Ġ": 13
+    },
+    "merges": ["▁ a", "a b"]
+  }
+}

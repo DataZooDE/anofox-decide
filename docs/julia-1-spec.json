@@ -1,0 +1,64 @@
+{
+  "repo_id": "SupersonicLabs/Julia-1",
+  "sha": "a85b127321d580d65176c89ced8273f305745d85",
+  "last_modified": "2026-09-26T22:03:07.000Z",
+  "license": "apache-2.0",
+  "base_model": "jhu-clsp/mmBERT-small",
+  "architecture": "JuliaDecisionModel",
+  "sources": ["julia/model.py", "julia/data.py", "julia/inference.py", "julia/probabilities.py"],
+  "encoder": {
+    "model_type": "modernbert",
+    "hidden_size": 384,
+    "num_hidden_layers": 22,
+    "num_attention_heads": 6,
+    "intermediate_size": 1152,
+    "vocab_size": 256000,
+    "max_position_embeddings": 8192,
+    "layer_types": ["full_attention", "sliding_attention", "sliding_attention"],
+    "local_attention": 128,
+    "pad_token_id": 0,
+    "cls_token_id": 1,
+    "sep_token_id": 1,
+    "bos_token_id": 2,
+    "mask_token_id": 4,
+    "dtype": "float32"
+  },
+  "head": {
+    "head_layers": 2,
+    "n_act": 2,
+    "dropout": 0.1,
+    "width": 384,
+    "nhead": 6,
+    "dim_feedforward": 1536,
+    "type_emb_vocab": 3
+  },
+  "qtypes": {"choice": 0, "score": 1, "noul": 2},
+  "collation": {
+    "head_template": "<type> question: <question>",
+    "option_prefix": "MASK + first 48 tokens, leading space encoded",
+    "layout": "[CLS] head [SEP] (MASK opt...)* [SEP] state [SEP]",
+    "option_range": [2, 20],
+    "noul_options": "[false, true]",
+    "max_length": 8192,
+    "head_length": 512
+  },
+  "weights": {
+    "file": "model.safetensors",
+    "sha256": "df853bf7fe424420011f3d0c47a05d7341aa9eefa7fb9f203ea4aadaad95b72",
+    "source": "inference-policy.json"
+  },
+  "tokenizer": {
+    "directory": "tokenizer",
+    "files": ["tokenizer.json", "tokenizer_config.json"]
+  },
+  "export": {
+    "graph": "julia1.onnx",
+    "tensor_map": "julia1_tensor_map.json",
+    "inputs": ["input_ids:int64[B,T]", "attention_mask:int64[B,T]", "marker_pos:int64[B,M]", "marker_mask:bool[B,M]", "qtype:int64[B]"],
+    "output": ["scores:float32[B,M]"],
+    "opset": 17,
+    "scores_path_only": true,
+    "notes": "return_actions/act_head excluded from the SQL graph; masked positions carry -1e4 and are dropped before softmax"
+  },
+  "pinned_from": "https://huggingface.co/api/models/SupersonicLabs/Julia-1 + raw config/model/data files, 2026-09-28"
+}

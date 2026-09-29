@@ -1,0 +1,87 @@
+# name: test/sql/decide_remote_config.test
+# description: Trusted-deployment endpoint hardening (F2 follow-up). The env
+#              key attaches only to the default host and cleartext http is
+#              loopback-only. All cases fail before any I/O (hermetic: no
+#              network, no ambient key dependence).
+# group: [anofox_decide]
+
+require anofox_decide
+
+statement ok
+LOAD anofox_decide
+
+statement ok
+SELECT decide_register_model('cfg-test', 'typesafe')
+
+# Cleartext http to a non-loopback host is refused before any I/O, even
+# with an explicit key set.
+statement ok
+SET anofox_decide_endpoint='http://attacker.example'
+
+statement ok
+SET anofox_decide_api_key='not-a-real-key'
+
+statement error
+SELECT decide_probability('x', 'y', model := 'cfg-test')
+----
+<REGEX>:.*loopback.*
+
+# A custom https endpoint withholds the env key: without an explicit key
+# the error names the explicit setting (deterministic even with an ambient
+# TYPESAFE_API_KEY in the environment).
+statement ok
+SET anofox_decide_endpoint='https://custom.example'
+
+statement ok
+SET anofox_decide_api_key=''
+
+statement error
+SELECT decide_probability('x', 'y', model := 'cfg-test')
+----
+<REGEX>:.*anofox_decide_api_key.*
+
+statement ok
+RESET anofox_decide_endpoint
+
+statement ok
+RESET anofox_decide_api_key
+
+# A stored secret satisfies ResolveConfig: with the default endpoint the
+# call reaches the allow_remote gate (deterministic, hermetic — no I/O).
+statement ok
+CREATE SECRET decide_test (TYPE anofox_decide, API_KEY 'sk-test-placeholder')
+
+statement error
+SELECT decide_probability('x', 'y', model := 'cfg-test')
+----
+<REGEX>:.*remote evaluation is disabled.*
+
+# The stored key never renders in cleartext (redacted as `key=redacted`).
+query I
+SELECT (secret_string LIKE '%api_key=redacted%' AND secret_string NOT LIKE '%sk-test-placeholder%')::INTEGER
+FROM duckdb_secrets() WHERE type = 'anofox_decide'
+----
+1
+
+# A secret scoped to another host does not match: back to the no-key error
+# (custom endpoint also withholds the env key, so this holds with or
+# without an ambient TYPESAFE_API_KEY).
+statement ok
+DROP SECRET decide_test
+
+statement ok
+CREATE SECRET decide_scoped (TYPE anofox_decide, API_KEY 'sk-test-placeholder', SCOPE 'other-host')
+
+statement ok
+SET anofox_decide_endpoint='https://custom.example'
+
+statement error
+SELECT decide_probability('x', 'y', model := 'cfg-test')
+----
+<REGEX>:.*anofox_decide_api_key.*
+
+statement ok
+DROP SECRET decide_scoped
+
+statement ok
+RESET anofox_decide_endpoint

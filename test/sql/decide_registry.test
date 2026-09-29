@@ -1,0 +1,107 @@
+# name: test/sql/decide_registry.test
+# description: Model registry (plan step 3): builtin stub pre-registered,
+#              custom stub registration, duplicate/provider/unknown errors.
+# group: [anofox_decide]
+
+require anofox_decide
+
+statement ok
+LOAD anofox_decide
+
+# Builtin stub model is pre-registered by the extension load.
+query I
+SELECT count(*) FROM decide_models()
+----
+1
+
+query I
+SELECT count(*) FROM decide_models() WHERE model='stub' AND provider='stub'
+----
+1
+
+# Registering a custom stub id works and is immediately listable.
+query I
+SELECT decide_register_model('r1', 'stub')
+----
+1
+
+query I
+SELECT count(*) FROM decide_models() WHERE model='r1'
+----
+1
+
+# One-arg form defaults to the stub provider.
+query I
+SELECT decide_register_model('r2')
+----
+1
+
+# Duplicate ids are actionable errors.
+statement error
+SELECT decide_register_model('r1', 'stub')
+----
+<REGEX>:.*already registered.*
+
+# The typesafe remote provider registers (calls need allow_remote + key).
+query I
+SELECT decide_register_model('jev-latest', 'typesafe')
+----
+1
+
+query I
+SELECT count(*) FROM decide_models() WHERE model='jev-latest' AND provider='typesafe' AND mode='remote'
+----
+1
+
+# Local models register with a graph path (see decide_local.test for scoring).
+statement error
+SELECT decide_register_model('julia-1', 'local')
+----
+<REGEX>:.*graph path.*
+
+query I
+SELECT decide_register_model('julia-1', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json')
+----
+1
+
+# Unknown providers are still rejected.
+statement error
+SELECT decide_register_model('rx', 'nope')
+----
+<REGEX>:.*not supported.*
+
+# NULL ids cannot be registered.
+statement error
+SELECT decide_register_model(NULL, 'stub')
+----
+<REGEX>:.*cannot be NULL.*
+
+# Registered ids are usable as model arguments.
+query R
+SELECT decide_probability('The customer requests a refund.', 'A refund is requested.', model := 'r1') AS p
+----
+0.5
+
+# Unknown models fail with an error that names the fix.
+statement error
+SELECT decide_probability('x', 'y', model := 'nope')
+----
+<REGEX>:.*unknown model.*
+
+# The anofox_decide_model setting supplies the default for 2-arg calls.
+statement ok
+SET anofox_decide_model='r1'
+
+query R
+SELECT decide_probability('x', 'y') AS p
+----
+0.5
+
+# ...and an unknown default fails the same way.
+statement ok
+SET anofox_decide_model='nope'
+
+statement error
+SELECT decide_probability('x', 'y')
+----
+<REGEX>:.*unknown model.*

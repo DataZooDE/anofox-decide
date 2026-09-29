@@ -28,4 +28,33 @@ SELECT decide_probability(NULL, 'A refund is requested.', model := 'stub') IS NU
 
 # Empty option sets are actionable errors, not empty results.
 statement error
-SELECT decide_choice('Primary issue?', [], model := 'stub')
+SELECT decide_choice('The bill is wrong.', 'Primary issue?', [], model := 'stub')
+----
+<REGEX>:.*non-empty option list.*
+
+# NULL options are actionable errors, not silent NULLs.
+statement error
+SELECT decide_choice('The bill is wrong.', 'Primary issue?', [NULL, 'billing'], model := 'stub')
+----
+<REGEX>:.*must not contain NULL.*
+
+# Non-text option lists are rejected at bind time (standard DuckDB
+# no-match error suggesting an explicit cast); empty/NULL cases above get
+# Decide-specific errors because they bind.
+statement error
+SELECT decide_choice('The bill is wrong.', 'Primary issue?', [1, 2], model := 'stub')
+----
+<REGEX>:.*No function matches.*
+
+# Happy path returns the stub's first option.
+query I
+SELECT decide_choice('The bill is wrong.', 'Primary issue?', ['billing','defect','other'], model := 'stub')
+----
+billing
+
+# decide_many stub: choice probability is the top-option probability 1.0
+# (F12 pin: the DecideAnswer contract, shared with remote/local providers).
+query I
+SELECT (decide_many('x', '[{"id":"t","kind":"choice","instruction":"T?","options":["a","b"]}]', model := 'stub') LIKE '%"probability":1.0%')::INTEGER
+----
+1

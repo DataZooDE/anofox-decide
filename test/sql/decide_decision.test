@@ -1,0 +1,94 @@
+# name: test/sql/decide_decision.test
+# description: Nullable threshold decisions (BRD section 4). A binary result
+#              carries a probability plus a nullable decision derived from an
+#              EXPLICIT threshold — a probability is never silently converted
+#              to a boolean. NULL state/question/threshold returns NULL.
+# group: [anofox_decide]
+
+require anofox_decide
+
+statement ok
+LOAD anofox_decide
+
+# Stub scores 0.5: threshold 0.5 decides true, 0.6 decides false.
+query I
+SELECT decide_decision('The customer requests a refund.', 'A refund is requested.', 0.5, model := 'stub')
+----
+1
+
+query I
+SELECT decide_decision('The customer requests a refund.', 'A refund is requested.', 0.6, model := 'stub')
+----
+0
+
+# Threshold is explicit: no 2-arg form exists (a bare 2-arg call fails in
+# the binder; passing model := where the threshold goes is a cast error).
+statement error
+SELECT decide_decision('x', 'y')
+----
+<REGEX>:.*No function matches.*
+
+# NULL inputs return NULL, never a decision.
+query I
+SELECT decide_decision(NULL, 'A refund is requested.', 0.5, model := 'stub') IS NULL AS is_null
+----
+1
+
+query I
+SELECT decide_decision('x', NULL, 0.5, model := 'stub') IS NULL AS is_null
+----
+1
+
+query I
+SELECT decide_decision('x', 'y', NULL, model := 'stub') IS NULL AS is_null
+----
+1
+
+# Out-of-range and NaN thresholds are actionable errors, not silent clamps.
+statement error
+SELECT decide_decision('x', 'y', 1.5, model := 'stub')
+----
+<REGEX>:.*threshold.*
+
+statement error
+SELECT decide_decision('x', 'y', -0.1, model := 'stub')
+----
+<REGEX>:.*threshold.*
+
+statement error
+SELECT decide_decision('x', 'y', 'nan'::DOUBLE, model := 'stub')
+----
+<REGEX>:.*threshold.*
+
+# Boundary thresholds are valid.
+query I
+SELECT decide_decision('x', 'y', 0.0, model := 'stub')
+----
+1
+
+query I
+SELECT decide_decision('x', 'y', 1.0, model := 'stub')
+----
+0
+
+# Unknown models fail with an error that names the fix.
+statement error
+SELECT decide_decision('x', 'y', 0.5, model := 'nope')
+----
+<REGEX>:.*unknown model.*
+
+# Works through the local provider as well (finite probability decides).
+query I
+SELECT decide_register_model('tiny-dec', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json')
+----
+1
+
+query I
+SELECT decide_decision('The bill is wrong.', 'A refund is requested.', 0.0, model := 'tiny-dec')
+----
+1
+
+query I
+SELECT decide_decision('The bill is wrong.', 'A refund is requested.', 1.0, model := 'tiny-dec')
+----
+0

@@ -1,0 +1,214 @@
+# name: test/sql/decide_calibration.test
+# description: Calibration metadata (BRD section 6, Next scope). Brier score,
+#              expected calibration error (10 equal-width buckets), and
+#              threshold-0.5 accuracy over (probability, label) pairs: the
+#              SQL surface for "publish Brier/ECE by model and task; validate
+#              thresholds on held-out data". NULL rows skipped, empty input
+#              returns NULL, non-probabilities are actionable errors.
+# group: [anofox_decide]
+
+require anofox_decide
+
+statement ok
+LOAD anofox_decide
+
+# Brier: perfect forecasts score 0.
+query R
+SELECT decide_brier_score(p, y) FROM (VALUES (1.0, true), (0.0, false)) AS t(p, y)
+----
+0.0
+
+# Brier: (0 + 1) / 2 = 0.5.
+query R
+SELECT decide_brier_score(p, y) FROM (VALUES (1.0, true), (1.0, false)) AS t(p, y)
+----
+0.5
+
+# Brier: NULL rows skipped, not scored as zero.
+query R
+SELECT decide_brier_score(p, y) FROM (VALUES (1.0, true), (NULL, true), (1.0, NULL)) AS t(p, y)
+----
+0.0
+
+# Brier: empty / all-NULL input returns NULL (standard aggregate semantics).
+query I
+SELECT decide_brier_score(p, y) IS NULL FROM (VALUES (NULL, NULL)) AS t(p, y)
+----
+1
+
+# Brier: integer 0/1 labels accepted.
+query R
+SELECT decide_brier_score(p, y) FROM (VALUES (1.0, 1), (0.0, 0)) AS t(p, y)
+----
+0.0
+
+# Brier: non-probabilities are actionable errors, never silent scores.
+statement error
+SELECT decide_brier_score(p, y) FROM (VALUES (1.5, true)) AS t(p, y)
+----
+<REGEX>:.*probability.*
+
+statement error
+SELECT decide_brier_score(p, y) FROM (VALUES ('nan'::DOUBLE, true)) AS t(p, y)
+----
+<REGEX>:.*probability.*
+
+statement error
+SELECT decide_brier_score(p, y) FROM (VALUES (0.5, 2)) AS t(p, y)
+----
+<REGEX>:.*label.*
+
+# ECE: perfect calibration scores 0.
+query R
+SELECT decide_ece(p, y) FROM (VALUES (1.0, true), (0.0, false)) AS t(p, y)
+----
+0.0
+
+# ECE: total miscalibration scores 1.
+query R
+SELECT decide_ece(p, y) FROM (VALUES (1.0, false), (1.0, false)) AS t(p, y)
+----
+1.0
+
+# ECE: half-wrong at full confidence scores exactly 0.5.
+query R
+SELECT decide_ece(p, y) FROM (VALUES (1.0, true), (1.0, false)) AS t(p, y)
+----
+0.5
+
+# ECE: overconfident-but-right lands low (exact 0.15 up to float noise).
+query I
+SELECT (decide_ece(p, y) BETWEEN 0.14 AND 0.16)::INTEGER
+FROM (VALUES (0.9, true), (0.8, true), (0.2, false), (0.1, false)) AS t(p, y)
+----
+1
+
+# ECE: NULL rows skipped, empty input returns NULL.
+query R
+SELECT decide_ece(p, y) FROM (VALUES (1.0, true), (NULL, true)) AS t(p, y)
+----
+0.0
+
+query I
+SELECT decide_ece(p, y) IS NULL FROM (SELECT NULL::DOUBLE AS p, NULL::BOOLEAN AS y) AS t
+----
+1
+
+# Accuracy at the documented 0.5 threshold (p >= 0.5 decides true).
+query R
+SELECT decide_accuracy(p, y) FROM (VALUES (0.9, true), (0.2, false), (0.7, true)) AS t(p, y)
+----
+1.0
+
+query R
+SELECT decide_accuracy(p, y) FROM (VALUES (0.9, true), (0.2, false), (0.7, true), (0.7, false)) AS t(p, y)
+----
+0.75
+
+# Boundary: p = 0.5 decides true.
+query R
+SELECT decide_accuracy(p, y) FROM (VALUES (0.5, true)) AS t(p, y)
+----
+1.0
+
+query R
+SELECT decide_accuracy(p, y) FROM (VALUES (0.5, false)) AS t(p, y)
+----
+0.0
+
+query I
+SELECT decide_accuracy(p, y) IS NULL FROM (SELECT NULL::DOUBLE AS p, NULL::BOOLEAN AS y) AS t
+----
+1
+
+# 3-arg accuracy takes an explicit threshold (Q2 decision): same rows at
+# 0.7 decide 3/4 right, at 0.95 only 2/4.
+query R
+SELECT decide_accuracy(p, y, 0.7) FROM (VALUES (0.9, true), (0.2, false), (0.7, true), (0.7, false)) AS t(p, y)
+----
+0.75
+
+query R
+SELECT decide_accuracy(p, y, 0.95) FROM (VALUES (0.9, true), (0.2, false), (0.7, true), (0.7, false)) AS t(p, y)
+----
+0.5
+
+# NULL threshold rows are skipped; bad thresholds are actionable errors.
+query R
+SELECT decide_accuracy(p, y, NULL) FROM (VALUES (0.9, true)) AS t(p, y)
+----
+NULL
+
+statement error
+SELECT decide_accuracy(p, y, 1.5) FROM (VALUES (0.9, true)) AS t(p, y)
+----
+<REGEX>:.*threshold.*
+
+statement error
+SELECT decide_accuracy(p, y, 'nan'::DOUBLE) FROM (VALUES (0.9, true)) AS t(p, y)
+----
+<REGEX>:.*threshold.*
+
+query R
+SELECT anofox_decide_accuracy(p, y, 0.7) FROM (VALUES (0.9, true), (0.2, false), (0.7, true), (0.7, false)) AS t(p, y)
+----
+0.75
+
+# Full-name aliases are behaviorally identical.
+query R
+SELECT anofox_decide_brier_score(p, y) FROM (VALUES (1.0, true), (0.0, false)) AS t(p, y)
+----
+0.0
+
+query R
+SELECT anofox_decide_ece(p, y) FROM (VALUES (1.0, true), (0.0, false)) AS t(p, y)
+----
+0.0
+
+query R
+SELECT anofox_decide_accuracy(p, y) FROM (VALUES (1.0, true), (0.0, false)) AS t(p, y)
+----
+1.0
+
+# BIGINT labels bind (CSV/Parquet/CASE norm); smaller ints widen implicitly.
+query R
+SELECT decide_brier_score(p::DOUBLE, y::BIGINT) FROM (VALUES (1.0, true), (0.0, false)) AS t(p, y)
+----
+0.0
+
+# Non-flat inputs must score like flat ones (F1: filter/join outputs can
+# arrive as dictionary vectors; a filtered scan was observed delivering
+# DICTIONARY_VECTOR to the label argument).
+statement ok
+CREATE TABLE dj(p, y) AS VALUES (1.0, true), (0.0, false), (1.0, true), (0.0, false)
+
+query R
+SELECT decide_brier_score(p, y) FROM dj WHERE y
+----
+0.0
+
+query R
+SELECT decide_accuracy(p, y) FROM dj WHERE y
+----
+1.0
+
+statement ok
+CREATE TABLE dj_p(p) AS VALUES (1.0), (0.0), (1.0), (0.0)
+
+statement ok
+CREATE TABLE dj_y(y) AS VALUES (true), (false), (true), (false)
+
+query R
+SELECT decide_brier_score(a.p, b.y) FROM dj_p a JOIN dj_y b ON a.rowid = b.rowid
+----
+0.0
+
+query R
+SELECT decide_accuracy(a.p, b.y) FROM dj_p a JOIN dj_y b ON a.rowid = b.rowid
+----
+1.0
+
+query R
+SELECT decide_ece(a.p, b.y) FROM dj_p a JOIN dj_y b ON a.rowid = b.rowid
+----
+0.0

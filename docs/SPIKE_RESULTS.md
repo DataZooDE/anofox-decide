@@ -19,8 +19,14 @@ User asked for Supersonic Labs Julia 1, Laya, Kev, NanoJev. Research 28 Sept 202
 
 Decision: local provider loads an ONNX-exported open decision model via ONNX Runtime (tabfm `cmake/ort.cmake` pattern: prebuilt archive for debug, vcpkg static ORT for release single-file). Registry accepts model IDs `julia-1`, `laya`, `kev`, `nanojev` plus explicit revision pins.
 
+## Verified wire facts (28 Sept 2026, from API docs + offline hermetic tests)
+
+- Request: `{"state", "model", "questions": {id: {"type": "noul", "instructions", ...} | {"type": "choice", "instructions", "criteria": {opt: null, ...}}}}` — choice options travel as a **criteria map**, not an array (max 255).
+- Response: `{"model": "<versioned-id>", "answers": {id: {"type": "noul", "noul": p} | {"type": "choice", "choice", "probabilities", "confidence"}}, "usage": {...}}`.
+- Errors: 401 (key) / 422 (validation) never retried; 429 / 529 / 5xx retried with bounded backoff honoring Retry-After.
+- **Offline env finding:** this machine has no outbound HTTPS (dead proxy, no DNS) — live E2E is committed as `test/sql/decide_remote_live.test` + `make test-live` but stays RED-blocked on network. Hermetic coverage (request/response mapping, retry counts, 401-no-retry, key redaction, auth header) is green in Catch2 `[remote]`.
+
 ## Consequences for the build
 
-- Stub stage (this commit): deterministic `stub` provider, no network, no weights — SQL surface + harness go green first.
-- Plan step 4: remote provider needs `httplib` (already in DuckDB tree) + DuckDB secrets-manager integration; `anofox_decide_allow_remote=false` default.
-- Plan step 5: local NLI needs ORT wiring + `test/fixtures/` weight-free ONNX fixture + license-gated download (tabfm WS-D pattern).
+- Remote provider: DuckDB-bundled `httplib` + `yyjson` only, system OpenSSL linked by the extension (no vcpkg). Key from `TYPESAFE_API_KEY` env (or `anofox_decide_api_key` setting override); `anofox_decide_allow_remote=false` default; key never logged.
+- Local NLI: `tools/export_julia` scaffold (mirrors tabfm `tools/export_onnx`); C++ ORT side pending network (inspect → export → parity → fixture). No weights in repo (license wall).

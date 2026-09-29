@@ -1,0 +1,65 @@
+# name: test/sql/decide_local.test
+# description: Local NLI over the committed tiny fixture (julia1_tiny.onnx +
+#              tiny_tokenizer.json). Random-init weights: asserts the typed
+#              contract (finite probabilities, valid choices, determinism),
+#              never specific values. Real-model values live in the gated
+#              Catch2 test (JULIA_ONNX + JULIA_WEIGHTS_DIR).
+# group: [anofox_decide]
+
+require anofox_decide
+
+statement ok
+LOAD anofox_decide
+
+# Local registration needs a graph path.
+statement error
+SELECT decide_register_model('nolocal', 'local')
+----
+<REGEX>:.*graph path.*
+
+query I
+SELECT decide_register_model('tiny-local', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json')
+----
+1
+
+query I
+SELECT count(*) FROM decide_models() WHERE model='tiny-local' AND provider='local' AND mode='local'
+----
+1
+
+# Binary proposition: finite probability in [0,1].
+query I
+SELECT (p IS NOT NULL AND p >= 0.0 AND p <= 1.0)::INTEGER FROM (
+  SELECT decide_probability('The bill is wrong.', 'A refund is requested.', model := 'tiny-local') AS p
+)
+----
+1
+
+# Choice: top option is one of the options.
+query I
+SELECT (team IN ('billing','defect','other'))::INTEGER FROM (
+  SELECT decide_choice('The bill is wrong.', 'Primary issue?', ['billing','defect','other'], model := 'tiny-local') AS team
+)
+----
+1
+
+# Batch: non-NULL JSON back, one request.
+query I
+SELECT (decide_many('The bill is wrong.', '[{"id":"refund","kind":"binary","instruction":"A refund is requested."},{"id":"dept","kind":"choice","instruction":"Team?","options":["billing","other"]}]', model := 'tiny-local') IS NOT NULL)::INTEGER
+----
+1
+
+# Deterministic: same call twice gives the same probability.
+query I
+SELECT (a = b)::INTEGER FROM (
+  SELECT decide_probability('The bill is wrong.', 'A refund is requested.', model := 'tiny-local') AS a,
+         decide_probability('The bill is wrong.', 'A refund is requested.', model := 'tiny-local') AS b
+)
+----
+1
+
+# Local enforces the upstream 2..20 option rule.
+statement error
+SELECT decide_choice('x', 'y?', ['only-one'], model := 'tiny-local')
+----
+<REGEX>:.*2\.\.20.*

@@ -1,0 +1,58 @@
+# name: test/sql/decide_remote_live.test
+# description: LIVE TypeSafe E2E (DoD gate). Requires TYPESAFE_API_KEY in the
+#              environment, anofox_decide_allow_remote=true, and outbound
+#              HTTPS to api.typesafe.ai. NOT part of the default suite: run via
+#              `make test-live` (skips explicitly without a key, never
+#              fake-green). RED until the remote provider lands.
+# group: [anofox_decide]
+
+require anofox_decide
+
+statement ok
+LOAD anofox_decide
+
+statement ok
+SET anofox_decide_allow_remote=true
+
+statement ok
+SELECT decide_register_model('jev-latest', 'typesafe')
+
+# Binary proposition over the live model: a finite probability in [0,1].
+# (Exact values drift with model versions; semantic spot-checks belong in
+# calibration reports, not in this gate.)
+query I
+SELECT (p IS NOT NULL AND p >= 0.0 AND p <= 1.0)::INTEGER FROM (
+  SELECT decide_probability('The customer explicitly asks for a refund.', 'A refund is requested.', model := 'jev-latest') AS p
+)
+----
+1
+
+# Exclusive choice over the live model: top option is one of the options.
+query I
+SELECT (team IN ('billing','defect','other'))::INTEGER FROM (
+  SELECT decide_choice('My invoice charges twice the agreed amount.', 'Which team owns this?', ['billing','defect','other'], model := 'jev-latest') AS team
+)
+----
+1
+
+# Batch over the live model: one request, non-NULL JSON batch back.
+query I
+SELECT (decide_many('The bill is wrong and this is urgent.', '[{"id":"refund","kind":"binary","instruction":"A refund is requested."},{"id":"urgent","kind":"binary","instruction":"The case needs urgent handling."}]', model := 'jev-latest') IS NOT NULL)::INTEGER
+----
+1
+
+# Realistic labelled tickets (test/fixtures/support_tickets.csv): the remote
+# model must actually discriminate, not merely return in-range numbers.
+query I
+SELECT decide_accuracy(decide_probability(text, 'A refund is requested.', model := 'jev-latest'), refund, 0.5) >= 0.9
+FROM read_csv('test/fixtures/support_tickets.csv')
+----
+true
+
+query I
+SELECT count(*) >= 6 FROM (
+  SELECT team, decide_choice(text, 'Which team owns this?', ['billing','defect','other'], model := 'jev-latest') AS got
+  FROM read_csv('test/fixtures/support_tickets.csv')
+) WHERE got = team
+----
+true

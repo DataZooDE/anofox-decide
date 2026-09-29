@@ -1,0 +1,167 @@
+# name: test/sql/decide_table.test
+# description: Relation-oriented table function (BRD section 5, Next scope).
+#              decide_table(state, questions_json[, model]) returns one typed
+#              row per question in input order: the relational twin of the
+#              decide_many batch JSON. Same validation contract, same providers.
+# group: [anofox_decide]
+
+require anofox_decide
+
+statement ok
+LOAD anofox_decide
+
+# One row per question, input order preserved, stub answers deterministic.
+query TTRTRT
+SELECT question_id, kind, probability, choice, confidence, model FROM decide_table(
+  'The bill is wrong and I want my money back.',
+  '[{"id":"refund","kind":"binary","instruction":"A refund is requested."},
+    {"id":"team","kind":"choice","instruction":"Owning team?","options":["billing","other"]}]',
+  'stub')
+----
+refund	binary	0.5	NULL	NULL	stub
+team	choice	1.0	billing	NULL	stub
+
+# Choice probability is the top-option probability (sums to one over options).
+query I
+SELECT (probability = 1.0)::INTEGER FROM decide_table(
+'x', '[{"id":"t","kind":"choice","instruction":"T?","options":["a","b"]}]', 'stub')
+----
+1
+
+# 2-arg form uses the anofox_decide_model default.
+statement ok
+SET anofox_decide_model='stub'
+
+query II
+SELECT question_id, model FROM decide_table(
+  'x', '[{"id":"q","kind":"binary","instruction":"Y?"}]')
+----
+q	stub
+
+# NULL state or NULL questions scan zero rows (scalar NULL-to-NULL analog).
+query I
+SELECT count(*) FROM decide_table(NULL, '[{"id":"q","kind":"binary","instruction":"Y?"}]', 'stub')
+----
+0
+
+query I
+SELECT count(*) FROM decide_table('x', NULL, 'stub')
+----
+0
+
+# Validation errors name decide_table and stay actionable.
+statement error
+SELECT * FROM decide_table('x', 'not json', 'stub')
+----
+<REGEX>:.*decide_table.*
+
+statement error
+SELECT * FROM decide_table('x', '[]', 'stub')
+----
+<REGEX>:.*decide_table.*empty question list.*
+
+statement error
+SELECT * FROM decide_table('x', '[{"id":"q","kind":"binary","instruction":"A"},{"id":"q","kind":"binary","instruction":"B"}]', 'stub')
+----
+<REGEX>:.*decide_table: duplicate question id.*
+
+statement error
+SELECT * FROM decide_table('x', '[{"id":"q","kind":"mystery","instruction":"A"}]', 'stub')
+----
+<REGEX>:.*decide_table.*unsupported kind.*
+
+statement error
+SELECT * FROM decide_table('x', '[{"id":"q","kind":"choice","instruction":"A"}]', 'stub')
+----
+<REGEX>:.*decide_table.*non-empty 'options'.*
+
+# Unknown models fail with an error that names the fix.
+statement error
+SELECT * FROM decide_table('x', '[{"id":"q","kind":"binary","instruction":"Y?"}]', 'nope')
+----
+<REGEX>:.*unknown model.*
+
+# Local provider scores through the table surface (finite probs, valid choice).
+query I
+SELECT decide_register_model('tiny-tab', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json')
+----
+1
+
+query I
+SELECT (probability >= 0.0 AND probability <= 1.0)::INTEGER FROM decide_table(
+  'The bill is wrong.', '[{"id":"r","kind":"binary","instruction":"A refund is requested."}]', 'tiny-tab')
+----
+1
+
+query I
+SELECT (choice IN ('billing','other'))::INTEGER FROM decide_table(
+'The bill is wrong.', '[{"id":"t","kind":"choice","instruction":"Team?","options":["billing","other"]}]', 'tiny-tab')
+----
+1
+
+# Full-name alias is behaviorally identical.
+query II
+SELECT question_id, model FROM anofox_decide_table(
+  'x', '[{"id":"q","kind":"binary","instruction":"Y?"}]', 'stub')
+----
+q	stub
+
+# model := named parameter works on constant calls.
+query II
+SELECT question_id, model FROM decide_table(
+  'x', '[{"id":"q","kind":"binary","instruction":"Y?"}]', model := 'stub')
+----
+q	stub
+
+# ...and laterally (it rides the positional slot there).
+query II
+SELECT dt.question_id, dt.model FROM
+  (VALUES ('x')) t(s),
+  LATERAL (SELECT * FROM decide_table(t.s, '[{"id":"q","kind":"binary","instruction":"Y?"}]', model := 'stub')) dt
+----
+q	stub
+
+# Per-row lateral scoring (Q3): correlated state scores every outer row.
+query TR
+SELECT t.s, dt.probability FROM
+  (VALUES ('The bill is wrong.'), ('Refund now.')) t(s),
+  LATERAL (SELECT * FROM decide_table(t.s, '[{"id":"q","kind":"binary","instruction":"Y?"}]', 'stub')) dt
+ORDER BY t.s
+----
+Refund now.	0.5
+The bill is wrong.	0.5
+
+# Correlated questions prove per-row evaluation (not first-row constant).
+query I
+SELECT dt.question_id FROM
+  (VALUES ('[{"id":"q1","kind":"binary","instruction":"A?"}]'),
+          ('[{"id":"q2","kind":"binary","instruction":"B?"}]')) t(q),
+  LATERAL (SELECT * FROM decide_table('x', t.q, 'stub')) dt
+ORDER BY dt.question_id
+----
+q1
+q2
+
+# Correlated model and the 2-arg default form work laterally too.
+query II
+SELECT t.m, dt.model FROM
+  (VALUES ('stub'), ('tiny-tab')) t(m),
+  LATERAL (SELECT * FROM decide_table('x', '[{"id":"q","kind":"binary","instruction":"Y?"}]', t.m)) dt
+ORDER BY t.m
+----
+stub	stub
+tiny-tab	tiny-tab
+
+query I
+SELECT count(*) FROM
+  (VALUES ('a'), ('b')) t(s),
+  LATERAL (SELECT * FROM decide_table(t.s, '[{"id":"q","kind":"binary","instruction":"Y?"}]')) dt
+----
+2
+
+# Spillover: 2100 lateral rows exceed one output chunk (2048) and resume.
+query I
+SELECT count(*) FROM range(2100) r,
+  LATERAL (SELECT * FROM decide_table('x ' || r.range::VARCHAR, '[{"id":"q","kind":"binary","instruction":"Y?"}]', 'stub')) dt
+----
+2100

@@ -1,0 +1,66 @@
+# name: test/sql/decide_local_access.test
+# description: File-access enforcement for local models (F4). Graph and
+#              tokenizer paths are validated through DuckDB's filesystem at
+#              registration (fail fast) and read through it at load, so
+#              enable_external_access / allowed_paths / allowed_directories
+#              apply exactly as for read_csv. Order matters below: external
+#              access cannot be re-enabled once disabled.
+# group: [anofox_decide]
+
+require anofox_decide
+
+statement ok
+LOAD anofox_decide
+
+# Baseline: fixture model registers and scores with access on.
+query I
+SELECT decide_register_model('acc-base', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json')
+----
+1
+
+query I
+SELECT (decide_probability('The bill is wrong.', 'A refund is requested.', model := 'acc-base') BETWEEN 0.0 AND 1.0)::INTEGER
+----
+1
+
+# Fail fast: missing files error at registration, not at first score.
+statement error
+SELECT decide_register_model('acc-missing', 'local', 'no/such/model.onnx', 'no/such/tokenizer.json')
+----
+<REGEX>:.*decide_register_model.*cannot open.*
+
+# Registered while open, never scored: used for the load-time check below.
+query I
+SELECT decide_register_model('acc-defer', 'local', 'README.md', 'test/fixtures/tiny_tokenizer.json')
+----
+1
+
+# Allowlist the fixtures, then lock down.
+statement ok
+SET allowed_directories=['test/fixtures']
+
+statement ok
+SET enable_external_access=false
+
+# Allowlisted fixture still registers and scores with access off.
+query I
+SELECT decide_register_model('acc-allow', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json')
+----
+1
+
+query I
+SELECT (decide_probability('The bill is wrong.', 'A refund is requested.', model := 'acc-allow') BETWEEN 0.0 AND 1.0)::INTEGER
+----
+1
+
+# Outside the allowlist: refused at registration (same gate as read_csv).
+statement error
+SELECT decide_register_model('acc-deny', 'local', 'README.md', 'test/fixtures/tiny_tokenizer.json')
+----
+<REGEX>:.*disabled by configuration.*
+
+# Load-time enforcement: registered while open, first scored after lockdown.
+statement error
+SELECT decide_probability('The bill is wrong.', 'A refund is requested.', model := 'acc-defer')
+----
+<REGEX>:.*disabled by configuration.*

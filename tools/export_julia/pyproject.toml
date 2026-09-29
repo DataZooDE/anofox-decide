@@ -1,0 +1,52 @@
+# tools/export_julia: Julia-1 -> ONNX exporter (mirrors ../anofox-tabfm/tools/export_onnx).
+#
+# Pipeline (tabfm S01 pattern):
+#   1. inspect  - dump the HF model card/arch into a pinned spec (needs network once)
+#   2. export   - torch -> ONNX graph + tensor-name map (+ safetensors weights)
+#   3. parity   - ORT outputs vs torch reference on fixed seeds (tests/)
+#   4. fixture  - weight-free tiny graph for test/fixtures (license-clean CI)
+#
+#   uv sync
+#   uv run export_julia inspect --out ./out/julia-1-spec.json
+#   uv run export_julia --config tiny --out ./out
+#   uv run pytest
+#
+# torch resolves from the PyTorch CPU index so no CUDA wheels are pulled.
+[project]
+name = "export-julia"
+version = "0.1.0"
+description = "anofox-decide exporter: SupersonicLabs/Julia-1 decision model -> ONNX + tensor map"
+requires-python = ">=3.11"
+dependencies = [
+    "torch==2.12.1",
+    "onnx>=1.17",
+    "onnxruntime>=1.20",
+    "numpy",
+    "safetensors",
+    "transformers",
+    "huggingface_hub",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[project.scripts]
+export_julia = "export_julia.cli:main"
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/export_julia"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

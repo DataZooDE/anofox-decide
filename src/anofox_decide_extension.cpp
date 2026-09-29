@@ -15,6 +15,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 	anofox::RegisterDecideProvider(loader);
 	anofox::RegisterDecideScalars(loader);
 	anofox::RegisterDecideTableFunctions(loader);
+	anofox::RegisterDecideMetrics(loader);
+	anofox::RegisterDecideSecret(loader);
 }
 
 void AnofoxDecideExtension::Load(ExtensionLoader &loader) {

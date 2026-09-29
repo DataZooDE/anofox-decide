@@ -1,0 +1,13 @@
+{
+  "inputs": [
+    "input_ids",
+    "attention_mask",
+    "marker_pos",
+    "marker_mask",
+    "qtype"
+  ],
+  "outputs": [
+    "scores"
+  ],
+  "masked_fill": -10000.0
+}
