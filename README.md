@@ -37,7 +37,9 @@ Trust note: `TYPESAFE_API_KEY` attaches only to the default endpoint
 secret or the explicit setting, and cleartext `http://` works for
 loopback hosts only.
 
-Local NLI (Julia-1, fully offline after setup):
+## Local models
+
+Julia-1, fully offline after setup:
 
 ```sql
 SELECT decide_register_model('julia-1', 'local', '<path>/julia1.onnx', '<path>/tokenizer/tokenizer.json');
@@ -90,28 +92,52 @@ benchmark: evaluate on your own data.
 
 ## Status
 
-Providers: `stub` (deterministic) + `typesafe` remote (DuckDB-bundled httplib/yyjson, no vcpkg)
-+ `local` Julia-1 (ORT + hand-ported BPE tokenizer, collation mirrors `julia/data.py`).
-See [docs/SPIKE_RESULTS.md](docs/SPIKE_RESULTS.md) for the pinned contracts,
-[docs/julia-1-spec.json](docs/julia-1-spec.json) for the pinned model spec, and
-[docs/CALIBRATION_PERF.md](docs/CALIBRATION_PERF.md) for the calibration/perf
-report (BRD §6: recipes, measured stub + fixture numbers, reliability notes).
+Early (0.1): the SQL surface, remote and local providers, calibration
+metrics and CI are working. What you can use today:
+
+| Provider | Models | Questions | Runs where |
+|---|---|---|---|
+| `stub` | deterministic placeholder (0.5 / first option) | `binary`, `choice` | in-process, for tests and demos |
+| `typesafe` (remote) | Jev (`jev-latest`), or any server speaking TypeSafe's `/v1/systemone`, e.g. [Kev](https://github.com/jaredpalmer/kev) | `binary`, `choice` | API call; opt-in via `anofox_decide_allow_remote` |
+| `local` (ONNX Runtime) | Julia-1, Laya multilingual, Laya typed-decisions (profiles `julia-1`, `laya`) | `binary`, `choice` | in-process on CPU, fully offline after setup |
+
+Not supported yet: `score` (ordinal) questions, GPU execution, and the
+Von model (needs order-invariant attention in the export).
+
+Which local model to pick: Laya multilingual matched Jev on our 8-ticket
+smoke test and Julia-1 did not (see the table above), so it is the
+recommended local model. Model weights are not shipped in the repo; see
+[Local models](#local-models) for setup.
+
+CI builds and tests Linux (amd64, arm64), macOS (arm64) and Windows (amd64)
+on every push, then smoke-tests the shipped `.duckdb_extension` in the stock
+DuckDB CLI. Releases (`v*` tags) upload through the deploy workflow once the
+org's AWS role trusts this repository.
+
+Further reading: [docs/SPIKE_RESULTS.md](docs/SPIKE_RESULTS.md) (provider
+contracts), [docs/julia-1-spec.json](docs/julia-1-spec.json) (pinned Julia-1
+spec), [docs/CALIBRATION_PERF.md](docs/CALIBRATION_PERF.md) (calibration and
+performance), [docs/REVIEW_FOLLOWUP.md](docs/REVIEW_FOLLOWUP.md) (review
+decisions and the model investigations).
 
 ## Build & test
 
+Clone with submodules (`git clone --recurse-submodules`), then:
+
 ```bash
-make release VCPKG_TOOLCHAIN_PATH= CMAKE_PREFIX_PATH=<ort-install>
-# e.g. CMAKE_PREFIX_PATH=../anofox-tabfm/build/release/vcpkg_installed/x64-linux
-# (vcpkg disabled: this sandbox has no vcpkg write; ORT comes from a package
-# or the cmake/ort.cmake prebuilt download)
-make test_debug                      # offline suite: contract + registry + local + decision + table + calibration + remote-config + Catch2
-make test-live                       # live TypeSafe E2E; explicit SKIP without TYPESAFE_API_KEY
-./build/release/test/unittest test/sql/decide_contract.test   # single file
+make release                          # release build; ONNX Runtime built via vcpkg (first build is slow)
+make release DECIDE_ORT_VCPKG=0 CMAKE_PREFIX_PATH=<ort-install>   # faster local build against an existing ONNX Runtime
+make test_release                     # offline suite: SQL tests + Catch2 (no network, no weights)
+make test-live                        # live TypeSafe E2E; explicit SKIP without TYPESAFE_API_KEY
+./build/release/test/unittest test/sql/decide_contract.test       # a single file
 ```
 
-Gated (need weights/network, WARN-and-pass without): Catch2 `[tokenizer]` goldens
-(`JULIA_WEIGHTS_DIR`, `LAYA_TYPED_DIR`), `[local]` real graphs (`JULIA_ONNX`,
-`LAYA_MULTILINGUAL_DIR` + `LAYA_ONNX`, `LAYA_TYPED_DIR` + `LAYA_TYPED_ONNX`), export pytest
-(`tools/export_julia`: `JULIA_WEIGHTS_DIR`/`JULIA_SRC_MODEL`/`JULIA_ONNX`).
+Some tests need model weights or network and warn-and-pass without them:
+Catch2 `[tokenizer]` goldens (`JULIA_WEIGHTS_DIR`, `LAYA_TYPED_DIR`), `[local]`
+real graphs (`JULIA_ONNX`, `LAYA_MULTILINGUAL_DIR` + `LAYA_ONNX`,
+`LAYA_TYPED_DIR` + `LAYA_TYPED_ONNX`), and the export pytest in
+`tools/export_julia` (`JULIA_WEIGHTS_DIR`, `JULIA_SRC_MODEL`, `JULIA_ONNX`).
+Run the suite with `TYPESAFE_API_KEY` unset, as CI does, so tests do not
+depend on your own key.
 
 Tests always run with `DATAZOO_DISABLE_TELEMETRY=1` (Makefile does this).
