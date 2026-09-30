@@ -1,0 +1,100 @@
+# name: test/sql/decide_remote_providers.test
+# description: Remote provider profiles (typesafe, liquid, systemone) and the
+#              per-model options MAP. Registration and key/gate behaviour
+#              only: hermetic, no network. Run with no API keys set.
+# group: [anofox_decide]
+
+require anofox_decide
+
+statement ok
+LOAD anofox_decide
+
+# Jev and Liquid D1 register side by side (no SET between them needed).
+query I
+SELECT decide_register_model('jev-latest', 'typesafe')
+----
+1
+
+query I
+SELECT decide_register_model('d1:free', 'liquid')
+----
+1
+
+query TT
+SELECT provider, mode FROM decide_models() WHERE model IN ('jev-latest', 'd1:free') ORDER BY model
+----
+liquid	remote
+typesafe	remote
+
+# The generic System One provider needs an endpoint, and accepts a loopback one.
+statement error
+SELECT decide_register_model('kev-noendpoint', 'systemone')
+----
+<REGEX>:.*needs an endpoint.*
+
+query I
+SELECT decide_register_model('kev-latest', 'systemone', MAP {'endpoint': 'http://127.0.0.1:8009', 'key_env': 'KEV_TEST_KEY'})
+----
+1
+
+# Options can pick a different wire model / path / endpoint for a known provider.
+query I
+SELECT decide_register_model('d1-alias', 'liquid', MAP {'model': 'd1:free', 'path': '/decisions/v1/systemone'})
+----
+1
+
+# Cleartext http to a non-loopback host is refused at registration.
+statement error
+SELECT decide_register_model('bad-http', 'liquid', MAP {'endpoint': 'http://api.liquid.ai'})
+----
+<REGEX>:.*non-loopback.*
+
+statement error
+SELECT decide_register_model('bad-path', 'liquid', MAP {'path': 'no-leading-slash'})
+----
+<REGEX>:.*path must start with '/'.*
+
+statement error
+SELECT decide_register_model('bad-opt', 'liquid', MAP {'colour': 'blue'})
+----
+<REGEX>:.*unknown option 'colour'.*endpoint, path, model, key_env.*
+
+# Options only apply to remote providers.
+statement error
+SELECT decide_register_model('opt-local', 'stub', MAP {'endpoint': 'https://x.example'})
+----
+<REGEX>:.*only apply to remote providers.*
+
+# Unknown providers list the supported ones, including the new remote ones.
+statement error
+SELECT decide_register_model('nope', 'openai')
+----
+<REGEX>:.*not supported.*liquid.*systemone.*
+
+# Calls stay behind the explicit allow_remote opt-in.
+statement error
+SELECT decide_probability('x', 'y', model := 'd1:free')
+----
+<REGEX>:.*(remote evaluation is disabled|no API key).*
+
+# With no key anywhere the error names the provider's own variable and the
+# secret recipe (hermetic: env LIQUID_API_KEY is unset in CI).
+statement ok
+SET anofox_decide_allow_remote=true
+
+statement error
+SELECT decide_probability('x', 'y', model := 'd1:free')
+----
+<REGEX>:.*Liquid AI.*(LIQUID_API_KEY|CREATE SECRET).*
+
+# A stored secret scoped to Liquid's host is never used for another provider's
+# host: the typesafe model still has no key. (The positive case, a secret
+# satisfying the D1 lookup, is covered with the real resolver in the Catch2
+# [remote] tests.)
+statement ok
+CREATE SECRET liquid_test (TYPE anofox_decide, API_KEY 'sk-not-real', SCOPE 'api.liquid.ai')
+
+statement error
+SELECT decide_probability('x', 'y', model := 'jev-latest')
+----
+<REGEX>:.*no API key for the TypeSafe provider.*

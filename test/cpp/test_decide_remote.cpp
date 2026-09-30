@@ -1,5 +1,10 @@
 #include "catch.hpp"
+#include "anofox_decide_extension.hpp"
 #include "decide_remote.hpp"
+
+#include "duckdb.hpp"
+
+#include <cstdlib>
 
 using namespace duckdb;
 using namespace duckdb::anofox;
@@ -237,5 +242,205 @@ TEST_CASE("endpoint hardening is pure and strict", "[anofox_decide][remote]") {
 		REQUIRE_FALSE(DecideHostIsLoopback("attacker.example"));
 		REQUIRE_FALSE(DecideHostIsLoopback("127.0.0.1.evil.example"));
 		REQUIRE_FALSE(DecideHostIsLoopback("128.0.0.1"));
+	}
+}
+
+// --- Remote provider profiles (typesafe / liquid / systemone) ---------------
+
+namespace {
+
+void SetEnv(const char *name, const char *value) {
+#ifdef _WIN32
+	_putenv_s(name, value ? value : "");
+#else
+	if (value) {
+		setenv(name, value, 1);
+	} else {
+		unsetenv(name);
+	}
+#endif
+}
+
+// Sets env vars for one test and clears them afterwards.
+struct EnvGuard {
+	explicit EnvGuard(std::vector<std::pair<const char *, const char *>> vars) : vars(std::move(vars)) {
+		for (auto &kv : this->vars) {
+			SetEnv(kv.first, kv.second);
+		}
+	}
+	~EnvGuard() {
+		for (auto &kv : vars) {
+			SetEnv(kv.first, nullptr);
+		}
+	}
+	std::vector<std::pair<const char *, const char *>> vars;
+};
+
+DecideRemoteTarget Target(const char *provider, const char *endpoint = "") {
+	DecideRemoteTarget t;
+	t.provider = provider;
+	t.endpoint = endpoint;
+	t.wire_model = "m";
+	return t;
+}
+
+} // namespace
+
+TEST_CASE("remote provider profiles are the single source of truth", "[anofox_decide][remote]") {
+	auto liquid = DecideFindRemoteProfile("liquid");
+	REQUIRE(liquid != nullptr);
+	REQUIRE(string(liquid->path) == "/decisions/v1/systemone");
+	REQUIRE(string(liquid->default_endpoint) == "https://api.liquid.ai");
+	REQUIRE(string(liquid->env_key) == "LIQUID_API_KEY");
+	REQUIRE(DecideFindRemoteProfile("typesafe") != nullptr);
+	REQUIRE(DecideFindRemoteProfile("systemone") != nullptr);
+	REQUIRE(DecideFindRemoteProfile("local") == nullptr);
+	REQUIRE(DecideFindRemoteProfile("nope") == nullptr);
+	REQUIRE_THAT(DecideRemoteProviderList(), Contains("'liquid'"));
+
+	SECTION("env keys attach only to the profile's own default host") {
+		REQUIRE(DecideProfileTakesEnvKey(*liquid, "api.liquid.ai"));
+		REQUIRE_FALSE(DecideProfileTakesEnvKey(*liquid, "api.typesafe.ai"));
+		REQUIRE_FALSE(DecideProfileTakesEnvKey(*liquid, "api.liquid.ai.evil.example"));
+		auto typesafe = DecideFindRemoteProfile("typesafe");
+		REQUIRE_FALSE(DecideProfileTakesEnvKey(*typesafe, "api.liquid.ai"));
+		// The generic profile has no default host and no env key.
+		REQUIRE_FALSE(DecideProfileTakesEnvKey(*DecideFindRemoteProfile("systemone"), "127.0.0.1"));
+	}
+	SECTION("per-model endpoints follow the same hardening as the setting") {
+		REQUIRE_NOTHROW(DecideValidateEndpoint("https://api.liquid.ai", "e"));
+		REQUIRE_NOTHROW(DecideValidateEndpoint("http://127.0.0.1:8009", "e"));
+		REQUIRE_THROWS_WITH(DecideValidateEndpoint("http://api.liquid.ai", "e"), Contains("non-loopback"));
+		REQUIRE_THROWS_WITH(DecideValidateEndpoint("ftp://x", "e"), Contains("https:// or http://"));
+		REQUIRE_THROWS_WITH(DecideValidateEndpoint("https://x/v1", "e"), Contains("without a path"));
+	}
+}
+
+TEST_CASE("remote key resolution: env var works, stored secret always wins", "[anofox_decide][remote]") {
+	DuckDB db(nullptr);
+	db.LoadStaticExtension<AnofoxDecideExtension>();
+	Connection con(db);
+	auto &ctx = *con.context;
+	EnvGuard clean({{"LIQUID_API_KEY", nullptr}, {"TYPESAFE_API_KEY", nullptr}, {"MY_TEST_KEY", nullptr}});
+
+	SECTION("liquid: defaults, env var alone is enough") {
+		SetEnv("LIQUID_API_KEY", "env-liquid");
+		auto cfg = DecideResolveConfig(ctx, Target("liquid"));
+		REQUIRE(cfg.host == "api.liquid.ai");
+		REQUIRE(cfg.path == "/decisions/v1/systemone");
+		REQUIRE(cfg.ssl);
+		REQUIRE(cfg.api_key == "env-liquid");
+		REQUIRE(cfg.model == "m");
+	}
+	SECTION("a stored secret overrides the env var, scoped to its host") {
+		SetEnv("LIQUID_API_KEY", "env-liquid");
+		SetEnv("TYPESAFE_API_KEY", "env-typesafe");
+		REQUIRE_FALSE(con.Query("CREATE SECRET s1 (TYPE anofox_decide, API_KEY 'secret-liquid', SCOPE 'api.liquid.ai')")
+		                  ->HasError());
+		REQUIRE(DecideResolveConfig(ctx, Target("liquid")).api_key == "secret-liquid");
+		// The liquid-scoped secret never reaches the typesafe host.
+		REQUIRE(DecideResolveConfig(ctx, Target("typesafe")).api_key == "env-typesafe");
+	}
+	SECTION("no key anywhere: the error names the provider's env var and the secret recipe") {
+		REQUIRE_THROWS_WITH(DecideResolveConfig(ctx, Target("liquid")), Contains("LIQUID_API_KEY"));
+		REQUIRE_THROWS_WITH(DecideResolveConfig(ctx, Target("liquid")), Contains("CREATE SECRET"));
+		REQUIRE_THROWS_WITH(DecideResolveConfig(ctx, Target("typesafe")), Contains("TYPESAFE_API_KEY"));
+	}
+	SECTION("the profile env key is never sent to a redirected endpoint") {
+		SetEnv("LIQUID_API_KEY", "env-liquid");
+		REQUIRE_THROWS_WITH(DecideResolveConfig(ctx, Target("liquid", "https://other.example")),
+		                    Contains("no API key"));
+	}
+	SECTION("the legacy key setting is typesafe-only") {
+		REQUIRE_FALSE(con.Query("SET anofox_decide_api_key='legacy'")->HasError());
+		REQUIRE(DecideResolveConfig(ctx, Target("typesafe")).api_key == "legacy");
+		REQUIRE_THROWS_WITH(DecideResolveConfig(ctx, Target("liquid")), Contains("no API key"));
+	}
+	SECTION("generic systemone: endpoint required, key_env is an explicit opt-in") {
+		REQUIRE_THROWS_WITH(DecideResolveConfig(ctx, Target("systemone")), Contains("needs an endpoint"));
+		SetEnv("MY_TEST_KEY", "env-mine");
+		auto no_opt_in = Target("systemone", "http://127.0.0.1:8009");
+		REQUIRE_THROWS_WITH(DecideResolveConfig(ctx, no_opt_in), Contains("key_env"));
+		auto t = no_opt_in;
+		t.key_env = "MY_TEST_KEY";
+		auto cfg = DecideResolveConfig(ctx, t);
+		REQUIRE(cfg.api_key == "env-mine");
+		REQUIRE(cfg.host == "127.0.0.1");
+		REQUIRE(cfg.port == 8009);
+		REQUIRE_FALSE(cfg.ssl);
+		// A stored secret still overrides the env var.
+		REQUIRE_FALSE(con.Query("CREATE SECRET s2 (TYPE anofox_decide, API_KEY 'secret-mine', SCOPE '127.0.0.1')")
+		                  ->HasError());
+		REQUIRE(DecideResolveConfig(ctx, t).api_key == "secret-mine");
+	}
+	SECTION("typesafe keeps its legacy endpoint setting") {
+		SetEnv("TYPESAFE_API_KEY", "env-typesafe");
+		REQUIRE_FALSE(con.Query("SET anofox_decide_endpoint='http://localhost:9'")->HasError());
+		// The env key is not attached to a redirected endpoint...
+		REQUIRE_THROWS_WITH(DecideResolveConfig(ctx, Target("typesafe")), Contains("no API key"));
+		// ... an explicit key setting is.
+		REQUIRE_FALSE(con.Query("SET anofox_decide_api_key='legacy'")->HasError());
+		auto cfg = DecideResolveConfig(ctx, Target("typesafe"));
+		REQUIRE(cfg.host == "localhost");
+		// ... but a model's own endpoint wins over the setting.
+		REQUIRE(DecideResolveConfig(ctx, Target("typesafe", "https://api.typesafe.ai")).host == "api.typesafe.ai");
+	}
+	SECTION("cleartext http to a non-loopback host is refused") {
+		auto t = Target("systemone", "http://example.org");
+		t.key_env = "MY_TEST_KEY";
+		SetEnv("MY_TEST_KEY", "k");
+		REQUIRE_THROWS_WITH(DecideResolveConfig(ctx, t), Contains("cleartext"));
+	}
+}
+
+TEST_CASE("liquid requests hit the D1 path with a bearer key and the wire model", "[anofox_decide][remote]") {
+	DuckDB db(nullptr);
+	db.LoadStaticExtension<AnofoxDecideExtension>();
+	Connection con(db);
+	EnvGuard g({{"LIQUID_API_KEY", "env-liquid"}});
+	auto target = Target("liquid");
+	target.wire_model = "d1:free";
+	auto cfg = DecideResolveConfig(*con.context, target);
+	cfg.allow_remote = true;
+
+	string seen_host, seen_path, seen_auth, seen_body;
+	DecideHttpPost transport = [&](const string &host, int, bool, const string &path, const DecideHeaderList &headers,
+	                               const string &body, int) {
+		seen_host = host;
+		seen_path = path;
+		for (auto &h : headers) {
+			if (h.first == "Authorization") {
+				seen_auth = h.second;
+			}
+		}
+		seen_body = body;
+		DecideHttpResponse r;
+		r.transport_ok = true;
+		r.status = 200;
+		// Response captured from the live D1 API (model d1:free).
+		r.body = R"({"model":"d1:free","answers":{"refund":{"type":"noul","noul":0.9983}},"usage":{"input_tokens":160,"output_tokens":0}})";
+		return r;
+	};
+	auto answers = DecideRemoteEvaluateWithTransport(cfg, "I was charged twice.", {NoulQ()}, transport);
+	REQUIRE(seen_host == "api.liquid.ai");
+	REQUIRE(seen_path == "/decisions/v1/systemone");
+	REQUIRE(seen_auth == "Bearer env-liquid");
+	REQUIRE_THAT(seen_body, Contains("\"model\":\"d1:free\""));
+	REQUIRE(answers.size() == 1);
+	REQUIRE(answers[0].probability == Approx(0.9983));
+
+	SECTION("errors name the provider, not TypeSafe") {
+		DecideHttpPost unauthorized = [](const string &, int, bool, const string &, const DecideHeaderList &,
+		                                 const string &, int) {
+			DecideHttpResponse r;
+			r.transport_ok = true;
+			r.status = 401;
+			r.body = R"({"error":{"message":"Invalid API key provided.","type":"authentication_error"}})";
+			return r;
+		};
+		REQUIRE_THROWS_WITH(DecideRemoteEvaluateWithTransport(cfg, "s", {NoulQ()}, unauthorized),
+		                    Contains("Liquid AI rejected the API key"));
+		REQUIRE_THROWS_WITH(DecideRemoteEvaluateWithTransport(cfg, "s", {NoulQ()}, unauthorized),
+		                    Contains("LIQUID_API_KEY"));
 	}
 }

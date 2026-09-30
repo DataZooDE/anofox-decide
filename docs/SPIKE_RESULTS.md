@@ -30,3 +30,10 @@ Decision: local provider loads an ONNX-exported open decision model via ONNX Run
 
 - Remote provider: DuckDB-bundled `httplib` + `yyjson` only, system OpenSSL linked by the extension (no vcpkg). Key from `TYPESAFE_API_KEY` env (or `anofox_decide_api_key` setting override); `anofox_decide_allow_remote=false` default; key never logged.
 - Local NLI: `tools/export_julia` scaffold (mirrors tabfm `tools/export_onnx`); C++ ORT side pending network (inspect → export → parity → fixture). No weights in repo (license wall).
+
+## Liquid AI D1 (30 Sept 2026)
+
+Hosted System One-compatible API (`POST https://api.liquid.ai/decisions/v1/systemone`,
+model `d1:free`, Bearer key from `LIQUID_API_KEY`, no open weights). Wire format
+verified identical to TypeSafe's (see docs/REVIEW_FOLLOWUP.md); integrated as the
+`liquid` remote provider profile.

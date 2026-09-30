@@ -1,6 +1,7 @@
 #pragma once
 
-// DecideRemote — TypeSafe System One remote provider (plan step 4).
+// DecideRemote — System One remote providers (TypeSafe Jev, Liquid AI D1, any
+// compatible server).
 //
 // Uses DuckDB's bundled libraries only: cpp-httplib (third_party/httplib,
 // namespace duckdb_httplib_openssl) for HTTPS and yyjson
@@ -48,6 +49,31 @@ struct DecideAnswer {
 	string model;
 };
 
+// A remote provider profile: everything that differs between System One
+// compatible services (the wire format itself is shared). Single source of
+// truth for the provider whitelist, default endpoints and env-var keys.
+struct DecideRemoteProfile {
+	const char *name;             // provider id used by decide_register_model
+	const char *display;          // human name for error messages
+	const char *default_endpoint; // scheme://host[:port]; "" = the model must set endpoint
+	const char *path;             // API path
+	const char *env_key;          // env var holding the key; "" = none
+};
+// nullptr when `provider` is not a remote profile.
+const DecideRemoteProfile *DecideFindRemoteProfile(const string &provider);
+// Comma-separated remote provider ids, for error messages.
+string DecideRemoteProviderList();
+
+// Per-model remote target (from decide_register_model); empty fields fall
+// back to the profile, then (typesafe only) to the legacy session settings.
+struct DecideRemoteTarget {
+	string provider = "typesafe";
+	string endpoint;   // scheme://host[:port]
+	string path;
+	string wire_model; // model name on the wire (the registered id if empty)
+	string key_env;    // explicit env var to read the key from (any host)
+};
+
 struct DecideRemoteConfig {
 	string host = "api.typesafe.ai";
 	int port = 443;
@@ -58,6 +84,9 @@ struct DecideRemoteConfig {
 	int timeout_ms = 30000;
 	int max_retries = 3;
 	bool allow_remote = false;
+	// Only for error messages.
+	string display = "TypeSafe";
+	string env_key = "TYPESAFE_API_KEY";
 };
 
 // Transport-agnostic HTTP plumbing (injectable for hermetic tests).
@@ -95,13 +124,22 @@ bool DecideParseProxy(const string &proxy_url, string &host_out, int &port_out);
 // env key attaches only to the default host (an explicit session key works
 // anywhere), and cleartext http:// only talks to loopback hosts.
 bool DecideHostTakesEnvKey(const string &host);
+// Generalized: the profile's env key attaches only on the profile's own
+// default host (a redirected endpoint can never collect an operator's key).
+bool DecideProfileTakesEnvKey(const DecideRemoteProfile &profile, const string &host);
 bool DecideHostIsLoopback(const string &host);
+// Validate a per-model endpoint (scheme://host[:port], https or loopback http).
+// Throws an actionable error; used at registration and at resolve time.
+void DecideValidateEndpoint(const string &endpoint, const char *what);
 
-// Config from settings + environment. Throws when no key is configured
-// (names TYPESAFE_API_KEY and anofox_decide_api_key, never the key itself).
-// Does NOT enforce the allow_remote gate — DecideRemoteEvaluate does, so the
-// gate error and the key error stay distinguishable.
-DecideRemoteConfig DecideResolveConfig(ClientContext &context, const string &model);
+// Config for one model's target. Key precedence: a stored anofox_decide
+// secret for the host always wins; then the legacy anofox_decide_api_key
+// setting (typesafe provider only); then the target's explicit key_env; then
+// the profile's env var (default host only). Throws when no key is found,
+// naming the provider's env var, never the key itself. Does NOT enforce the
+// allow_remote gate — DecideRemoteEvaluate does, so the gate error and the
+// key error stay distinguishable.
+DecideRemoteConfig DecideResolveConfig(ClientContext &context, const DecideRemoteTarget &target);
 
 // Full round trip over an explicit transport (tests inject fakes).
 vector<DecideAnswer> DecideRemoteEvaluateWithTransport(const DecideRemoteConfig &cfg, const string &state,
@@ -109,7 +147,8 @@ vector<DecideAnswer> DecideRemoteEvaluateWithTransport(const DecideRemoteConfig 
                                                        const DecideHttpPost &transport);
 // Full round trip over DuckDB's bundled httplib (production path).
 vector<DecideAnswer> DecideRemoteEvaluate(ClientContext &context, const string &state,
-                                          const vector<DecideQuestion> &questions, const string &model);
+                                          const vector<DecideQuestion> &questions,
+                                          const DecideRemoteTarget &target);
 
 } // namespace anofox
 } // namespace duckdb

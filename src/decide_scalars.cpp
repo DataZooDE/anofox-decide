@@ -198,7 +198,9 @@ void DecideManyFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 }
 
-// decide_register_model(id[, provider[, graph_path[, tokenizer_path[, profile]]]]) -> BOOLEAN.
+// decide_register_model(id[, provider[, graph_path[, tokenizer_path[, profile]]]]) -> BOOLEAN,
+// or decide_register_model(id, provider, options MAP(VARCHAR, VARCHAR)) for
+// remote providers (keys: endpoint, path, model, key_env).
 void DecideRegisterModelFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	ClientContext &context = state.GetContext();
 	auto count = args.size();
@@ -212,6 +214,39 @@ void DecideRegisterModelFun(DataChunk &args, ExpressionState &state, Vector &res
 		string graph_path;
 		string tokenizer_path;
 		string profile;
+		DecideRegisterOptions options;
+		if (args.ColumnCount() == 3 && args.data[2].GetType().id() == LogicalTypeId::MAP) {
+			auto provider_v = args.data[1].GetValue(i);
+			auto map_v = args.data[2].GetValue(i);
+			if (provider_v.IsNull() || map_v.IsNull()) {
+				throw InvalidInputException("decide_register_model: provider and options cannot be NULL");
+			}
+			for (auto &entry : MapValue::GetChildren(map_v)) {
+				auto &kv = StructValue::GetChildren(entry);
+				if (kv[0].IsNull() || kv[1].IsNull()) {
+					throw InvalidInputException("decide_register_model: option keys and values cannot be NULL");
+				}
+				auto key = kv[0].ToString();
+				auto value = kv[1].ToString();
+				if (key == "endpoint") {
+					options.endpoint = value;
+				} else if (key == "path") {
+					options.path = value;
+				} else if (key == "model") {
+					options.wire_model = value;
+				} else if (key == "key_env") {
+					options.key_env = value;
+				} else {
+					throw InvalidInputException("decide_register_model: unknown option '%s' "
+					                            "(supported: endpoint, path, model, key_env)",
+					                            key);
+				}
+			}
+			DecideRegistry::Get(context)->RegisterModel(context, id_v.ToString(), provider_v.ToString(), "", "", "",
+			                                            options);
+			result.SetValue(i, Value::BOOLEAN(true));
+			continue;
+		}
 		const char *names[4] = {"provider", "graph path", "tokenizer path", "profile"};
 		for (idx_t a = 1; a < args.ColumnCount() && a <= 4; a++) {
 			auto v = args.data[a].GetValue(i);
@@ -313,6 +348,10 @@ void RegisterDecideScalars(ExtensionLoader &loader) {
 	reg.AddFunction(DecideScalar("decide_register_model",
 	                            {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
 	                             LogicalType::VARCHAR, LogicalType::VARCHAR},
+	                            LogicalType::BOOLEAN, DecideRegisterModelFun));
+	reg.AddFunction(DecideScalar("decide_register_model",
+	                            {LogicalType::VARCHAR, LogicalType::VARCHAR,
+	                             LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR)},
 	                            LogicalType::BOOLEAN, DecideRegisterModelFun));
 	loader.RegisterFunction(reg);
 

@@ -1,0 +1,75 @@
+# name: test/sql/decide_remote_live_liquid.test
+# description: LIVE Liquid AI D1 E2E. Requires LIQUID_API_KEY in the
+#              environment and outbound HTTPS to api.liquid.ai. NOT part of the
+#              default suite: run via `make test-live` (explicit SKIP without a
+#              key, never fake-green).
+# group: [anofox_decide]
+
+require anofox_decide
+
+statement ok
+LOAD anofox_decide
+
+statement ok
+SET anofox_decide_allow_remote=true
+
+statement ok
+SELECT decide_register_model('d1:free', 'liquid')
+
+# Key from the environment alone is enough.
+query I
+SELECT (p IS NOT NULL AND p >= 0.0 AND p <= 1.0)::INTEGER FROM (
+  SELECT decide_probability('The customer explicitly asks for a refund.', 'A refund is requested.', model := 'd1:free') AS p
+)
+----
+1
+
+# A stored secret always overrides the env var: a bogus stored key must make
+# the call fail with a 401 even though LIQUID_API_KEY is valid ...
+statement ok
+CREATE SECRET liquid_bogus (TYPE anofox_decide, API_KEY 'liquid_invalid', SCOPE 'api.liquid.ai')
+
+statement error
+SELECT decide_probability('x', 'y', model := 'd1:free')
+----
+<REGEX>:.*Liquid AI rejected the API key.*
+
+# ... and dropping it falls back to the env var.
+statement ok
+DROP SECRET liquid_bogus
+
+query I
+SELECT (decide_probability('The customer explicitly asks for a refund.', 'A refund is requested.', model := 'd1:free') > 0.5)::INTEGER
+----
+1
+
+# Exclusive choice: the top option is one of the options.
+query I
+SELECT (team IN ('billing','defect','other'))::INTEGER FROM (
+  SELECT decide_choice('My invoice charges twice the agreed amount.', 'Which team owns this?', ['billing','defect','other'], model := 'd1:free') AS team
+)
+----
+1
+
+# Batch: one request, non-NULL JSON back.
+query I
+SELECT (decide_many('The bill is wrong and this is urgent.', '[{"id":"refund","kind":"binary","instruction":"A refund is requested."},{"id":"urgent","kind":"binary","instruction":"The case needs urgent handling."}]', model := 'd1:free') IS NOT NULL)::INTEGER
+----
+1
+
+# Realistic labelled tickets (test/fixtures/support_tickets.csv): D1 must
+# actually discriminate, not merely return in-range numbers. Measured 8/8
+# refund and 8/8 team on 29 Sept 2026; floors leave room for one miss.
+query I
+SELECT decide_accuracy(decide_probability(text, 'A refund is requested.', model := 'd1:free'), refund, 0.5) >= 0.85
+FROM read_csv('test/fixtures/support_tickets.csv')
+----
+true
+
+query I
+SELECT count(*) >= 7 FROM (
+  SELECT team, decide_choice(text, 'Which team owns this?', ['billing','defect','other'], model := 'd1:free') AS got
+  FROM read_csv('test/fixtures/support_tickets.csv')
+) WHERE got = team
+----
+true

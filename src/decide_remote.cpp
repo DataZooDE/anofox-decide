@@ -65,9 +65,10 @@ string ValStr(yyjson_val *v) {
 }
 
 // Split "https://host:port" into host/port/ssl. Path prefixes are rejected:
-// the API path is fixed, so an endpoint with a path is a config error, not
-// something to silently reinterpret.
-void SplitEndpoint(const string &endpoint, string &host, int &port, bool &ssl) {
+// the API path is separate config, so an endpoint with a path is a config
+// error, not something to silently reinterpret. `what` names the offending
+// setting/option in messages.
+void SplitEndpoint(const string &endpoint, string &host, int &port, bool &ssl, const char *what) {
 	string rest;
 	if (endpoint.rfind("https://", 0) == 0) {
 		ssl = true;
@@ -78,15 +79,15 @@ void SplitEndpoint(const string &endpoint, string &host, int &port, bool &ssl) {
 		rest = endpoint.substr(7);
 		port = 80;
 	} else {
-		throw InvalidInputException("decide: anofox_decide_endpoint must start with https:// or http://, got '%s' "
-		                            "(SET anofox_decide_endpoint='https://api.typesafe.ai')",
-		                            endpoint);
+		throw InvalidInputException("decide: %s must start with https:// or http://, got '%s' "
+		                            "(e.g. https://api.typesafe.ai)",
+		                            what, endpoint);
 	}
 	auto slash = rest.find('/');
 	if (slash != string::npos) {
-		throw InvalidInputException("decide: anofox_decide_endpoint must be scheme://host[:port] without a path, "
-		                            "got '%s'",
-		                            endpoint);
+		throw InvalidInputException("decide: %s must be scheme://host[:port] without a path, got '%s' "
+		                            "(set the API path separately)",
+		                            what, endpoint);
 	}
 	auto colon = rest.find(':');
 	if (colon != string::npos) {
@@ -96,17 +97,69 @@ void SplitEndpoint(const string &endpoint, string &host, int &port, bool &ssl) {
 		host = rest;
 	}
 	if (host.empty()) {
-		throw InvalidInputException("decide: anofox_decide_endpoint has an empty host "
-		                            "(SET anofox_decide_endpoint='https://api.typesafe.ai')");
+		throw InvalidInputException("decide: %s has an empty host (e.g. https://api.typesafe.ai)", what);
 	}
 }
+
+// Remote provider profiles. The wire format (System One) is shared; only the
+// endpoint, path and key variable differ. Liquid D1 verified live against
+// POST https://api.liquid.ai/decisions/v1/systemone (model "d1:free").
+const DecideRemoteProfile kRemoteProfiles[] = {
+    {"typesafe", "TypeSafe", "https://api.typesafe.ai", "/v1/systemone", "TYPESAFE_API_KEY"},
+    {"liquid", "Liquid AI", "https://api.liquid.ai", "/decisions/v1/systemone", "LIQUID_API_KEY"},
+    // Generic System One-compatible server (e.g. Kev): the model supplies the endpoint.
+    {"systemone", "System One endpoint", "", "/v1/systemone", ""},
+};
 
 } // namespace
 
 //--- Endpoint hardening ------------------------------------------------------
 
+const DecideRemoteProfile *DecideFindRemoteProfile(const string &provider) {
+	for (auto &p : kRemoteProfiles) {
+		if (provider == p.name) {
+			return &p;
+		}
+	}
+	return nullptr;
+}
+
+string DecideRemoteProviderList() {
+	string out;
+	for (auto &p : kRemoteProfiles) {
+		out += out.empty() ? "" : ", ";
+		out += string("'") + p.name + "'";
+	}
+	return out;
+}
+
+bool DecideProfileTakesEnvKey(const DecideRemoteProfile &profile, const string &host) {
+	if (!*profile.env_key || !*profile.default_endpoint) {
+		return false;
+	}
+	string default_host;
+	int port;
+	bool ssl;
+	SplitEndpoint(profile.default_endpoint, default_host, port, ssl, "profile endpoint");
+	return host == default_host;
+}
+
 bool DecideHostTakesEnvKey(const string &host) {
-	return host == "api.typesafe.ai";
+	return DecideProfileTakesEnvKey(*DecideFindRemoteProfile("typesafe"), host);
+}
+
+void DecideValidateEndpoint(const string &endpoint, const char *what) {
+	string host;
+	int port;
+	bool ssl;
+	SplitEndpoint(endpoint, host, port, ssl, what);
+	// Cleartext http leaves the key and the payload visible on the wire:
+	// loopback only (tests against a local mock, a local model server).
+	if (!ssl && !DecideHostIsLoopback(host)) {
+		throw InvalidInputException("decide: refusing cleartext http:// to non-loopback host '%s' "
+		                            "(use https://, or http://localhost for local servers)",
+		                            host);
+	}
 }
 
 bool DecideHostIsLoopback(const string &host) {
@@ -517,21 +570,47 @@ static void ApplyProxyEnv(ClientT &cli, bool ssl, const string &target_host) {
 
 //--- Config ------------------------------------------------------------------
 
-DecideRemoteConfig DecideResolveConfig(ClientContext &context, const string &model) {
-	DecideRemoteConfig cfg;
-	cfg.model = model;
-	Value endpoint_v;
-	if (context.TryGetCurrentSetting("anofox_decide_endpoint", endpoint_v) && !endpoint_v.IsNull()) {
-		SplitEndpoint(endpoint_v.ToString(), cfg.host, cfg.port, cfg.ssl);
+DecideRemoteConfig DecideResolveConfig(ClientContext &context, const DecideRemoteTarget &target) {
+	auto profile = DecideFindRemoteProfile(target.provider);
+	if (!profile) {
+		throw InvalidInputException("decide: '%s' is not a remote provider (remote providers: %s)", target.provider,
+		                            DecideRemoteProviderList());
 	}
+	DecideRemoteConfig cfg;
+	cfg.model = target.wire_model;
+	cfg.display = profile->display;
+	cfg.env_key = profile->env_key;
+	cfg.path = target.path.empty() ? profile->path : target.path;
+
+	// Endpoint: the model's own endpoint, else (typesafe only, legacy) the
+	// session setting, else the profile default.
+	string endpoint = target.endpoint;
+	const char *endpoint_what = "the model's endpoint";
+	if (endpoint.empty() && target.provider == "typesafe") {
+		Value endpoint_v;
+		if (context.TryGetCurrentSetting("anofox_decide_endpoint", endpoint_v) && !endpoint_v.IsNull()) {
+			endpoint = endpoint_v.ToString();
+			endpoint_what = "anofox_decide_endpoint";
+		}
+	}
+	if (endpoint.empty()) {
+		endpoint = profile->default_endpoint;
+		endpoint_what = "the profile endpoint";
+	}
+	if (endpoint.empty()) {
+		throw InvalidInputException("decide: provider '%s' needs an endpoint "
+		                            "(SELECT decide_register_model('<id>', '%s', MAP {'endpoint': 'http://127.0.0.1:8009'}))",
+		                            target.provider, target.provider);
+	}
+	SplitEndpoint(endpoint, cfg.host, cfg.port, cfg.ssl, endpoint_what);
 	// Cleartext http leaves the key and the payload visible on the wire:
-	// loopback only (tests against a local mock).
+	// loopback only (tests against a local mock, a local model server).
 	if (!cfg.ssl && !DecideHostIsLoopback(cfg.host)) {
 		throw InvalidInputException("decide: refusing cleartext http:// to non-loopback host '%s' "
 		                            "(use https://, or http://localhost for tests)",
 		                            cfg.host);
 	}
-	// 1. Stored secret (preferred: write-only, redacted in duckdb_secrets(),
+	// 1. Stored secret (always wins: write-only, redacted in duckdb_secrets(),
 	//    optionally scoped to an endpoint host prefix).
 	{
 		// DatabaseInstance overload on purpose: DuckDB's ClientContext overload
@@ -544,30 +623,47 @@ DecideRemoteConfig DecideResolveConfig(ClientContext &context, const string &mod
 			cfg.api_key = secret_key.ToString();
 		}
 	}
-	if (cfg.api_key.empty()) {
-		// 2. Explicit session setting (legacy: readable via current_setting,
-		//    prefer a stored secret).
+	if (cfg.api_key.empty() && target.provider == "typesafe") {
+		// 2. Explicit session setting (legacy, typesafe provider only so one
+		//    vendor's key can never be sent to another vendor's host; readable
+		//    via current_setting, prefer a stored secret).
 		Value key_v;
 		if (context.TryGetCurrentSetting("anofox_decide_api_key", key_v) && !key_v.IsNull() &&
 		    !key_v.ToString().empty()) {
 			cfg.api_key = key_v.ToString();
 		}
 	}
-	if (cfg.api_key.empty()) {
-		// 3. The env key is scoped to the default host: a session that points
-		// the endpoint elsewhere must supply its own key explicitly, so a
-		// redirected endpoint can never collect the operator's key.
-		const char *env = std::getenv("TYPESAFE_API_KEY");
-		if (env && *env && DecideHostTakesEnvKey(cfg.host)) {
+	if (cfg.api_key.empty() && !target.key_env.empty()) {
+		// 3. Explicit per-model opt-in: the registrant named this env var for
+		//    this model's endpoint.
+		const char *env = std::getenv(target.key_env.c_str());
+		if (env && *env) {
+			cfg.api_key = env;
+		}
+	}
+	if (cfg.api_key.empty() && *profile->env_key && DecideProfileTakesEnvKey(*profile, cfg.host)) {
+		// 4. The profile's env key is scoped to its default host: a model that
+		//    points the endpoint elsewhere must supply its own key explicitly
+		//    (secret or key_env), so a redirected endpoint can never collect
+		//    the operator's key.
+		const char *env = std::getenv(profile->env_key);
+		if (env && *env) {
 			cfg.api_key = env;
 		}
 	}
 	if (cfg.api_key.empty()) {
-		throw InvalidInputException("decide: no API key for the remote provider at host '%s' "
-		                            "(CREATE SECRET (TYPE anofox_decide, API_KEY '<key>'), "
-		                            "SET anofox_decide_api_key='<key>', or export TYPESAFE_API_KEY "
-		                            "for the default endpoint; stored keys are never shown)",
-		                            cfg.host);
+		string hint = "CREATE SECRET (TYPE anofox_decide, API_KEY '<key>', SCOPE '" + cfg.host + "')";
+		if (target.provider == "typesafe") {
+			hint += ", SET anofox_decide_api_key='<key>'";
+		}
+		if (*profile->env_key) {
+			hint += string(", or export ") + profile->env_key + " for the default endpoint";
+		} else {
+			hint += ", or register the model with MAP {'key_env': '<ENV_VAR>'}";
+		}
+		throw InvalidInputException("decide: no API key for the %s provider at host '%s' (%s; stored keys are "
+		                            "never shown)",
+		                            profile->display, cfg.host, hint);
 	}
 	Value timeout_v;
 	if (context.TryGetCurrentSetting("anofox_decide_timeout_ms", timeout_v) && !timeout_v.IsNull()) {
@@ -678,25 +774,27 @@ vector<DecideAnswer> DecideRemoteEvaluateWithTransport(const DecideRemoteConfig 
 		std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));
 	}
 	if (!last.transport_ok) {
-		throw IOException("decide: remote endpoint unreachable after %d attempt(s): %s "
-		                  "(check anofox_decide_endpoint and network access)",
-		                  attempts, last.transport_error);
+		throw IOException("decide: %s endpoint unreachable after %d attempt(s): %s "
+		                  "(check the endpoint and network access)",
+		                  cfg.display, attempts, last.transport_error);
 	}
 	if (last.status == 401) {
-		throw InvalidInputException("decide: remote endpoint rejected the API key (HTTP 401; check TYPESAFE_API_KEY "
-		                            "or anofox_decide_api_key — the key itself is never shown)");
+		throw InvalidInputException("decide: %s rejected the API key (HTTP 401; check %s, a stored secret or "
+		                            "anofox_decide_api_key — the key itself is never shown)",
+		                            cfg.display, cfg.env_key.empty() ? "the model's key" : cfg.env_key.c_str());
 	}
 	if (last.status == 422) {
-		throw InvalidInputException("decide: remote request rejected as invalid (HTTP 422): %.200s",
+		throw InvalidInputException("decide: %s rejected the request as invalid (HTTP 422): %.200s", cfg.display,
 		                            last.body.c_str());
 	}
-	throw IOException("decide: remote endpoint failed after %d attempt(s) (last HTTP %d): %.200s", attempts,
+	throw IOException("decide: %s failed after %d attempt(s) (last HTTP %d): %.200s", cfg.display, attempts,
 	                  last.status, last.body.c_str());
 }
 
 vector<DecideAnswer> DecideRemoteEvaluate(ClientContext &context, const string &state,
-                                          const vector<DecideQuestion> &questions, const string &model) {
-	auto cfg = DecideResolveConfig(context, model);
+                                          const vector<DecideQuestion> &questions,
+                                          const DecideRemoteTarget &target) {
+	auto cfg = DecideResolveConfig(context, target);
 	return DecideRemoteEvaluateWithTransport(cfg, state, questions, DecideHttplibTransport());
 }
 

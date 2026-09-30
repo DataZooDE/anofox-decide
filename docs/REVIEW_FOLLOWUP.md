@@ -97,3 +97,27 @@ Kev-0.8B (jaredpalmer/kev, Apache 2.0) ran on this CPU-only machine through
 smoke test: refund 6/8, team 6/8 (Jev 8/8, 7/8; Laya multilingual 8/8, 7/8).
 Larger Kev sizes (4B/9B/27B) were not tried (no GPU). Von needs order-invariant
 attention masking in the export and was not attempted.
+
+## Liquid AI D1 and generalized remote providers (30 Sept 2026)
+
+D1 (Liquid AI, hosted, API only: no downloadable weights) speaks TypeSafe's
+System One wire format. Verified live against
+`POST https://api.liquid.ai/decisions/v1/systemone` with model `d1:free`:
+request/response identical (`answers.<id>.noul` / `.choice` / `.probabilities`
+/ `.confidence`, `usage.output_tokens` 0); errors are JSON
+`{"error": {"message", "type"}}` with 401 (bad key), 422 (no questions), 404
+(unknown model). Docs name the key variable `LIQUID_API_KEY`.
+
+Instead of a one-off provider, remote providers are now profiles
+(`typesafe`, `liquid`, generic `systemone`) with per-model options in a `MAP`
+(`endpoint`, `path`, `model`, `key_env`): Jev, D1 and Kev work side by side in
+one session; `anofox_decide_endpoint` / `anofox_decide_api_key` stay as legacy
+settings for `typesafe` only. Named arguments cannot carry the options
+(DuckDB scalar functions treat `x := v` as positional), hence the MAP.
+Key precedence: stored secret (host-scoped) > legacy setting (typesafe) >
+model `key_env` > the provider's env var on its default host, so env vars work
+and secrets always override them (asserted in Catch2 and against the live
+service: a bogus stored secret makes a call fail while the valid env key
+stays untouched). 8-ticket smoke test: D1 8/8 refund, 8/8 team (Jev 8/8, 7/8).
+Kev now registers as `systemone` with a loopback endpoint and a host-scoped
+secret, no session `SET`. Not done: `score` questions.

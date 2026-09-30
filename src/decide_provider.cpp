@@ -75,15 +75,36 @@ string DecideReadLocalFile(ClientContext &context, const string &path, const cha
 
 void DecideRegistry::RegisterModel(ClientContext &context, const string &id, const string &provider,
                                    const string &graph_path, const string &tokenizer_path,
-                                   const string &profile) {
+                                   const string &profile, const DecideRegisterOptions &options) {
 	if (id.empty()) {
 		throw InvalidInputException("decide_register_model: id cannot be empty "
 		                            "(pass a text id, e.g. SELECT decide_register_model('my-model', 'stub'))");
 	}
-	if (provider != "stub" && provider != "typesafe" && provider != "local") {
+	const auto remote_profile = DecideFindRemoteProfile(provider);
+	if (provider != "stub" && provider != "local" && !remote_profile) {
 		throw InvalidInputException("decide_register_model: provider '%s' is not supported "
-		                            "(supported: 'stub', 'typesafe', 'local')",
-		                            provider);
+		                            "(supported: 'stub', 'local', %s)",
+		                            provider, DecideRemoteProviderList());
+	}
+	const bool has_options = !options.endpoint.empty() || !options.path.empty() || !options.wire_model.empty() ||
+	                         !options.key_env.empty();
+	if (has_options && !remote_profile) {
+		throw InvalidInputException("decide_register_model: options (endpoint/path/model/key_env) only apply to "
+		                            "remote providers (%s); provider is '%s'",
+		                            DecideRemoteProviderList(), provider);
+	}
+	if (remote_profile) {
+		if (!options.endpoint.empty()) {
+			DecideValidateEndpoint(options.endpoint, "the model's endpoint");
+		}
+		if (!options.path.empty() && options.path[0] != '/') {
+			throw InvalidInputException("decide_register_model: path must start with '/', got '%s'", options.path);
+		}
+		if (!*remote_profile->default_endpoint && options.endpoint.empty()) {
+			throw InvalidInputException("decide_register_model: provider '%s' needs an endpoint "
+			                            "(SELECT decide_register_model('%s', '%s', MAP {'endpoint': 'http://127.0.0.1:8009'}))",
+			                            provider, id, provider);
+		}
 	}
 	if (provider == "local" && graph_path.empty()) {
 		throw InvalidInputException("decide_register_model: local models need a graph path "
@@ -108,8 +129,12 @@ void DecideRegistry::RegisterModel(ClientContext &context, const string &id, con
 	DecideModelEntry entry;
 	entry.id = id;
 	entry.provider = provider;
-	entry.mode = provider == "typesafe" ? "remote" : (provider == "local" ? "local" : "test");
+	entry.mode = remote_profile ? "remote" : (provider == "local" ? "local" : "test");
 	entry.graph_path = graph_path;
+	entry.endpoint = options.endpoint;
+	entry.path = options.path;
+	entry.wire_model = options.wire_model;
+	entry.key_env = options.key_env;
 	if (provider == "local") {
 		if (!tokenizer_path.empty()) {
 			entry.tokenizer_path = tokenizer_path;
@@ -177,7 +202,7 @@ idx_t DecideMaxQuestions(ClientContext &context) {
 }
 
 void RequireKnownProvider(const DecideModelEntry &entry) {
-	if (entry.provider != "stub" && entry.provider != "typesafe" && entry.provider != "local") {
+	if (entry.provider != "stub" && entry.provider != "local" && !DecideFindRemoteProfile(entry.provider)) {
 		throw InvalidInputException("decide: model '%s' uses unknown provider '%s' "
 		                            "(SELECT * FROM decide_models() to list models)",
 		                            entry.id, entry.provider);
@@ -187,8 +212,14 @@ void RequireKnownProvider(const DecideModelEntry &entry) {
 vector<DecideAnswer> DecideEvaluate(ClientContext &context, const DecideModelEntry &entry, const string &state,
                                     const vector<DecideQuestion> &questions) {
 	RequireKnownProvider(entry);
-	if (entry.provider == "typesafe") {
-		return DecideRemoteEvaluate(context, state, questions, entry.id);
+	if (DecideFindRemoteProfile(entry.provider)) {
+		DecideRemoteTarget target;
+		target.provider = entry.provider;
+		target.endpoint = entry.endpoint;
+		target.path = entry.path;
+		target.wire_model = entry.wire_model.empty() ? entry.id : entry.wire_model;
+		target.key_env = entry.key_env;
+		return DecideRemoteEvaluate(context, state, questions, target);
 	}
 	if (entry.provider == "local") {
 		return DecideLocalScore(context, entry, state, questions);

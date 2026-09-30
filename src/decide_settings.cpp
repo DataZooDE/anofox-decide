@@ -77,9 +77,9 @@ void RegisterDecideSettings(ExtensionLoader &loader) {
 	                          LogicalType::BIGINT, Value::BIGINT(100), ValidateMaxQuestions);
 	config.AddExtensionOption("anofox_decide_model", "Default model for decide_* functions when model is not given",
 	                          LogicalType::VARCHAR, Value("stub"));
-	config.AddExtensionOption("anofox_decide_endpoint", "Remote decision service endpoint (scheme://host[:port])",
+	config.AddExtensionOption("anofox_decide_endpoint", "Legacy endpoint for the typesafe provider (scheme://host[:port]); other remote providers use a per-model endpoint",
 	                          LogicalType::VARCHAR, Value("https://api.typesafe.ai"), ValidateEndpoint);
-	config.AddExtensionOption("anofox_decide_api_key", "Remote API key override (empty = use TYPESAFE_API_KEY)",
+	config.AddExtensionOption("anofox_decide_api_key", "Legacy API key for the typesafe provider (empty = stored secret or TYPESAFE_API_KEY)",
 	                          LogicalType::VARCHAR, Value(""));
 	config.AddExtensionOption("anofox_decide_max_retries", "Retries for transient remote failures (429/529/5xx)",
 	                          LogicalType::BIGINT, Value::BIGINT(3), ValidateMaxRetries);

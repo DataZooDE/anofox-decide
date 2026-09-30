@@ -6,9 +6,11 @@
 // are write-only (duckdb_secrets() renders [REDACTED]) and optionally
 // scoped to an endpoint host prefix; the lookup path is the resolved host.
 //
-// Lookup order in DecideResolveConfig: stored secret, then the legacy
-// anofox_decide_api_key setting (kept for tests and one-offs, visible via
-// current_setting), then TYPESAFE_API_KEY on the default host only.
+// Lookup order in DecideResolveConfig: a stored secret (always wins, matched
+// by the endpoint host, so one secret per provider host), then the legacy
+// anofox_decide_api_key setting (typesafe provider only), then the model's
+// explicit key_env variable, then the provider's own env var (default host
+// only, e.g. TYPESAFE_API_KEY / LIQUID_API_KEY).
 //===----------------------------------------------------------------------===//
 
 #include "decide_registration.hpp"

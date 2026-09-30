@@ -40,6 +40,23 @@ struct DecideModelEntry {
 	string profile = "julia-1";
 	// laya profile only: rl_agent_config.json (limits + temperatures).
 	string config_path;
+	// Remote providers only (empty = the provider profile's default; see
+	// DecideRemoteProfile): scheme://host[:port], API path, the model name on
+	// the wire (the registered id when empty), and an explicit env var to
+	// read this model's key from.
+	string endpoint;
+	string path;
+	string wire_model;
+	string key_env;
+};
+
+// Per-model remote options from decide_register_model's options MAP
+// (keys: endpoint, path, model, key_env).
+struct DecideRegisterOptions {
+	string endpoint;
+	string path;
+	string wire_model;
+	string key_env;
 };
 
 // DB-instance-level model registry (tabfm TabFMState pattern): lives in
@@ -71,9 +88,11 @@ public:
 	//! DuckDB's filesystem here (fail fast on missing/forbidden paths, F4).
 	//! `profile` (local only) picks the model family: "julia-1" or "laya"
 	//! (which also needs <graph_dir>/rl_agent_config.json).
+	//! Remote providers (typesafe, liquid, systemone) take per-model options
+	//! instead: endpoint / path / wire model / key env var.
 	void RegisterModel(ClientContext &context, const string &id, const string &provider,
 	                   const string &graph_path = "", const string &tokenizer_path = "",
-	                   const string &profile = "");
+	                   const string &profile = "", const DecideRegisterOptions &options = DecideRegisterOptions());
 	//! Ordered snapshot for decide_models().
 	vector<DecideModelEntry> List();
 	//! Validated lookup for the scalar surface. Throws unknown-model error.
@@ -103,7 +122,7 @@ string DecideDefaultModel(ClientContext &context);
 idx_t DecideMaxQuestions(ClientContext &context);
 // Rejects entries with an unknown provider (names decide_models() as the fix).
 void RequireKnownProvider(const DecideModelEntry &entry);
-// One entry point for scoring questions against state: typesafe goes remote,
+// One entry point for scoring questions against state: remote providers go over HTTP,
 // local goes to ORT, stub answers deterministically (0.5 binary, first
 // option with a one-hot distribution and top-option probability 1.0).
 vector<DecideAnswer> DecideEvaluate(ClientContext &context, const DecideModelEntry &entry, const string &state,

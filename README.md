@@ -14,28 +14,61 @@ SELECT decide_brier_score(p, y) FROM labeled;  -- + decide_ece / decide_accuracy
 SELECT * FROM decide_models();
 ```
 
-Remote (TypeSafe) usage:
+## Remote providers
+
+Remote models send `state` to the provider's API, so they sit behind an
+explicit opt-in. Providers are profiles over the same System One wire format
+(`noul` / `choice`); each has its own endpoint, path and key variable, so
+several can be used side by side in one session with no `SET` in between:
+
+| Provider | Service | Default endpoint | Key env var |
+|---|---|---|---|
+| `typesafe` | TypeSafe Jev | `https://api.typesafe.ai` | `TYPESAFE_API_KEY` |
+| `liquid` | Liquid AI D1 | `https://api.liquid.ai` (`/decisions/v1/systemone`) | `LIQUID_API_KEY` |
+| `systemone` | any compatible server, e.g. [Kev](https://github.com/jaredpalmer/kev) | you set it | none (see `key_env`) |
 
 ```sql
 SET anofox_decide_allow_remote=true;  -- explicit opt-in, default off
 SELECT decide_register_model('jev-latest', 'typesafe');
-SELECT decide_probability('...', '...', model := 'jev-latest');  -- key from TYPESAFE_API_KEY
+SELECT decide_register_model('d1:free', 'liquid');            -- the id is the model name on the wire
+SELECT decide_probability('...', '...', model := 'jev-latest');
+SELECT decide_probability('...', '...', model := 'd1:free');
 ```
 
-Key management (preferred first): a stored secret (write-only, redacted in
-`duckdb_secrets()`, optionally scoped to an endpoint host) beats the legacy
-setting, which stays readable via `current_setting`:
+Per-model options go in a `MAP` (keys `endpoint`, `path`, `model`, `key_env`),
+e.g. a self-hosted server, a different wire model name, or an explicit key
+variable for a custom endpoint:
 
 ```sql
-CREATE SECRET (TYPE anofox_decide, API_KEY 'sk-...');                     -- preferred
-CREATE SECRET (TYPE anofox_decide, API_KEY 'sk-...', SCOPE 'custom.host'); -- per-endpoint
-SET anofox_decide_api_key='sk-...';  -- legacy override, visible in settings
+SELECT decide_register_model('kev-latest', 'systemone', MAP {'endpoint': 'http://127.0.0.1:8009'});
+SELECT decide_register_model('d1', 'liquid', MAP {'model': 'd1:free'});
+SELECT decide_register_model('mine', 'systemone', MAP {'endpoint': 'https://llm.internal', 'key_env': 'MY_KEY_VAR'});
 ```
 
-Trust note: `TYPESAFE_API_KEY` attaches only to the default endpoint
-(`https://api.typesafe.ai`); a custom `anofox_decide_endpoint` needs a
-secret or the explicit setting, and cleartext `http://` works for
-loopback hosts only.
+**API keys.** Environment variables work out of the box (`export
+LIQUID_API_KEY=...`), and a DuckDB secret always overrides them. Precedence,
+highest first:
+
+1. A stored secret (write-only, redacted in `duckdb_secrets()`), matched by the endpoint host:
+   ```sql
+   CREATE SECRET (TYPE anofox_decide, API_KEY 'sk-...', SCOPE 'api.liquid.ai');
+   CREATE SECRET (TYPE anofox_decide, API_KEY getenv('LIQUID_API_KEY'), SCOPE 'api.liquid.ai');  -- copy from the env
+   ```
+2. `anofox_decide_api_key` (legacy, `typesafe` provider only; visible via `current_setting`).
+3. The model's explicit `key_env` variable.
+4. The provider's own env var (table above), only on that provider's default host.
+
+A key is never sent to a host it was not configured for: a redirected
+endpoint gets nothing from the environment, and a secret scoped to one host
+is not used for another. Cleartext `http://` works for loopback hosts only.
+`anofox_decide_endpoint` remains as a legacy setting for the `typesafe`
+provider.
+
+Kev (Qwen3.5 + LoRA, Apache 2.0) is a local server, not an in-process model:
+run `python -m kev.serve --run jaredpalmer/kev-0.8b --port 8009`, then register
+it as above and give it any key (it ignores the value but the provider requires
+one), e.g. `CREATE SECRET (TYPE anofox_decide, API_KEY 'local', SCOPE '127.0.0.1')`.
+Kev-4B/9B/27B are more accurate than 0.8B and need a GPU or a large Mac.
 
 ## Local models
 
@@ -66,28 +99,22 @@ checkpoint's `rl_agent_config.json` beside the graph. Tokenizers: the
 SentencePiece-style one (Julia-1, Laya multilingual) and ByteLevel BPE (Laya
 English / typed-decisions) are both supported.
 
+## Model comparison
+
 Measured on 8 labelled support tickets (`test/fixtures/support_tickets.csv`),
 correct refund / team:
 
-| Model | Refund | Team |
-|---|---|---|
-| TypeSafe Jev (remote) | 8/8 | 7/8 |
-| Laya multilingual (local) | 8/8 | 7/8 |
-| Laya typed-decisions (local) | 7/8 | 6/8 |
-| Kev-0.8B (local server, remote provider) | 6/8 | 6/8 |
-| Julia-1 (local) | 4/8 | 4/8 |
-
-[Kev](https://github.com/jaredpalmer/kev) (Qwen3.5 + LoRA, Apache 2.0) serves
-TypeSafe's `/v1/systemone` contract, so it needs no extra code: run
-`python -m kev.serve --run jaredpalmer/kev-0.8b --port 8009`, then
-`SET anofox_decide_endpoint='http://127.0.0.1:8009'; SET anofox_decide_api_key='local';`
-and register `decide_register_model('kev-latest', 'typesafe')`. The endpoint
-setting is per session, so use one DuckDB connection per endpoint if you
-mix Jev and Kev. Kev-4B/9B/27B are more accurate than 0.8B and need a GPU
-or a large Mac.
+| Model | Runs | Refund | Team |
+|---|---|---|---|
+| Liquid AI D1 (`liquid`) | hosted API | 8/8 | 8/8 |
+| TypeSafe Jev (`typesafe`) | hosted API | 8/8 | 7/8 |
+| Laya multilingual | local, in-process | 8/8 | 7/8 |
+| Laya typed-decisions | local, in-process | 7/8 | 6/8 |
+| Kev-0.8B (`systemone`) | local server | 6/8 | 6/8 |
+| Julia-1 | local, in-process | 4/8 | 4/8 |
 
 Each local ONNX model reproduces its upstream Python reference to within 5e-5
-in probability on these tickets. Eight tickets is a smoke test, not a
+in probability on these tickets; the hosted models are called as-is. Eight tickets is a smoke test, not a
 benchmark: evaluate on your own data.
 
 ## Status
@@ -98,15 +125,17 @@ metrics and CI are working. What you can use today:
 | Provider | Models | Questions | Runs where |
 |---|---|---|---|
 | `stub` | deterministic placeholder (0.5 / first option) | `binary`, `choice` | in-process, for tests and demos |
-| `typesafe` (remote) | Jev (`jev-latest`), or any server speaking TypeSafe's `/v1/systemone`, e.g. [Kev](https://github.com/jaredpalmer/kev) | `binary`, `choice` | API call; opt-in via `anofox_decide_allow_remote` |
+| `typesafe` (remote) | TypeSafe Jev (`jev-latest`) | `binary`, `choice` | hosted API; opt-in via `anofox_decide_allow_remote` |
+| `liquid` (remote) | Liquid AI D1 (`d1:free`) | `binary`, `choice` | hosted API; same opt-in |
+| `systemone` (remote) | any TypeSafe-compatible server, e.g. [Kev](https://github.com/jaredpalmer/kev) | `binary`, `choice` | your endpoint (loopback `http://` or `https://`) |
 | `local` (ONNX Runtime) | Julia-1, Laya multilingual, Laya typed-decisions (profiles `julia-1`, `laya`) | `binary`, `choice` | in-process on CPU, fully offline after setup |
 
 Not supported yet: `score` (ordinal) questions, GPU execution, and the
 Von model (needs order-invariant attention in the export).
 
-Which local model to pick: Laya multilingual matched Jev on our 8-ticket
-smoke test and Julia-1 did not (see the table above), so it is the
-recommended local model. Model weights are not shipped in the repo; see
+Which model to pick: Liquid AI D1 led our 8-ticket smoke test, and Laya
+multilingual matched Jev among the models that run in-process (see the
+comparison above), so it is the recommended local model. Model weights are not shipped in the repo; see
 [Local models](#local-models) for setup.
 
 CI builds and tests Linux (amd64, arm64), macOS (arm64) and Windows (amd64)
@@ -128,7 +157,7 @@ Clone with submodules (`git clone --recurse-submodules`), then:
 make release                          # release build; ONNX Runtime built via vcpkg (first build is slow)
 make release DECIDE_ORT_VCPKG=0 CMAKE_PREFIX_PATH=<ort-install>   # faster local build against an existing ONNX Runtime
 make test_release                     # offline suite: SQL tests + Catch2 (no network, no weights)
-make test-live                        # live TypeSafe E2E; explicit SKIP without TYPESAFE_API_KEY
+make test-live                        # live TypeSafe + Liquid D1 E2E; explicit SKIP without TYPESAFE_API_KEY / LIQUID_API_KEY
 ./build/release/test/unittest test/sql/decide_contract.test       # a single file
 ```
 
@@ -137,7 +166,7 @@ Catch2 `[tokenizer]` goldens (`JULIA_WEIGHTS_DIR`, `LAYA_TYPED_DIR`), `[local]`
 real graphs (`JULIA_ONNX`, `LAYA_MULTILINGUAL_DIR` + `LAYA_ONNX`,
 `LAYA_TYPED_DIR` + `LAYA_TYPED_ONNX`), and the export pytest in
 `tools/export_julia` (`JULIA_WEIGHTS_DIR`, `JULIA_SRC_MODEL`, `JULIA_ONNX`).
-Run the suite with `TYPESAFE_API_KEY` unset, as CI does, so tests do not
+Run the suite with `TYPESAFE_API_KEY` and `LIQUID_API_KEY` unset, as CI does, so tests do not
 depend on your own key.
 
 Tests always run with `DATAZOO_DISABLE_TELEMETRY=1` (Makefile does this).
