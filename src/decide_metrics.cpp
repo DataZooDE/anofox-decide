@@ -18,7 +18,11 @@
 // size / init / update / combine / finalize, UnifiedVectorFormat NULL-skip).
 //===----------------------------------------------------------------------===//
 
+#include "anofox_decide_banner.hpp"
+#include "anofox_function_alias.hpp"
+#include "decide_function_docs.hpp"
 #include "decide_registration.hpp"
+#include "telemetry.hpp"
 #include "decide_provider.hpp"
 
 #include "duckdb/function/aggregate_function.hpp"
@@ -329,51 +333,69 @@ void ECEFinalize(Vector &state_vector, AggregateInputData &, Vector &result, idx
 	}
 }
 
-// One set per metric with (DOUBLE, BOOLEAN) and (DOUBLE, INTEGER) overloads
-// plus full-name aliases (same copy-then-rename convention as the scalars).
-void RegisterMetric(AggregateFunctionSet &set, const string &alias_set_name, const string &name,
-                    aggregate_size_t state_size, aggregate_initialize_t init, aggregate_update_t update,
-                    aggregate_combine_t combine, aggregate_finalize_t finalize, ExtensionLoader &loader,
-                    aggregate_update_t update3 = nullptr) {
-	AggregateFunction fn_bool(name, {LogicalType::DOUBLE, LogicalType::BOOLEAN}, LogicalType::DOUBLE, state_size,
-	                          init, update, combine, finalize, nullptr, nullptr, nullptr);
-	set.AddFunction(fn_bool);
-	AggregateFunction fn_int(name, {LogicalType::DOUBLE, LogicalType::BIGINT}, LogicalType::DOUBLE, state_size,
-	                         init, update, combine, finalize, nullptr, nullptr, nullptr);
-	set.AddFunction(fn_int);
-	if (update3) {
-		AggregateFunction fn3_bool(name, {LogicalType::DOUBLE, LogicalType::BOOLEAN, LogicalType::DOUBLE},
-		                           LogicalType::DOUBLE, state_size, init, update3, combine, finalize, nullptr,
-		                           nullptr, nullptr);
-		set.AddFunction(fn3_bool);
-		AggregateFunction fn3_int(name, {LogicalType::DOUBLE, LogicalType::BIGINT, LogicalType::DOUBLE},
-		                          LogicalType::DOUBLE, state_size, init, update3, combine, finalize, nullptr,
-		                          nullptr, nullptr);
-		set.AddFunction(fn3_int);
+// Telemetry (tabfm convention): one aggregated call per function at bind time.
+#define DECIDE_METRIC_TELEMETRY_BIND(FN, NAME)                                                                  \
+	unique_ptr<FunctionData> FN(ClientContext &, AggregateFunction &, vector<unique_ptr<Expression>> &) {        \
+		PostHogTelemetry::Instance().RecordFunctionCall(NAME);                                                   \
+		return nullptr;                                                                                         \
 	}
-	loader.RegisterFunction(set);
+DECIDE_METRIC_TELEMETRY_BIND(BrierBind, "decide_brier_score")
+DECIDE_METRIC_TELEMETRY_BIND(ECEBind, "decide_ece")
+DECIDE_METRIC_TELEMETRY_BIND(AccuracyBind, "decide_accuracy")
 
-	AggregateFunctionSet full(alias_set_name);
-	for (auto &f : set.functions) {
-		auto c = f;
-		c.name = alias_set_name;
-		full.AddFunction(std::move(c));
+// One set per metric with (DOUBLE, BOOLEAN) and (DOUBLE, BIGINT) overloads
+// (plus a threshold overload for accuracy). The set is registered under the
+// primary anofox_decide_* name with a decide_* alias (tabfm convention).
+void RegisterMetric(const string &primary, const string &alias, aggregate_size_t state_size,
+                    aggregate_initialize_t init, aggregate_update_t update, aggregate_combine_t combine,
+                    aggregate_finalize_t finalize, bind_aggregate_function_t bind, ExtensionLoader &loader,
+                    const string &description, const string &example_bool, const string &example_int,
+                    aggregate_update_t update3 = nullptr, const string &example_threshold = "") {
+	const auto D = LogicalType::DOUBLE;
+	const auto B = LogicalType::BOOLEAN;
+	const auto I = LogicalType::BIGINT;
+	AggregateFunctionSet set(primary);
+	auto add = [&](vector<LogicalType> args, aggregate_update_t fn_update) {
+		set.AddFunction(AggregateFunction(primary, args, D, state_size, init, fn_update, combine, finalize, nullptr,
+		                                  bind, nullptr));
+	};
+	add({D, B}, update);
+	add({D, I}, update);
+	vector<DecideOverloadDoc> docs = {{{"probability", "outcome"}, {D, B}, example_bool},
+	                                  {{"probability", "outcome"}, {D, I}, example_int}};
+	if (update3) {
+		add({D, B, D}, update3);
+		add({D, I, D}, update3);
+		docs.push_back({{"probability", "outcome", "threshold"}, {D, B, D}, example_threshold});
+		docs.push_back({{"probability", "outcome", "threshold"}, {D, I, D}, example_threshold});
 	}
-	loader.RegisterFunction(full);
+	RegisterAggregateFunctionSetWithAlias(loader, std::move(set), alias, DecideDocs(description, "metrics", docs));
 }
 
 } // namespace
 
 void RegisterDecideMetrics(ExtensionLoader &loader) {
-	AggregateFunctionSet brier("decide_brier_score");
-	RegisterMetric(brier, "anofox_decide_brier_score", "decide_brier_score", BrierStateSize, BrierStateInit,
-	               BrierUpdate, BrierCombine, BrierFinalize, loader);
-	AggregateFunctionSet ece("decide_ece");
-	RegisterMetric(ece, "anofox_decide_ece", "decide_ece", ECEStateSize, ECEStateInit, ECEUpdate, ECECombine,
-	               ECEFinalize, loader);
-	AggregateFunctionSet accuracy("decide_accuracy");
-	RegisterMetric(accuracy, "anofox_decide_accuracy", "decide_accuracy", AccuracyStateSize, AccuracyStateInit,
-	               AccuracyUpdate, AccuracyCombine, AccuracyFinalize, loader, AccuracyUpdate3);
+	RegisterMetric("anofox_decide_brier_score", "decide_brier_score", BrierStateSize, BrierStateInit, BrierUpdate,
+	               BrierCombine, BrierFinalize, BrierBind, loader,
+	               "Brier score of predicted probabilities against observed outcomes: mean squared difference "
+	               "between the probability and the 0/1 outcome (lower is better; 0 is perfect, 0.25 is a constant "
+	               "0.5). Rows with a NULL probability or outcome are skipped; empty input returns NULL.",
+	               "SELECT decide_brier_score(p, y) FROM labeled;",
+	               "SELECT decide_brier_score(p, y::BIGINT) FROM labeled;");
+	RegisterMetric("anofox_decide_ece", "decide_ece", ECEStateSize, ECEStateInit, ECEUpdate, ECECombine,
+	               ECEFinalize, ECEBind, loader,
+	               "Expected calibration error over ten equal-width probability bins: the bin-weighted gap between "
+	               "average confidence and accuracy (lower is better). Rows with a NULL probability or outcome are "
+	               "skipped; empty input returns NULL.",
+	               "SELECT decide_ece(p, y) FROM labeled;", "SELECT decide_ece(p, y::BIGINT) FROM labeled;");
+	RegisterMetric("anofox_decide_accuracy", "decide_accuracy", AccuracyStateSize, AccuracyStateInit,
+	               AccuracyUpdate, AccuracyCombine, AccuracyFinalize, AccuracyBind, loader,
+	               "Fraction of rows where thresholding the probability reproduces the outcome. The two-argument "
+	               "form uses the documented 0.5 boundary; the three-argument form takes an explicit threshold in "
+	               "[0, 1] (NaN or out-of-range thresholds raise an error). NULL inputs are skipped; empty input "
+	               "returns NULL.",
+	               "SELECT decide_accuracy(p, y) FROM labeled;", "SELECT decide_accuracy(p, y::BIGINT) FROM labeled;",
+	               AccuracyUpdate3, "SELECT decide_accuracy(p, y, 0.7) FROM labeled;");
 }
 
 } // namespace anofox

@@ -1,0 +1,43 @@
+# name: test/sql/decide_telemetry.test
+# description: Telemetry opt-out surface. The suite always runs with
+#              DATAZOO_DISABLE_TELEMETRY=1 (Makefile), so the effective
+#              setting must read false, the settings must exist, and NULL is
+#              rejected. Nothing is sent: the opt-out is enforced at the
+#              transport.
+# group: [anofox_decide]
+
+require anofox_decide
+
+statement ok
+LOAD anofox_decide
+
+# The default honours the environment opt-out (and CI detection).
+query I
+SELECT current_setting('anofox_telemetry_enabled')
+----
+false
+
+statement ok
+SET anofox_telemetry_enabled = false
+
+statement error
+SET anofox_telemetry_enabled = NULL
+----
+<REGEX>:.*anofox_telemetry_enabled cannot be NULL.*
+
+# The PostHog key setting exists and is a non-empty string.
+query I
+SELECT length(current_setting('anofox_telemetry_key')) > 0
+----
+true
+
+# The shared banner can be silenced per session.
+statement ok
+SET datazoo_banner = false
+
+# Functions still run with telemetry off, and recording is aggregated at bind
+# time, so a multi-row query is unaffected.
+query I
+SELECT count(*) FROM (SELECT decide_probability('x', 'y') FROM range(100))
+----
+100

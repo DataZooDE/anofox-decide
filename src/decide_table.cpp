@@ -1,4 +1,8 @@
+#include "anofox_decide_banner.hpp"
+#include "anofox_function_alias.hpp"
+#include "decide_function_docs.hpp"
 #include "decide_registration.hpp"
+#include "telemetry.hpp"
 #include "decide_provider.hpp"
 #include "decide_remote.hpp"
 #include "decide_local_nli.hpp"
@@ -27,6 +31,7 @@ unique_ptr<FunctionData> DecideModelsBind(ClientContext &context, TableFunctionB
                                           vector<LogicalType> &return_types, vector<string> &names) {
 	(void)context;
 	(void)input;
+	PostHogTelemetry::Instance().RecordFunctionCall("decide_models");
 	names.emplace_back("model");
 	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("provider");
@@ -136,6 +141,7 @@ string TableBindModel(ClientContext &context, TableFunctionBindInput &input) {
 
 unique_ptr<FunctionData> DecideTableBind(ClientContext &context, TableFunctionBindInput &input,
                                         vector<LogicalType> &return_types, vector<string> &names) {
+	PostHogTelemetry::Instance().RecordFunctionCall("decide_table");
 	DecideTableColumns(return_types, names);
 	auto data = make_uniq<DecideTableData>();
 	if (input.inputs.empty()) {
@@ -286,33 +292,44 @@ OperatorResultType DecideTableInOut(ExecutionContext &context, TableFunctionInpu
 } // namespace
 
 void RegisterDecideTableFunctions(ExtensionLoader &loader) {
-	TableFunction decide_models("decide_models", {}, DecideModelsScan, DecideModelsBind, DecideModelsInitGlobal);
-	loader.RegisterFunction(decide_models);
-	TableFunction decide_models_full("anofox_decide_models", {}, DecideModelsScan, DecideModelsBind,
-	                                 DecideModelsInitGlobal);
-	loader.RegisterFunction(decide_models_full);
-
-	TableFunctionSet decide_table("decide_table");
-	TableFunction table_2({LogicalType::VARCHAR, LogicalType::VARCHAR}, DecideTableScan, DecideTableBind,
-	                      DecideTableInitGlobal, DecideTableInitLocal);
-	table_2.in_out_function = DecideTableInOut;
-	table_2.named_parameters["model"] = LogicalType::VARCHAR;
-	decide_table.AddFunction(table_2);
-	TableFunction table_3({LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR}, DecideTableScan,
-	                      DecideTableBind, DecideTableInitGlobal, DecideTableInitLocal);
-	table_3.in_out_function = DecideTableInOut;
-	table_3.named_parameters["model"] = LogicalType::VARCHAR;
-	decide_table.AddFunction(table_3);
-	loader.RegisterFunction(decide_table);
-
-	TableFunctionSet decide_table_full("anofox_decide_table");
-	TableFunction full_2 = table_2;
-	full_2.name = "anofox_decide_table";
-	decide_table_full.AddFunction(full_2);
-	TableFunction full_3 = table_3;
-	full_3.name = "anofox_decide_table";
-	decide_table_full.AddFunction(full_3);
-	loader.RegisterFunction(decide_table_full);
+	const auto V = LogicalType::VARCHAR;
+	// Primary names are anofox_decide_*; decide_* are aliases (tabfm convention).
+	{
+		TableFunction func("anofox_decide_models", {}, DATAZOO_GUARD(ANOFOX_DECIDE_BANNER, DecideModelsScan),
+		                   DATAZOO_GUARD(ANOFOX_DECIDE_BANNER, DecideModelsBind), DecideModelsInitGlobal);
+		RegisterTableFunctionWithAlias(
+		    loader, std::move(func), "decide_models",
+		    DecideDocs("List the models registered on this database instance (model id, provider, mode "
+		               "'test'/'local'/'remote', and the local graph path). The built-in 'stub' model is always "
+		               "present; register more with decide_register_model.",
+		               "models", {{{}, {}, "SELECT * FROM decide_models();"}}));
+	}
+	{
+		TableFunctionSet set("anofox_decide_table");
+		TableFunction table_2({V, V}, DATAZOO_GUARD(ANOFOX_DECIDE_BANNER, DecideTableScan),
+		                      DATAZOO_GUARD(ANOFOX_DECIDE_BANNER, DecideTableBind), DecideTableInitGlobal,
+		                      DecideTableInitLocal);
+		table_2.in_out_function = DATAZOO_GUARD(ANOFOX_DECIDE_BANNER, DecideTableInOut);
+		table_2.named_parameters["model"] = V;
+		set.AddFunction(table_2);
+		TableFunction table_3({V, V, V}, DATAZOO_GUARD(ANOFOX_DECIDE_BANNER, DecideTableScan),
+		                      DATAZOO_GUARD(ANOFOX_DECIDE_BANNER, DecideTableBind), DecideTableInitGlobal,
+		                      DecideTableInitLocal);
+		table_3.in_out_function = DATAZOO_GUARD(ANOFOX_DECIDE_BANNER, DecideTableInOut);
+		table_3.named_parameters["model"] = V;
+		set.AddFunction(table_3);
+		RegisterTableFunctionSetWithAlias(
+		    loader, std::move(set), "decide_table",
+		    DecideDocs("Score several questions against one state and return one row per answer (question id, "
+		               "kind, probability, choice, confidence, distribution, model). `questions` is a JSON array of "
+		               "{id, kind: 'binary'|'choice', instruction[, options]} objects. Works in LATERAL over a table "
+		               "of states (per-row scoring; one provider round trip per row for remote models).",
+		               "evaluate",
+		               {{{"state", "questions"}, {V, V},
+		                 "SELECT * FROM decide_table('The bill is wrong.', '[{\"id\":\"refund\",\"kind\":\"binary\",\"instruction\":\"A refund is requested.\"}]');"},
+		                {{"state", "questions", "model"}, {V, V, V},
+		                 "SELECT * FROM tickets, LATERAL (SELECT * FROM decide_table(tickets.body, '[{\"id\":\"refund\",\"kind\":\"binary\",\"instruction\":\"A refund is requested.\"}]', model := 'jev-latest')) dt;"}}));
+	}
 }
 
 } // namespace anofox
