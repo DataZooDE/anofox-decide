@@ -1,4 +1,8 @@
+#include "anofox_decide_banner.hpp"
+#include "anofox_function_alias.hpp"
+#include "decide_function_docs.hpp"
 #include "decide_registration.hpp"
+#include "telemetry.hpp"
 #include "decide_provider.hpp"
 #include "decide_remote.hpp"
 #include "decide_local_nli.hpp"
@@ -270,128 +274,149 @@ void DecideRegisterModelFun(DataChunk &args, ExpressionState &state, Vector &res
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 }
 
+// Telemetry (tabfm convention): each function records one aggregated call at
+// bind time, never per row; the recorded name is always one of these fixed
+// identifiers.
+#define DECIDE_SCALAR_TELEMETRY_BIND(FN, NAME)                                                                  \
+	unique_ptr<FunctionData> FN(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {           \
+		PostHogTelemetry::Instance().RecordFunctionCall(NAME);                                                   \
+		return nullptr;                                                                                         \
+	}
+DECIDE_SCALAR_TELEMETRY_BIND(DecideProbabilityBind, "decide_probability")
+DECIDE_SCALAR_TELEMETRY_BIND(DecideChoiceBind, "decide_choice")
+DECIDE_SCALAR_TELEMETRY_BIND(DecideDecisionBind, "decide_decision")
+DECIDE_SCALAR_TELEMETRY_BIND(DecideManyBind, "decide_many")
+DECIDE_SCALAR_TELEMETRY_BIND(DecideRegisterModelBind, "decide_register_model")
+
 // SPECIAL null handling: the BRD NULL contract (NULL state/question ->
 // NULL, actionable errors for empty/duplicate/invalid inputs) is implemented
 // in the function bodies above and verified by the contract tests — DuckDB's
 // default NULL-in/NULL-out would bypass them (e.g. a NULL register id would
 // silently return NULL instead of the actionable error).
-ScalarFunction DecideScalar(string name, vector<LogicalType> args, LogicalType ret, scalar_function_t fun) {
-	ScalarFunction f(std::move(name), std::move(args), std::move(ret), fun);
+ScalarFunction DecideScalar(string name, vector<LogicalType> args, LogicalType ret, scalar_function_t fun,
+                            bind_scalar_function_t bind) {
+	ScalarFunction f(std::move(name), std::move(args), std::move(ret), fun, bind);
 	f.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
 	return f;
 }
 
 } // namespace
 
-void RegisterDecideScalars(ExtensionLoader &loader) {
-	ScalarFunctionSet prob("decide_probability");
-	prob.AddFunction(DecideScalar("decide_probability", {LogicalType::VARCHAR, LogicalType::VARCHAR},
-	                             LogicalType::DOUBLE, DecideProbabilityFun));
-	prob.AddFunction(DecideScalar("decide_probability",
-	                             {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
-	                             LogicalType::DOUBLE, DecideProbabilityFun));
-	loader.RegisterFunction(prob);
+// DATAZOO_GUARD appends the issue-link hint to errors thrown from a function.
+// The argument-type list goes last so its commas fold into __VA_ARGS__.
+#define DECIDE_SCALAR(NAME, RET, FUN, BIND, ...)                                                                \
+	DecideScalar(NAME, vector<LogicalType> __VA_ARGS__, RET, DATAZOO_GUARD(ANOFOX_DECIDE_BANNER, FUN),          \
+	             DATAZOO_GUARD(ANOFOX_DECIDE_BANNER, BIND))
 
-	auto varchar_options = LogicalType::LIST(LogicalType::VARCHAR);
+void RegisterDecideScalars(ExtensionLoader &loader) {
+	const auto V = LogicalType::VARCHAR;
+	const auto D = LogicalType::DOUBLE;
+	const auto B = LogicalType::BOOLEAN;
+	const auto options_type = LogicalType::LIST(LogicalType::VARCHAR);
 	// The `[]` literal is typed "NULL"[] (LIST(SQLNULL)), which binds to
 	// neither VARCHAR[] nor ANY[] — so it gets a dedicated overload that
 	// routes straight to the actionable empty-list error in DecideChoiceFun.
-	auto null_options = LogicalType::LIST(LogicalType(LogicalTypeId::SQLNULL));
-	ScalarFunctionSet choice("decide_choice");
-	choice.AddFunction(DecideScalar("decide_choice",
-	                               {LogicalType::VARCHAR, LogicalType::VARCHAR, varchar_options},
-	                               LogicalType::VARCHAR, DecideChoiceFun));
-	choice.AddFunction(DecideScalar("decide_choice",
-	                               {LogicalType::VARCHAR, LogicalType::VARCHAR, varchar_options,
-	                                LogicalType::VARCHAR},
-	                               LogicalType::VARCHAR, DecideChoiceFun));
-	choice.AddFunction(DecideScalar("decide_choice",
-	                               {LogicalType::VARCHAR, LogicalType::VARCHAR, null_options},
-	                               LogicalType::VARCHAR, DecideChoiceFun));
-	choice.AddFunction(DecideScalar("decide_choice",
-	                               {LogicalType::VARCHAR, LogicalType::VARCHAR, null_options,
-	                                LogicalType::VARCHAR},
-	                               LogicalType::VARCHAR, DecideChoiceFun));
-	loader.RegisterFunction(choice);
+	const auto null_options = LogicalType::LIST(LogicalType(LogicalTypeId::SQLNULL));
+	const auto map_type = LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR);
 
-	ScalarFunctionSet decision("decide_decision");
-	decision.AddFunction(DecideScalar("decide_decision",
-	                                 {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::DOUBLE},
-	                                 LogicalType::BOOLEAN, DecideDecisionFun));
-	decision.AddFunction(DecideScalar("decide_decision",
-	                                 {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::DOUBLE,
-	                                  LogicalType::VARCHAR},
-	                                 LogicalType::BOOLEAN, DecideDecisionFun));
-	loader.RegisterFunction(decision);
-
-	ScalarFunctionSet many("decide_many");
-	many.AddFunction(DecideScalar("decide_many", {LogicalType::VARCHAR, LogicalType::VARCHAR},
-	                             LogicalType::VARCHAR, DecideManyFun));
-	many.AddFunction(DecideScalar("decide_many",
-	                             {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
-	                             LogicalType::VARCHAR, DecideManyFun));
-	loader.RegisterFunction(many);
-
-	ScalarFunctionSet reg("decide_register_model");
-	reg.AddFunction(DecideScalar("decide_register_model", {LogicalType::VARCHAR}, LogicalType::BOOLEAN,
-	                            DecideRegisterModelFun));
-	reg.AddFunction(DecideScalar("decide_register_model",
-	                            {LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::BOOLEAN,
-	                            DecideRegisterModelFun));
-	reg.AddFunction(DecideScalar("decide_register_model",
-	                            {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
-	                            LogicalType::BOOLEAN, DecideRegisterModelFun));
-	reg.AddFunction(DecideScalar("decide_register_model",
-	                            {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
-	                             LogicalType::VARCHAR},
-	                            LogicalType::BOOLEAN, DecideRegisterModelFun));
-	reg.AddFunction(DecideScalar("decide_register_model",
-	                            {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
-	                             LogicalType::VARCHAR, LogicalType::VARCHAR},
-	                            LogicalType::BOOLEAN, DecideRegisterModelFun));
-	reg.AddFunction(DecideScalar("decide_register_model",
-	                            {LogicalType::VARCHAR, LogicalType::VARCHAR,
-	                             LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR)},
-	                            LogicalType::BOOLEAN, DecideRegisterModelFun));
-	loader.RegisterFunction(reg);
-
-	// Full names + short aliases (tabfm anofox_function_alias.hpp convention:
-	// copy-then-rename so the alias is behaviorally identical).
-	ScalarFunctionSet prob_full("anofox_decide_probability");
-	for (auto &f : prob.functions) {
-		auto c = f;
-		c.name = "anofox_decide_probability";
-		prob_full.AddFunction(std::move(c));
+	// Primary names are anofox_decide_*; decide_* are aliases (tabfm
+	// convention, anofox_function_alias.hpp: copy-then-rename, alias_of set).
+	{
+		ScalarFunctionSet set("anofox_decide_probability");
+		set.AddFunction(DECIDE_SCALAR("anofox_decide_probability", D, DecideProbabilityFun, DecideProbabilityBind, {V, V}));
+		set.AddFunction(DECIDE_SCALAR("anofox_decide_probability", D, DecideProbabilityFun, DecideProbabilityBind, {V, V, V}));
+		RegisterScalarFunctionSetWithAlias(
+		    loader, std::move(set), "decide_probability",
+		    DecideDocs("Probability (0 to 1) that the statement `question` holds for `state`, scored by the named "
+		               "model (default: the anofox_decide_model setting, 'stub' when unset). NULL state or question "
+		               "returns NULL; unknown models, remote calls without opt-in and missing API keys raise "
+		               "errors that name the fixing call.",
+		               "evaluate",
+		               {{{"state", "question"}, {V, V},
+		                 "SELECT decide_probability('The customer requests a refund.', 'A refund is requested.');"},
+		                {{"state", "question", "model"}, {V, V, V},
+		                 "SELECT decide_probability(body, 'A refund is requested.', model := 'jev-latest') FROM tickets;"}}));
 	}
-	loader.RegisterFunction(prob_full);
-	ScalarFunctionSet choice_full("anofox_decide_choice");
-	for (auto &f : choice.functions) {
-		auto c = f;
-		c.name = "anofox_decide_choice";
-		choice_full.AddFunction(std::move(c));
+	{
+		ScalarFunctionSet set("anofox_decide_choice");
+		set.AddFunction(DECIDE_SCALAR("anofox_decide_choice", V, DecideChoiceFun, DecideChoiceBind, {V, V, options_type}));
+		set.AddFunction(DECIDE_SCALAR("anofox_decide_choice", V, DecideChoiceFun, DecideChoiceBind, {V, V, options_type, V}));
+		set.AddFunction(DECIDE_SCALAR("anofox_decide_choice", V, DecideChoiceFun, DecideChoiceBind, {V, V, null_options}));
+		set.AddFunction(DECIDE_SCALAR("anofox_decide_choice", V, DecideChoiceFun, DecideChoiceBind, {V, V, null_options, V}));
+		const string desc =
+		    "Choose the single best answer for `question` from a runtime-defined list of `options` given `state`. "
+		    "Returns the winning option; the score distribution is available through decide_many and "
+		    "decide_table. An empty or NULL option list raises an actionable error.";
+		RegisterScalarFunctionSetWithAlias(
+		    loader, std::move(set), "decide_choice",
+		    DecideDocs(desc, "evaluate",
+		               {{{"state", "question", "options"}, {V, V, options_type},
+		                 "SELECT decide_choice('Invoice charged twice', 'Primary issue?', ['billing','defect','other']);"},
+		                {{"state", "question", "options", "model"}, {V, V, options_type, V},
+		                 "SELECT decide_choice(body, 'Which team owns this?', ['billing','defect','other'], model := 'jev-latest') FROM tickets;"},
+		                {{"state", "question", "options"}, {V, V, null_options},
+		                 "SELECT decide_choice('Invoice charged twice', 'Primary issue?', ['billing','defect']);"},
+		                {{"state", "question", "options", "model"}, {V, V, null_options, V},
+		                 "SELECT decide_choice('Invoice charged twice', 'Primary issue?', ['billing','defect'], model := 'stub');"}}));
 	}
-	loader.RegisterFunction(choice_full);
-	ScalarFunctionSet decision_full("anofox_decide_decision");
-	for (auto &f : decision.functions) {
-		auto c = f;
-		c.name = "anofox_decide_decision";
-		decision_full.AddFunction(std::move(c));
+	{
+		ScalarFunctionSet set("anofox_decide_decision");
+		set.AddFunction(DECIDE_SCALAR("anofox_decide_decision", B, DecideDecisionFun, DecideDecisionBind, {V, V, D}));
+		set.AddFunction(DECIDE_SCALAR("anofox_decide_decision", B, DecideDecisionFun, DecideDecisionBind, {V, V, D, V}));
+		RegisterScalarFunctionSetWithAlias(
+		    loader, std::move(set), "decide_decision",
+		    DecideDocs("Boolean decision: true when the probability that `question` holds for `state` reaches "
+		               "`threshold` (0 to 1, inclusive). NULL state or question returns NULL; NaN or out-of-range "
+		               "thresholds raise an error instead of clamping.",
+		               "evaluate",
+		               {{{"state", "question", "threshold"}, {V, V, D},
+		                 "SELECT decide_decision('The customer requests a refund.', 'A refund is requested.', 0.7);"},
+		                {{"state", "question", "threshold", "model"}, {V, V, D, V},
+		                 "SELECT decide_decision(body, 'A refund is requested.', 0.7, model := 'jev-latest') FROM tickets;"}}));
 	}
-	loader.RegisterFunction(decision_full);
-	ScalarFunctionSet many_full("anofox_decide_many");
-	for (auto &f : many.functions) {
-		auto c = f;
-		c.name = "anofox_decide_many";
-		many_full.AddFunction(std::move(c));
+	{
+		ScalarFunctionSet set("anofox_decide_many");
+		set.AddFunction(DECIDE_SCALAR("anofox_decide_many", V, DecideManyFun, DecideManyBind, {V, V}));
+		set.AddFunction(DECIDE_SCALAR("anofox_decide_many", V, DecideManyFun, DecideManyBind, {V, V, V}));
+		RegisterScalarFunctionSetWithAlias(
+		    loader, std::move(set), "decide_many",
+		    DecideDocs("Evaluate several questions against one `state` in a single provider call. `questions` is a "
+		               "JSON array of {id, kind: 'binary'|'choice', instruction[, options]} objects; returns a JSON "
+		               "array with one answer (probability, or choice plus distribution) per question, in order. "
+		               "Remote providers receive one request for the whole batch.",
+		               "evaluate",
+		               {{{"state", "questions"}, {V, V},
+		                 "SELECT decide_many('The bill is wrong.', '[{\"id\":\"refund\",\"kind\":\"binary\",\"instruction\":\"A refund is requested.\"}]');"},
+		                {{"state", "questions", "model"}, {V, V, V},
+		                 "SELECT decide_many(body, '[{\"id\":\"refund\",\"kind\":\"binary\",\"instruction\":\"A refund is requested.\"}]', model := 'jev-latest') FROM tickets;"}}));
 	}
-	loader.RegisterFunction(many_full);
-	ScalarFunctionSet reg_full("anofox_decide_register_model");
-	for (auto &f : reg.functions) {
-		auto c = f;
-		c.name = "anofox_decide_register_model";
-		reg_full.AddFunction(std::move(c));
+	{
+		ScalarFunctionSet set("anofox_decide_register_model");
+		set.AddFunction(DECIDE_SCALAR("anofox_decide_register_model", B, DecideRegisterModelFun, DecideRegisterModelBind, {V}));
+		set.AddFunction(DECIDE_SCALAR("anofox_decide_register_model", B, DecideRegisterModelFun, DecideRegisterModelBind, {V, V}));
+		set.AddFunction(DECIDE_SCALAR("anofox_decide_register_model", B, DecideRegisterModelFun, DecideRegisterModelBind, {V, V, V}));
+		set.AddFunction(DECIDE_SCALAR("anofox_decide_register_model", B, DecideRegisterModelFun, DecideRegisterModelBind, {V, V, V, V}));
+		set.AddFunction(DECIDE_SCALAR("anofox_decide_register_model", B, DecideRegisterModelFun, DecideRegisterModelBind, {V, V, V, V, V}));
+		set.AddFunction(DECIDE_SCALAR("anofox_decide_register_model", B, DecideRegisterModelFun, DecideRegisterModelBind, {V, V, map_type}));
+		const string desc =
+		    "Register a model id for this database instance and return true. Providers: 'stub' (deterministic), "
+		    "'local' (ONNX graph and tokenizer paths, optional profile 'julia-1' or 'laya'), and the remote "
+		    "providers 'typesafe', 'liquid' and 'systemone' (optional options MAP with endpoint, path, model, "
+		    "key_env). Duplicate ids, unsupported providers and unreadable files raise actionable errors.";
+		RegisterScalarFunctionSetWithAlias(
+		    loader, std::move(set), "decide_register_model",
+		    DecideDocs(desc, "models",
+		               {{{"id"}, {V}, "SELECT decide_register_model('my-stub');"},
+		                {{"id", "provider"}, {V, V}, "SELECT decide_register_model('jev-latest', 'typesafe');"},
+		                {{"id", "provider", "graph_path"}, {V, V, V},
+		                 "SELECT decide_register_model('julia-1', 'local', '/models/julia1.onnx');"},
+		                {{"id", "provider", "graph_path", "tokenizer_path"}, {V, V, V, V},
+		                 "SELECT decide_register_model('julia-1', 'local', '/models/julia1.onnx', '/models/tokenizer/tokenizer.json');"},
+		                {{"id", "provider", "graph_path", "tokenizer_path", "profile"}, {V, V, V, V, V},
+		                 "SELECT decide_register_model('laya', 'local', '/models/laya.onnx', '/models/tokenizer/tokenizer.json', 'laya');"},
+		                {{"id", "provider", "options"}, {V, V, map_type},
+		                 "SELECT decide_register_model('kev-latest', 'systemone', MAP {'endpoint': 'http://127.0.0.1:8009'});"}}));
 	}
-	loader.RegisterFunction(reg_full);
 }
 
 } // namespace anofox

@@ -6,6 +6,13 @@ set(LOADABLE_EXTENSION_NAME ${TARGET_NAME}_loadable_extension)
 
 project(${TARGET_NAME} LANGUAGES C CXX)
 
+# Feedback banner (header-only). Telemetry ON so a printed banner counts as a
+# banner_shown event through the instance configured below.
+set(DATAZOO_BANNER_TELEMETRY ON CACHE BOOL "" FORCE)
+set(DATAZOO_BANNER_TELEMETRY_INCLUDE_DIR
+    ${CMAKE_CURRENT_SOURCE_DIR}/posthog-telemetry/include CACHE PATH "" FORCE)
+add_subdirectory(datazoo-banner)
+
 include_directories(src/include)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -18,6 +25,22 @@ find_package(OpenSSL REQUIRED)
 # else prebuilt archive download). Local dev against tabfm's tree:
 #   CMAKE_PREFIX_PATH=../anofox-tabfm/build/release/vcpkg_installed/x64-linux
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/ort.cmake)
+
+# --- Telemetry ---
+# Build telemetry as OBJECT library to avoid link order issues with DuckDB symbols.
+add_library(posthog_telemetry_obj OBJECT
+    ${CMAKE_CURRENT_SOURCE_DIR}/posthog-telemetry/src/telemetry.cpp
+)
+
+target_include_directories(posthog_telemetry_obj PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/posthog-telemetry/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/duckdb/src/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/duckdb/third_party
+    ${CMAKE_CURRENT_SOURCE_DIR}/duckdb/third_party/httplib
+    ${OPENSSL_INCLUDE_DIR}
+)
+
+target_compile_features(posthog_telemetry_obj PUBLIC cxx_std_17)
 
 # --- Build ---
 set(EXTENSION_SOURCES
@@ -36,15 +59,32 @@ set(EXTENSION_SOURCES
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 
+# Telemetry objects + include path into both extension targets.
 foreach(_tgt ${EXTENSION_NAME} ${LOADABLE_EXTENSION_NAME})
+    target_sources(${_tgt} PRIVATE $<TARGET_OBJECTS:posthog_telemetry_obj>)
     target_include_directories(${_tgt} PRIVATE
         ${CMAKE_SOURCE_DIR}/third_party/httplib
-        ${CMAKE_SOURCE_DIR}/third_party/yyjson/include)
+        ${CMAKE_SOURCE_DIR}/third_party/yyjson/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/posthog-telemetry/include)
     target_link_libraries(${_tgt}
+        datazoo_banner
         OpenSSL::SSL
         OpenSSL::Crypto
         decide_onnxruntime)
 endforeach()
+
+# posthog-telemetry reads the machine id from the IORegistry on macOS.
+if(APPLE)
+    target_link_libraries(${EXTENSION_NAME} "-framework IOKit" "-framework CoreFoundation")
+    target_link_libraries(${LOADABLE_EXTENSION_NAME} "-framework IOKit" "-framework CoreFoundation")
+endif()
+
+# posthog-telemetry's machine id (GetMacAddress -> GetAdaptersInfo) needs the
+# Windows IP Helper API.
+if(WIN32)
+    target_link_libraries(${EXTENSION_NAME} iphlpapi ws2_32)
+    target_link_libraries(${LOADABLE_EXTENSION_NAME} iphlpapi ws2_32)
+endif()
 
 # GCC 14 COMDAT vs non-COMDAT conflict on Linux for DuckDB v1.5+ (see
 # extension_config.cmake for the full explanation).

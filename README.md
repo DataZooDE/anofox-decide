@@ -149,9 +149,29 @@ spec), [docs/CALIBRATION_PERF.md](docs/CALIBRATION_PERF.md) (calibration and
 performance), [docs/REVIEW_FOLLOWUP.md](docs/REVIEW_FOLLOWUP.md) (review
 decisions and the model investigations).
 
+## Telemetry
+
+Sends **anonymous** usage telemetry (extension load and per-function call
+counts; no state, questions, answers, model ids, endpoints, keys or SQL) through
+the shared [`posthog-telemetry`](https://github.com/DataZooDE/posthog-telemetry)
+library, exactly as [anofox-tabfm](https://github.com/DataZooDE/anofox-tabfm)
+does. Turn it off with any of:
+
+```bash
+export DATAZOO_DISABLE_TELEMETRY=1        # environment
+```
+```sql
+SET anofox_telemetry_enabled = false;      -- SQL
+```
+
+CI environments are auto-detected and telemetry is disabled there. The full
+list of what is collected is in [TELEMETRY.md](TELEMETRY.md). The load banner
+(once a day, terminal only, never in CI or pipes) is silenced with
+`SET datazoo_banner = false` or `DATAZOO_NO_BANNER=1`.
+
 ## Build & test
 
-Clone with submodules (`git clone --recurse-submodules`), then:
+Clone with submodules (`git clone --recurse-submodules`; they include the shared `posthog-telemetry` and `datazoo-banner` libraries), then:
 
 ```bash
 make release                          # release build; ONNX Runtime built via vcpkg (first build is slow)

@@ -1,0 +1,93 @@
+# name: test/sql/decide_function_docs.test
+# description: Every user-facing decide_* / anofox_decide_* function surfaces a
+#              description, at least one runnable example, categories and
+#              parameter names in duckdb_functions() (DuckDB's documentation
+#              facilities: autocomplete, generated docs). Guards against a
+#              registration that forgets its FunctionDescription. decide_* are
+#              aliases of the primary anofox_decide_* functions (tabfm
+#              convention).
+# group: [anofox_decide]
+
+require anofox_decide
+
+statement ok
+LOAD anofox_decide
+
+# All ten public functions exist under both names.
+query I
+SELECT count(DISTINCT function_name)
+FROM duckdb_functions()
+WHERE function_name IN ('decide_probability','decide_choice','decide_decision','decide_many',
+                        'decide_register_model','decide_models','decide_table',
+                        'decide_brier_score','decide_ece','decide_accuracy')
+----
+10
+
+query I
+SELECT count(DISTINCT function_name)
+FROM duckdb_functions()
+WHERE function_name IN ('anofox_decide_probability','anofox_decide_choice','anofox_decide_decision',
+                        'anofox_decide_many','anofox_decide_register_model','anofox_decide_models',
+                        'anofox_decide_table','anofox_decide_brier_score','anofox_decide_ece',
+                        'anofox_decide_accuracy')
+----
+10
+
+# Every overload of every function carries a non-empty description ...
+query I
+SELECT count(*)
+FROM duckdb_functions()
+WHERE (function_name LIKE 'decide\_%' ESCAPE '\' OR function_name LIKE 'anofox\_decide\_%' ESCAPE '\')
+  AND (description IS NULL OR length(description) = 0)
+----
+0
+
+# ... at least one runnable example ...
+query I
+SELECT count(*)
+FROM duckdb_functions()
+WHERE (function_name LIKE 'decide\_%' ESCAPE '\' OR function_name LIKE 'anofox\_decide\_%' ESCAPE '\')
+  AND len(examples) = 0
+----
+0
+
+# ... and categories {decide, <area>}.
+query I
+SELECT count(*)
+FROM duckdb_functions()
+WHERE (function_name LIKE 'decide\_%' ESCAPE '\' OR function_name LIKE 'anofox\_decide\_%' ESCAPE '\')
+  AND NOT (list_contains(categories, 'decide') AND len(categories) = 2)
+----
+0
+
+# Parameter names are surfaced, so autocomplete documents the signature
+# instead of bare positional slots.
+query I
+SELECT count(*)
+FROM duckdb_functions()
+WHERE (function_name LIKE 'decide\_%' ESCAPE '\' OR function_name LIKE 'anofox\_decide\_%' ESCAPE '\')
+  AND function_name NOT IN ('decide_models', 'anofox_decide_models')
+  AND len(parameters) = 0
+----
+0
+
+# decide_* are true aliases of the primary anofox_decide_* functions.
+query I
+SELECT count(DISTINCT function_name)
+FROM duckdb_functions()
+WHERE function_name LIKE 'decide\_%' ESCAPE '\' AND alias_of = 'anofox_' || function_name
+----
+10
+
+# Spot-check the documented signatures.
+query T
+SELECT parameters FROM duckdb_functions()
+WHERE function_name = 'decide_choice' AND len(parameters) = 4 AND parameter_types[3] = 'VARCHAR[]'
+----
+[state, question, options, model]
+
+query T
+SELECT parameters FROM duckdb_functions()
+WHERE function_name = 'decide_accuracy' AND len(parameters) = 3 AND parameter_types[2] = 'BOOLEAN'
+----
+[probability, outcome, threshold]
