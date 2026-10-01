@@ -101,21 +101,27 @@ English / typed-decisions) are both supported.
 
 ## Model comparison
 
-Measured on 8 labelled support tickets (`test/fixtures/support_tickets.csv`),
-correct refund / team:
+Measured on 200 labelled tickets from the public Bitext customer-support dataset (60 refund requests,
+140 not; routing into billing / orders / account / other). Full method, caveats and per-class results:
+[docs/EVALUATION.md](docs/EVALUATION.md).
 
-| Model | Runs | Refund | Team |
-|---|---|---|---|
-| Liquid AI D1 (`liquid`) | hosted API | 8/8 | 8/8 |
-| TypeSafe Jev (`typesafe`) | hosted API | 8/8 | 7/8 |
-| Laya multilingual | local, in-process | 8/8 | 7/8 |
-| Laya typed-decisions | local, in-process | 7/8 | 6/8 |
-| Kev-0.8B (`systemone`) | local server | 6/8 | 6/8 |
-| Julia-1 | local, in-process | 4/8 | 4/8 |
+| Model | Runs | Refund accuracy | Refund AUROC | Routing accuracy |
+|---|---|---|---|---|
+| TypeSafe Jev (`typesafe`) | hosted API | 93.0% | 0.984 | 92.0% |
+| Laya multilingual | local, in-process | 92.0% | 0.970 | 62.0% |
+| Liquid D1 (`liquid`) | hosted API | 77.0% | 0.970 | 91.0% |
+| Laya typed-decisions | local, in-process | 88.5% | 0.978 | 76.0% |
+| Kev-0.8B (`systemone`) | local server | 70.5% | 0.850 | 44.0% |
+| Julia-1 | local, in-process | 29.5% | 0.407 | 37.5% |
 
-Each local ONNX model reproduces its upstream Python reference to within 5e-5
-in probability on these tickets; the hosted models are called as-is. Eight tickets is a smoke test, not a
-benchmark: evaluate on your own data.
+Always-no scores 70% on refund and always-billing 45% on routing. Jev is the most accurate overall; D1
+routes as well as Jev, but at the 0.5 cut-off over-predicts refunds (its ranking is fine, AUROC 0.970);
+Laya multilingual matches Jev on refund and is the best in-process model, with typed-decisions the best
+in-process router. English-only, template-generated data: a smoke test of relative strength, not a
+benchmark of your tickets, so evaluate on your own data (`tools/eval` reproduces this run).
+
+Each local ONNX model reproduces its upstream Python reference to within 5e-5 in probability on a small
+check set; the hosted models are called as-is.
 
 ## Status
 
@@ -133,9 +139,9 @@ metrics and CI are working. What you can use today:
 Not supported yet: `score` (ordinal) questions, GPU execution, and the
 Von model (needs order-invariant attention in the export).
 
-Which model to pick: Liquid AI D1 led our 8-ticket smoke test, and Laya
-multilingual matched Jev among the models that run in-process (see the
-comparison above), so it is the recommended local model. Model weights are not shipped in the repo; see
+Which model to pick: Jev was the most accurate in our 200-ticket evaluation. Among models that run
+in-process, Laya multilingual matched it on refund detection and Laya typed-decisions routes best
+(see the comparison above); there is no single best local model yet. Model weights are not shipped in the repo; see
 [Local models](#local-models) for setup.
 
 CI builds and tests Linux (amd64, arm64), macOS (arm64) and Windows (amd64)

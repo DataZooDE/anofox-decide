@@ -121,3 +121,13 @@ service: a bogus stored secret makes a call fail while the valid env key
 stays untouched). 8-ticket smoke test: D1 8/8 refund, 8/8 team (Jev 8/8, 7/8).
 Kev now registers as `systemone` with a loopback endpoint and a host-scoped
 secret, no session `SET`. Not done: `score` questions.
+
+## 200-ticket evaluation (1 Oct 2026)
+
+`tools/eval` scores six models on a deterministic 200-ticket sample of the public Bitext customer-support
+dataset (refund yes/no + 4-way routing); results and caveats in docs/EVALUATION.md. It changed earlier
+conclusions drawn from 8 tickets: Jev is the most accurate (93% refund / 92% routing), Laya multilingual
+ties it on refund but routes at 62%, D1 matches Jev on routing but over-predicts refunds at the 0.5
+cut-off (AUROC 0.970, spec 67%), typed-decisions is the best in-process router (76%), Kev-0.8B and
+Julia-1 are not competitive. D1's free tier had very variable latency (1-34 s per call). English only and
+template-generated, so absolute numbers will be lower on real tickets.
