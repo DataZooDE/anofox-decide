@@ -32,7 +32,7 @@ CREATE SECRET liquid_bogus (TYPE anofox_decide, API_KEY 'liquid_invalid', SCOPE 
 statement error
 SELECT decide_probability('x', 'y', model := 'd1:free')
 ----
-<REGEX>:.*Liquid AI rejected the API key.*
+<REGEX>:.*Liquid AI at https://api.liquid.ai rejected the API key \(HTTP 401\).*stored secret.*
 
 # ... and dropping it falls back to the env var.
 statement ok

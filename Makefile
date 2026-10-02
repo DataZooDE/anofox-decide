@@ -74,8 +74,8 @@ test_debug_internal:
 # Live TypeSafe E2E (DoD gate). Explicit SKIP without a key — never
 # fake-green. Requires TYPESAFE_API_KEY + HTTPS egress to api.typesafe.ai.
 test-live:
-	if [ -z "$$TYPESAFE_API_KEY" ]; then echo "SKIP: TYPESAFE_API_KEY not set — TypeSafe live E2E not run"; else $(DECIDE_TEST_ENV) ./$(BUILD_ROOT)/release/test/unittest "test/sql/decide_remote_live.test"; fi
-	if [ -z "$$LIQUID_API_KEY" ]; then echo "SKIP: LIQUID_API_KEY not set — Liquid D1 live E2E not run"; else $(DECIDE_TEST_ENV) ./$(BUILD_ROOT)/release/test/unittest "test/sql/decide_remote_live_liquid.test"; fi
+	if [ -z "$$TYPESAFE_API_KEY" ]; then echo "SKIP: TYPESAFE_API_KEY not set — TypeSafe live E2E not run"; else $(DECIDE_TEST_ENV) ./$(BUILD_ROOT)/release/test/unittest --test-config test/configs/live.json "test/sql/decide_remote_live.test"; fi
+	if [ -z "$$LIQUID_API_KEY" ]; then echo "SKIP: LIQUID_API_KEY not set — Liquid D1 live E2E not run"; else $(DECIDE_TEST_ENV) ./$(BUILD_ROOT)/release/test/unittest --test-config test/configs/live.json "test/sql/decide_remote_live_liquid.test"; fi
 
 init:
 	git submodule add -b $(CI_TOOLS_BRANCH) https://github.com/duckdb/extension-ci-tools.git extension-ci-tools || true
