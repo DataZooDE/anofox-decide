@@ -79,7 +79,7 @@ SELECT * FROM decide_table('x', '[{"id":"q","kind":"choice","instruction":"A"}]'
 statement error
 SELECT * FROM decide_table('x', '[{"id":"q","kind":"binary","instruction":"Y?"}]', 'nope')
 ----
-<REGEX>:.*unknown model.*
+<REGEX>:.*model 'nope' is not registered.*
 
 # Local provider scores through the table surface (finite probs, valid choice).
 query I

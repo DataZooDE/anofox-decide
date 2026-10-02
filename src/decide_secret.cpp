@@ -13,6 +13,7 @@
 // only, e.g. TYPESAFE_API_KEY / LIQUID_API_KEY).
 //===----------------------------------------------------------------------===//
 
+#include "decide_errors.hpp"
 #include "decide_registration.hpp"
 
 #include "duckdb/main/secret/secret.hpp"
@@ -27,6 +28,13 @@ namespace {
 
 unique_ptr<BaseSecret> DecideCreateSecretFromConfig(ClientContext &context, CreateSecretInput &input) {
 	(void)context;
+	auto key_it = input.options.find("api_key");
+	if (key_it == input.options.end() || key_it->second.IsNull() || key_it->second.ToString().empty()) {
+		throw InvalidInputException(DecideMsg(
+		    "CREATE SECRET", "an anofox_decide secret needs an API_KEY",
+		    "CREATE SECRET (TYPE anofox_decide, API_KEY '<key>', SCOPE 'api.liquid.ai'); (SCOPE is the API host the "
+		    "key belongs to; copy it from an env var with API_KEY getenv('LIQUID_API_KEY'))"));
+	}
 	auto secret = make_uniq<KeyValueSecret>(input.scope, input.type, input.provider, input.name);
 	secret->TrySetValue("api_key", input);
 	secret->redact_keys = {"api_key"};

@@ -1,0 +1,129 @@
+# name: test/sql/decide_diagnostics.test
+# description: decide_models() readiness columns and decide_doctor(): a setup problem is visible,
+#              with the exact next step, before a call fails. Hermetic (no network, no keys).
+# group: [anofox_decide]
+
+require anofox_decide
+
+statement ok
+LOAD anofox_decide
+
+# --- A fresh session: only the stub, no default ---------------------------------------
+
+query TTT
+SELECT item, status, detail FROM decide_doctor() WHERE item = 'default model'
+----
+default model	warn	no default model is set, so every call must name one with model := '<id>'
+
+query TT
+SELECT item, status FROM decide_doctor() WHERE item = 'registered models'
+----
+registered models	warn
+
+# decide_models(): the original four columns first, readiness columns appended.
+statement ok
+CREATE VIEW models_shape AS SELECT * FROM decide_models()
+
+query T
+SELECT string_agg(name, ',' ORDER BY cid) FROM pragma_table_info('models_shape')
+----
+model,provider,mode,path,is_default,ready,hint,profile,endpoint,wire_model
+
+query TTT
+SELECT model, ready, hint FROM decide_models() WHERE model = 'stub'
+----
+stub	true	built-in test model: returns constants (probability 0.5, first option). Not a real model
+
+# --- A remote model without the opt-in ---------------------------------------------------
+
+query I
+SELECT decide_register_model('d1:free', 'liquid')
+----
+1
+
+query TT
+SELECT ready, hint FROM decide_models() WHERE model = 'd1:free'
+----
+false	remote calls are off: your text would be sent to https://api.liquid.ai/decisions/v1/systemone. Fix: SET anofox_decide_allow_remote = true;
+
+query TTT
+SELECT item, status, fix FROM decide_doctor() WHERE item = 'model ''d1:free'''
+----
+model 'd1:free'	fail	SET anofox_decide_allow_remote = true;
+
+query TT
+SELECT item, status FROM decide_doctor() WHERE item = 'remote calls'
+----
+remote calls	warn
+
+statement ok
+SET anofox_decide_allow_remote = true
+
+# With the opt-in on and no key: the readiness check reports the key problem, not a stack of errors.
+query TT
+SELECT ready, hint LIKE '%no API key for the Liquid AI provider%' FROM decide_models() WHERE model = 'd1:free'
+----
+false	true
+
+query T
+SELECT status FROM decide_doctor() WHERE item = 'remote calls'
+----
+ok
+
+# --- A keyless local server (strands): ready as soon as the opt-in is on ----------------------
+
+query I
+SELECT decide_register_model('strands-decider', 'strands')
+----
+1
+
+query TT
+SELECT ready, hint FROM decide_models() WHERE model = 'strands-decider'
+----
+true	ready: strands-decider at http://127.0.0.1:8000/v1/systemone, no key needed
+
+query TTT
+SELECT endpoint, wire_model, profile FROM decide_models() WHERE model = 'strands-decider'
+----
+http://127.0.0.1:8000/v1/systemone	strands-decider	NULL
+
+# --- A local model: files and profile --------------------------------------------------------
+
+query I
+SELECT decide_register_model('tiny', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json')
+----
+1
+
+query TTT
+SELECT ready, profile, wire_model FROM decide_models() WHERE model = 'tiny'
+----
+true	julia-1	NULL
+
+# --- is_default follows the setting -------------------------------------------------------------
+
+query T
+SELECT list(model ORDER BY model) FROM decide_models() WHERE is_default
+----
+NULL
+
+statement ok
+SET anofox_decide_model = 'tiny'
+
+query T
+SELECT list(model ORDER BY model) FROM decide_models() WHERE is_default
+----
+[tiny]
+
+query TT
+SELECT status, detail FROM decide_doctor() WHERE item = 'default model'
+----
+ok	'tiny' (local)
+
+# A default that is not registered is a failure with a fix.
+statement ok
+SET anofox_decide_model = 'nope'
+
+query TT
+SELECT status, fix LIKE '%decide_register_model(''nope''%' FROM decide_doctor() WHERE item = 'default model'
+----
+fail	true

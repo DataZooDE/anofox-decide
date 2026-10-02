@@ -162,3 +162,19 @@ any new kind), `decide_many`/`decide_table` labelled every non-binary answer "ch
 check (1e-3) rejected valid Jev answers because Jev rounds to 2 decimals (1 of 120 real score answers summed to
 0.99); the tolerance is now 1e-3 + 0.005 per option for choice and score. Not done: an accuracy evaluation of
 score on labelled data (the Bitext set has no ordinal labels).
+
+## Error guidance, first-run experience (2 Oct 2026, PR C1)
+
+Audit of every user-facing message (SQL surface, remote provider, local models) found: the report-a-bug footer on
+every user mistake, a silent stub default, raw JSON and jargon in messages, thin diagnostics. PR C1 (foundation +
+SQL surface): message convention `<function>: <what>. Fix: <sql>` with offending values echoed (new
+`src/decide_errors.*`); `DECIDE_GUARD` adds the issue-link footer only to unexpected errors (user mistakes keep
+their DuckDB exception class and no footer); **no implicit model** (`anofox_decide_model` is unset by default;
+a call without a model explains how to choose and register one; resolution stays lazy so NULL inputs need none);
+unknown-model errors name the source, the registered ids and a close match; `decide_models()` gains `is_default`,
+`ready`, `hint`, `profile`, `endpoint`, `wire_model`; new `decide_doctor()` (item, status, detail, fix) and
+`decide_unregister_model(id)`; registration rejects stray path/profile arguments for remote providers, explains
+duplicate ids, and file-open errors use plain text, the right role and a Hugging Face id hint; settings validators
+show range, default and an example, `head_length` and `max_length` are cross-checked; threshold and metric errors
+echo the value; empty questions and empty `CREATE SECRET` are rejected. Planned next: PR C2 (remote HTTP/transport
+errors) and PR C3 (local truncation, pairing, registration depth).

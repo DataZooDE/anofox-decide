@@ -75,7 +75,7 @@ SELECT decide_decision('x', 'y', 1.0, model := 'stub')
 statement error
 SELECT decide_decision('x', 'y', 0.5, model := 'nope')
 ----
-<REGEX>:.*unknown model.*
+<REGEX>:.*model 'nope' is not registered.*
 
 # Works through the local provider as well (finite probability decides).
 query I

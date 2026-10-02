@@ -560,7 +560,7 @@ TEST_CASE("score request: ordered criteria array, validated rubric", "[anofox_de
 	SECTION("rubric limits") {
 		auto one = ScoreQ();
 		one.options = {"only"};
-		REQUIRE_THROWS_WITH(DecideBuildRequestJson("s", "m", {one}), Contains("needs 2 to 10 levels"));
+		REQUIRE_THROWS_WITH(DecideBuildRequestJson("s", "m", {one}), Contains("needs 2 to 10 level descriptions"));
 		auto eleven = ScoreQ();
 		eleven.options.clear();
 		for (int i = 0; i < 11; i++) {
@@ -572,7 +572,7 @@ TEST_CASE("score request: ordered criteria array, validated rubric", "[anofox_de
 		REQUIRE_THROWS_WITH(DecideBuildRequestJson("s", "m", {dup}), Contains("repeats the level 'a'"));
 		auto empty = ScoreQ();
 		empty.options = {"a", ""};
-		REQUIRE_THROWS_WITH(DecideBuildRequestJson("s", "m", {empty}), Contains("empty level description"));
+		REQUIRE_THROWS_WITH(DecideBuildRequestJson("s", "m", {empty}), Contains("empty description for level 2"));
 	}
 }
 
@@ -654,7 +654,7 @@ TEST_CASE("decide_many / decide_table JSON accepts and renders score questions",
 	REQUIRE_THROWS_WITH(DecideParseManyQuestions(R"([{"id":"f","kind":"score","instruction":"x"}])", 100),
 	                    Contains("needs a non-empty 'levels' array"));
 	REQUIRE_THROWS_WITH(DecideParseManyQuestions(R"([{"id":"f","kind":"score","instruction":"x","levels":["one"]}])", 100),
-	                    Contains("needs 2 to 10 levels"));
+	                    Contains("needs 2 to 10 level descriptions"));
 	REQUIRE_THROWS_WITH(DecideParseManyQuestions(R"([{"id":"f","kind":"score","instruction":"x","levels":["a",1]}])", 100),
 	                    Contains("must be strings"));
 	REQUIRE_THROWS_WITH(DecideParseManyQuestions(R"([{"id":"f","kind":"essay","instruction":"x"}])", 100),

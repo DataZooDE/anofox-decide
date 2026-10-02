@@ -57,7 +57,7 @@ SELECT count(*) FROM decide_models() WHERE model='jev-latest' AND provider='type
 statement error
 SELECT decide_register_model('julia-1', 'local')
 ----
-<REGEX>:.*graph path.*
+<REGEX>:.*local models need the path of an ONNX graph file.*Fix: SELECT decide_register_model.*
 
 query I
 SELECT decide_register_model('julia-1', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json')
@@ -74,7 +74,7 @@ SELECT decide_register_model('rx', 'nope')
 statement error
 SELECT decide_register_model(NULL, 'stub')
 ----
-<REGEX>:.*cannot be NULL.*
+<REGEX>:.*decide_register_model: the model id is NULL.*Fix:.*
 
 # Registered ids are usable as model arguments.
 query R
@@ -86,7 +86,7 @@ SELECT decide_probability('The customer requests a refund.', 'A refund is reques
 statement error
 SELECT decide_probability('x', 'y', model := 'nope')
 ----
-<REGEX>:.*unknown model.*
+<REGEX>:.*model 'nope' is not registered.*
 
 # The anofox_decide_model setting supplies the default for 2-arg calls.
 statement ok
@@ -104,4 +104,4 @@ SET anofox_decide_model='nope'
 statement error
 SELECT decide_probability('x', 'y')
 ----
-<REGEX>:.*unknown model.*
+<REGEX>:.*model 'nope' is not registered.*

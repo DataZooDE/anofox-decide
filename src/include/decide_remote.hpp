@@ -78,6 +78,8 @@ struct DecideRemoteProfile {
 const DecideRemoteProfile *DecideFindRemoteProfile(const string &provider);
 // Comma-separated remote provider ids, for error messages.
 string DecideRemoteProviderList();
+// The remote provider ids (typesafe, liquid, systemone, strands).
+vector<string> DecideRemoteProviderNames();
 
 // Per-model remote target (from decide_register_model); empty fields fall
 // back to the profile, then (typesafe only) to the legacy session settings.
@@ -103,6 +105,9 @@ struct DecideRemoteConfig {
 	// Choice criteria style and whether to send the Authorization header.
 	bool criteria_names = false;
 	bool send_auth = true;
+	// Where the key came from ("a stored secret", "the anofox_decide_api_key setting", "env var X"), for
+	// diagnostics and error messages; empty when no key was needed.
+	string key_source;
 	// Only for error messages.
 	string display = "TypeSafe";
 	string env_key = "TYPESAFE_API_KEY";

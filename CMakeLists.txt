@@ -54,6 +54,7 @@ set(EXTENSION_SOURCES
         src/decide_local_nli.cpp
         src/decide_metrics.cpp
         src/decide_secret.cpp
+        src/decide_errors.cpp
 )
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
