@@ -131,3 +131,14 @@ ties it on refund but routes at 62%, D1 matches Jev on routing but over-predicts
 cut-off (AUROC 0.970, spec 67%), typed-decisions is the best in-process router (76%), Kev-0.8B and
 Julia-1 are not competitive. D1's free tier had very variable latency (1-34 s per call). English only and
 template-generated, so absolute numbers will be lower on real tickets.
+
+## strands-decider provider (2 Oct 2026)
+
+strands-decider (strands-labs, Apache-2.0; Qwen3.5-2B torso + LoRA + pointer head, same family as Kev) serves
+`POST /v1/systemone`, so it is a remote provider, not an in-process model (hybrid Gated DeltaNet layers, custom
+masking and a 2B torso are the same blocker as Kev). Its schema validates choice `criteria` as `dict[str, str]`,
+so the `null` descriptions we send everywhere else are rejected with HTTP 422 (confirmed with curl). Added a
+`strands` provider profile: loopback default endpoint, no API key (no Authorization header unless a key is
+configured), and choice options sent as their own descriptions; the options MAP gained `criteria: 'null' |
+'name'` for any other server with the same schema. Server limit: 24 options per choice question
+(`num_slots`). On the 200-ticket evaluation it scores 81% refund / 65% routing (6.6 min on CPU).

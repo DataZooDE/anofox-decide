@@ -105,10 +105,13 @@ void SplitEndpoint(const string &endpoint, string &host, int &port, bool &ssl, c
 // endpoint, path and key variable differ. Liquid D1 verified live against
 // POST https://api.liquid.ai/decisions/v1/systemone (model "d1:free").
 const DecideRemoteProfile kRemoteProfiles[] = {
-    {"typesafe", "TypeSafe", "https://api.typesafe.ai", "/v1/systemone", "TYPESAFE_API_KEY"},
-    {"liquid", "Liquid AI", "https://api.liquid.ai", "/decisions/v1/systemone", "LIQUID_API_KEY"},
+    {"typesafe", "TypeSafe", "https://api.typesafe.ai", "/v1/systemone", "TYPESAFE_API_KEY", true, false},
+    {"liquid", "Liquid AI", "https://api.liquid.ai", "/decisions/v1/systemone", "LIQUID_API_KEY", true, false},
     // Generic System One-compatible server (e.g. Kev): the model supplies the endpoint.
-    {"systemone", "System One endpoint", "", "/v1/systemone", ""},
+    {"systemone", "System One endpoint", "", "/v1/systemone", "", true, false},
+    // strands-decider (`strands-decider serve`): a local, keyless server on loopback whose schema
+    // requires string criteria values for choice questions.
+    {"strands", "strands-decider", "http://127.0.0.1:8000", "/v1/systemone", "", false, true},
 };
 
 } // namespace
@@ -183,7 +186,8 @@ bool DecideHostIsLoopback(const string &host) {
 
 //--- Pure JSON mapping -------------------------------------------------------
 
-string DecideBuildRequestJson(const string &state, const string &model, const vector<DecideQuestion> &questions) {
+string DecideBuildRequestJson(const string &state, const string &model, const vector<DecideQuestion> &questions,
+                              bool criteria_names) {
 	if (questions.empty()) {
 		throw InvalidInputException("decide: refusing to send a remote request with no questions");
 	}
@@ -226,7 +230,11 @@ string DecideBuildRequestJson(const string &state, const string &model, const ve
 			}
 			auto crit = yyjson_mut_obj(mdoc.doc);
 			for (auto &opt : q.options) {
-				yyjson_mut_obj_add_null(mdoc.doc, crit, opt.c_str());
+				if (criteria_names) {
+					yyjson_mut_obj_add_strcpy(mdoc.doc, crit, opt.c_str(), opt.c_str());
+				} else {
+					yyjson_mut_obj_add_null(mdoc.doc, crit, opt.c_str());
+				}
 			}
 			yyjson_mut_obj_add_val(mdoc.doc, qobj, "criteria", crit);
 		}
@@ -581,6 +589,7 @@ DecideRemoteConfig DecideResolveConfig(ClientContext &context, const DecideRemot
 	cfg.display = profile->display;
 	cfg.env_key = profile->env_key;
 	cfg.path = target.path.empty() ? profile->path : target.path;
+	cfg.criteria_names = target.criteria_names < 0 ? profile->criteria_names : target.criteria_names == 1;
 
 	// Endpoint: the model's own endpoint, else (typesafe only, legacy) the
 	// session setting, else the profile default.
@@ -651,7 +660,11 @@ DecideRemoteConfig DecideResolveConfig(ClientContext &context, const DecideRemot
 			cfg.api_key = env;
 		}
 	}
-	if (cfg.api_key.empty()) {
+	if (cfg.api_key.empty() && !profile->requires_key) {
+		// Keyless server (e.g. a local strands-decider): no Authorization header.
+		cfg.send_auth = false;
+	}
+	if (cfg.api_key.empty() && profile->requires_key) {
 		string hint = "CREATE SECRET (TYPE anofox_decide, API_KEY '<key>', SCOPE '" + cfg.host + "')";
 		if (target.provider == "typesafe") {
 			hint += ", SET anofox_decide_api_key='<key>'";
@@ -740,11 +753,14 @@ vector<DecideAnswer> DecideRemoteEvaluateWithTransport(const DecideRemoteConfig 
 		                            "(SET anofox_decide_allow_remote=true to enable; remote calls send state "
 		                            "to the configured endpoint)");
 	}
-	string body = DecideBuildRequestJson(state, cfg.model, questions);
+	string body = DecideBuildRequestJson(state, cfg.model, questions, cfg.criteria_names);
 	// NOTE: no Content-Type here — httplib's Post(path, headers, body,
 	// content_type) sets it, and a duplicate header makes some servers
 	// ignore the body content type (observed as HTTP 422).
-	DecideHeaderList headers = {{"Authorization", "Bearer " + cfg.api_key}};
+	DecideHeaderList headers;
+	if (cfg.send_auth) {
+		headers.emplace_back("Authorization", "Bearer " + cfg.api_key);
+	}
 	int attempts = 1 + std::max(0, cfg.max_retries);
 	DecideHttpResponse last {false, -1, "", "no attempt made"};
 	for (int attempt = 0; attempt < attempts; attempt++) {

@@ -48,15 +48,17 @@ struct DecideModelEntry {
 	string path;
 	string wire_model;
 	string key_env;
+	string criteria; // "" follow the provider, "null" or "name": how choice options are described on the wire
 };
 
 // Per-model remote options from decide_register_model's options MAP
-// (keys: endpoint, path, model, key_env).
+// (keys: endpoint, path, model, key_env, criteria).
 struct DecideRegisterOptions {
 	string endpoint;
 	string path;
 	string wire_model;
 	string key_env;
+	string criteria;
 };
 
 // DB-instance-level model registry (tabfm TabFMState pattern): lives in

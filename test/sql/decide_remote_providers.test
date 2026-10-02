@@ -98,3 +98,45 @@ statement error
 SELECT decide_probability('x', 'y', model := 'jev-latest')
 ----
 <REGEX>:.*no API key for the TypeSafe provider.*
+
+# --- strands-decider (keyless local server) ---------------------------------
+
+query I
+SELECT decide_register_model('strands-decider', 'strands')
+----
+1
+
+query TT
+SELECT provider, mode FROM decide_models() WHERE model = 'strands-decider'
+----
+strands	remote
+
+# The criteria option picks how choice options are described on the wire.
+query I
+SELECT decide_register_model('strands-nulls', 'strands', MAP {'criteria': 'null'})
+----
+1
+
+query I
+SELECT decide_register_model('jev-names', 'typesafe', MAP {'criteria': 'name'})
+----
+1
+
+statement error
+SELECT decide_register_model('bad-criteria', 'strands', MAP {'criteria': 'maybe'})
+----
+<REGEX>:.*criteria must be 'null' or 'name'.*
+
+statement error
+SELECT decide_register_model('stub-criteria', 'stub', MAP {'criteria': 'name'})
+----
+<REGEX>:.*only apply to remote providers.*
+
+# A keyless provider needs no secret: the call reaches the allow_remote gate
+# (SET above) and then the network layer, instead of failing on a missing key.
+# Nothing listens on the default loopback port in CI, so the failure is a
+# connection error, never a key error.
+statement error
+SELECT decide_probability('x', 'y', model := 'strands-decider')
+----
+<REGEX>:.*(strands-decider endpoint unreachable|failed after).*
