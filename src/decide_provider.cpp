@@ -10,6 +10,7 @@
 #include "duckdb/common/file_system.hpp"
 
 #include <cmath>
+#include <unordered_map>
 
 namespace duckdb {
 namespace anofox {
@@ -531,6 +532,95 @@ void RegisterDecideProvider(ExtensionLoader &loader) {
 	// No SQL surface here: registration lives in decide_scalars.cpp
 	// (decide_register_model) and decide_table.cpp (decide_models).
 	// The registry itself is created lazily per database instance.
+}
+
+// Identity of a request for de-duplication within a chunk. Separators are control characters that
+// cannot occur in ids but could in text; collisions would need the same separators in the same places.
+static string BatchRequestKey(const DecideBatchRequest &request) {
+	string key = request.entry.id;
+	key += '\x1f';
+	key += request.state;
+	for (auto &q : request.questions) {
+		key += '\x1e';
+		key += q.id;
+		key += '\x1f';
+		key += q.kind;
+		key += '\x1f';
+		key += q.instruction;
+		for (auto &option : q.options) {
+			key += '\x1d';
+			key += option;
+		}
+	}
+	return key;
+}
+
+vector<vector<DecideAnswer>> DecideEvaluateBatch(ClientContext &context, const vector<DecideBatchRequest> &requests,
+                                                 const char *function) {
+	const idx_t n = requests.size();
+	vector<vector<DecideAnswer>> out(n);
+	if (n == 0) {
+		return out;
+	}
+	// Identical requests are evaluated once. Within one chunk only: a service need not answer the
+	// same question the same way twice, so nothing is shared across chunks or queries.
+	std::unordered_map<string, idx_t> seen;
+	vector<idx_t> unique_of(n);
+	vector<idx_t> firsts;
+	for (idx_t i = 0; i < n; i++) {
+		auto inserted = seen.emplace(BatchRequestKey(requests[i]), firsts.size());
+		if (inserted.second) {
+			firsts.push_back(i);
+		}
+		unique_of[i] = inserted.first->second;
+	}
+	const idx_t u = firsts.size();
+	vector<vector<DecideAnswer>> answers(u);
+	vector<std::exception_ptr> errors(u);
+	// A failure at request k ends the preparation loop: only requests before k are still started, and
+	// the first failing request in input order decides the error.
+	vector<DecideRemoteJob> jobs;
+	vector<idx_t> job_unique;
+	std::unordered_map<string, DecideRemoteConfig> configs; // one resolved config per model
+	for (idx_t k = 0; k < u; k++) {
+		const auto &request = requests[firsts[k]];
+		try {
+			RequireKnownProvider(request.entry);
+			if (DecideFindRemoteProfile(request.entry.provider)) {
+				auto found = configs.find(request.entry.id);
+				if (found == configs.end()) {
+					found = configs.emplace(request.entry.id,
+					                        DecideRemotePrepare(context, TargetOf(request.entry), function))
+					            .first;
+				}
+				DecideRemoteJob job;
+				job.cfg = found->second;
+				job.state = &request.state;
+				job.questions = &request.questions;
+				jobs.push_back(std::move(job));
+				job_unique.push_back(k);
+			} else {
+				answers[k] = DecideEvaluate(context, request.entry, request.state, request.questions, function);
+			}
+		} catch (...) {
+			errors[k] = std::current_exception();
+			break;
+		}
+	}
+	DecideRemoteRunJobs(jobs);
+	for (idx_t j = 0; j < jobs.size(); j++) {
+		answers[job_unique[j]] = std::move(jobs[j].answers);
+		errors[job_unique[j]] = jobs[j].error;
+	}
+	for (idx_t k = 0; k < u; k++) {
+		if (errors[k]) {
+			std::rethrow_exception(errors[k]);
+		}
+	}
+	for (idx_t i = 0; i < n; i++) {
+		out[i] = answers[unique_of[i]];
+	}
+	return out;
 }
 
 } // namespace anofox

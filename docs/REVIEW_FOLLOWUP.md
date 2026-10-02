@@ -195,3 +195,26 @@ missing-key message lists the options per provider and notices an unset `key_env
 parse failures name the service and model, use public kind names, list what the server did send and add the
 `criteria` hint for renamed options. Tested against a real HTTP server on loopback (12 scenarios: 401, 404, 400,
 422, 429, 503, HTML 200, error body 200, timeout, refused, success, key reflection).
+
+## Scoring many rows (2 Oct 2026, concurrency PR)
+
+Findings from checking whether LATERAL joins (https://query.farm/blog/call-an-api-from-every-row-in-duckdb/) help:
+the System One wire takes one text per request, so cross-row batching is impossible; the lever is concurrency.
+Before: every row was a blocking request on one thread, each with a fresh TCP+TLS connection and no
+de-duplication. Now `DecideEvaluateBatch` (decide_provider.cpp) evaluates a chunk of rows: identical
+(model, text, questions) requests are sent once, remote requests run with at most `anofox_decide_max_concurrency`
+in flight (default 0 = automatic: 8 hosted providers, 1 for the keyless local strands server), each worker keeps its
+connections alive (a stale reused connection is retried once invisibly), a 429 halves the window (`DecideInflightGate`)
+and the error of the first failing row in input order is raised while later rows are not started.
+`ClientContext` work (gate check, key and endpoint resolution) happens on the calling thread
+(`DecideRemotePrepare`); worker threads only run the context-free transport.
+
+Measured: real D1, 8 tickets, 176.7 s sequential vs 23.1 s concurrent (same answers); loopback server, 300 rows at
+50 ms: 3.6 s at 8 in flight.
+
+**LATERAL cannot benefit.** A lateral `decide_table` is planned as a delim join whose in-out function receives the
+correlated column as a projected input, and DuckDB 1.5.5 then calls it with one row per call (`input.size() == 1`);
+with 8 DuckDB threads the peak is still 1 request in flight (300 rows at 50 ms: 15.1 s, against 3.6 s for the scalar).
+The chunk-level rewrite of the in-out operator was tried and dropped because it can never see more than one row.
+Open idea: a scalar returning `LIST(STRUCT(question_id, kind, probability, ...))` for use with `UNNEST`, which would
+give the relational shape of `decide_table` with the speed of the scalars.

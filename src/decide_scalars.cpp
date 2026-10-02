@@ -62,15 +62,36 @@ static void RequireQuestion(const char *function, const Value &question) {
 	}
 }
 
-// Single binary question through the shared evaluator (F6): P(question
-// holds | state) as a finite probability in [0,1].
-double ScoreBinary(ClientContext &context, const DecideModelEntry &entry, const string &state,
-                   const string &question, const char *function) {
+// A single binary question: P(question holds | state).
+DecideQuestion BinaryQuestion(const string &question) {
 	DecideQuestion q;
 	q.id = "q";
 	q.kind = "noul";
 	q.instruction = question;
-	return DecideEvaluate(context, entry, state, {q}, function)[0].probability;
+	return q;
+}
+
+// The three passes every scalar shares, so a chunk of rows is evaluated at once instead of row by row
+// (identical rows sent once, remote requests concurrent; see DecideEvaluateBatch):
+//   1. build(i, request) validates row i and fills its request, or sets the NULL result and returns false;
+//   2. all requests of the chunk are evaluated together;
+//   3. emit(i, request, answers) checks and writes the result of row i, in row order.
+// Validation errors are raised in row order before any request is sent.
+template <class BUILD, class EMIT>
+void EvaluateRows(ClientContext &context, const char *function, idx_t count, BUILD &&build, EMIT &&emit) {
+	vector<DecideBatchRequest> requests;
+	vector<idx_t> rows;
+	for (idx_t i = 0; i < count; i++) {
+		DecideBatchRequest request;
+		if (build(i, request)) {
+			requests.push_back(std::move(request));
+			rows.push_back(i);
+		}
+	}
+	auto answers = DecideEvaluateBatch(context, requests, function);
+	for (idx_t k = 0; k < rows.size(); k++) {
+		emit(rows[k], requests[k], answers[k]);
+	}
 }
 
 // Explicit threshold for decide_decision goes through the shared provider
@@ -85,21 +106,24 @@ void DecideProbabilityFun(DataChunk &args, ExpressionState &state, Vector &resul
 	bool has_model = args.ColumnCount() > 2;
 	string def = DecideDefaultModel(context);
 	DecideModelCache cache{DecideRegistry::Get(context)};
-	auto count = args.size();
-	auto &state_vec = args.data[0];
-	auto &question_vec = args.data[1];
-	for (idx_t i = 0; i < count; i++) {
-		auto state_v = state_vec.GetValue(i);
-		auto question_v = question_vec.GetValue(i);
-		if (state_v.IsNull() || question_v.IsNull()) {
-			result.SetValue(i, Value(LogicalType::DOUBLE));
-			continue;
-		}
-		RequireQuestion("decide_probability", question_v);
-		auto entry = RowEntry(context, "decide_probability", cache, args, has_model, 2, i, def);
-		double p = ScoreBinary(context, entry, state_v.ToString(), question_v.ToString(), "decide_probability");
-		result.SetValue(i, Value::DOUBLE(p));
-	}
+	EvaluateRows(
+	    context, "decide_probability", args.size(),
+	    [&](idx_t i, DecideBatchRequest &request) {
+		    auto state_v = args.data[0].GetValue(i);
+		    auto question_v = args.data[1].GetValue(i);
+		    if (state_v.IsNull() || question_v.IsNull()) {
+			    result.SetValue(i, Value(LogicalType::DOUBLE));
+			    return false;
+		    }
+		    RequireQuestion("decide_probability", question_v);
+		    request.entry = RowEntry(context, "decide_probability", cache, args, has_model, 2, i, def);
+		    request.state = state_v.ToString();
+		    request.questions = {BinaryQuestion(question_v.ToString())};
+		    return true;
+	    },
+	    [&](idx_t i, const DecideBatchRequest &, const vector<DecideAnswer> &answers) {
+		    result.SetValue(i, Value::DOUBLE(answers[0].probability));
+	    });
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 }
 
@@ -111,40 +135,45 @@ void DecideScoreFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	bool has_model = args.ColumnCount() > 3;
 	string def = DecideDefaultModel(context);
 	DecideModelCache cache{DecideRegistry::Get(context)};
-	auto count = args.size();
-	for (idx_t i = 0; i < count; i++) {
-		auto state_v = args.data[0].GetValue(i);
-		auto question_v = args.data[1].GetValue(i);
-		auto levels_v = args.data[2].GetValue(i);
-		if (state_v.IsNull() || question_v.IsNull() || levels_v.IsNull()) {
-			result.SetValue(i, Value(LogicalType::DOUBLE));
-			continue;
-		}
-		auto levels = ListValue::GetChildren(levels_v);
-		DecideQuestion q;
-		q.id = "q";
-		q.kind = "score";
-		q.instruction = question_v.ToString();
-		for (auto &level : levels) {
-			if (level.IsNull()) {
-				throw InvalidInputException(DecideMsg("decide_score", "the levels list contains NULL",
-				                                      "give every level a description, lowest first, e.g. "
-				                                      "['low','medium','high']"));
-			}
-			q.options.push_back(level.ToString());
-		}
-		DecideValidateScoreLevels("decide_score", q.id, q.options);
-		RequireQuestion("decide_score", question_v);
-		auto entry = RowEntry(context, "decide_score", cache, args, has_model, 3, i, def);
-		auto answers = DecideEvaluate(context, entry, state_v.ToString(), {q}, "decide_score");
-		if (!std::isfinite(answers[0].expected)) {
-			throw InvalidInputException(DecideMsg(
-			    "decide_score", "model '" + entry.id + "' returned an invalid score (NaN or infinity)",
-			    "this is a problem on the model side: retry, or use another model (SELECT * FROM decide_doctor() "
-			    "checks the setup)"));
-		}
-		result.SetValue(i, Value::DOUBLE(answers[0].expected));
-	}
+	EvaluateRows(
+	    context, "decide_score", args.size(),
+	    [&](idx_t i, DecideBatchRequest &request) {
+		    auto state_v = args.data[0].GetValue(i);
+		    auto question_v = args.data[1].GetValue(i);
+		    auto levels_v = args.data[2].GetValue(i);
+		    if (state_v.IsNull() || question_v.IsNull() || levels_v.IsNull()) {
+			    result.SetValue(i, Value(LogicalType::DOUBLE));
+			    return false;
+		    }
+		    auto levels = ListValue::GetChildren(levels_v);
+		    DecideQuestion q;
+		    q.id = "q";
+		    q.kind = "score";
+		    q.instruction = question_v.ToString();
+		    for (auto &level : levels) {
+			    if (level.IsNull()) {
+				    throw InvalidInputException(DecideMsg("decide_score", "the levels list contains NULL",
+				                                          "give every level a description, lowest first, e.g. "
+				                                          "['low','medium','high']"));
+			    }
+			    q.options.push_back(level.ToString());
+		    }
+		    DecideValidateScoreLevels("decide_score", q.id, q.options);
+		    RequireQuestion("decide_score", question_v);
+		    request.entry = RowEntry(context, "decide_score", cache, args, has_model, 3, i, def);
+		    request.state = state_v.ToString();
+		    request.questions = {std::move(q)};
+		    return true;
+	    },
+	    [&](idx_t i, const DecideBatchRequest &request, const vector<DecideAnswer> &answers) {
+		    if (!std::isfinite(answers[0].expected)) {
+			    throw InvalidInputException(DecideMsg(
+			        "decide_score", "model '" + request.entry.id + "' returned an invalid score (NaN or infinity)",
+			        "this is a problem on the model side: retry, or use another model (SELECT * FROM decide_doctor() "
+			        "checks the setup)"));
+		    }
+		    result.SetValue(i, Value::DOUBLE(answers[0].expected));
+	    });
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 }
 
@@ -160,30 +189,35 @@ void DecideDecisionFun(DataChunk &args, ExpressionState &state, Vector &result) 
 	bool has_model = args.ColumnCount() > 3;
 	string def = DecideDefaultModel(context);
 	DecideModelCache cache{DecideRegistry::Get(context)};
-	auto count = args.size();
-	auto &state_vec = args.data[0];
-	auto &question_vec = args.data[1];
-	auto &threshold_vec = args.data[2];
-	for (idx_t i = 0; i < count; i++) {
-		auto state_v = state_vec.GetValue(i);
-		auto question_v = question_vec.GetValue(i);
-		auto threshold_v = threshold_vec.GetValue(i);
-		if (state_v.IsNull() || question_v.IsNull() || threshold_v.IsNull()) {
-			result.SetValue(i, Value(LogicalType::BOOLEAN));
-			continue;
-		}
-		double threshold = RequireDecisionThreshold(threshold_v);
-		RequireQuestion("decide_decision", question_v);
-		auto entry = RowEntry(context, "decide_decision", cache, args, has_model, 3, i, def);
-		double p = ScoreBinary(context, entry, state_v.ToString(), question_v.ToString(), "decide_decision");
-		if (!std::isfinite(p)) {
-			throw InvalidInputException(DecideMsg(
-			    "decide_decision", "model '" + entry.id + "' returned an invalid probability (NaN or infinity)",
-			    "this is a problem on the model side: retry, or use another model (SELECT * FROM decide_doctor() "
-			    "checks the setup)"));
-		}
-		result.SetValue(i, Value::BOOLEAN(p >= threshold));
-	}
+	vector<double> thresholds(args.size(), 0.0);
+	EvaluateRows(
+	    context, "decide_decision", args.size(),
+	    [&](idx_t i, DecideBatchRequest &request) {
+		    auto state_v = args.data[0].GetValue(i);
+		    auto question_v = args.data[1].GetValue(i);
+		    auto threshold_v = args.data[2].GetValue(i);
+		    if (state_v.IsNull() || question_v.IsNull() || threshold_v.IsNull()) {
+			    result.SetValue(i, Value(LogicalType::BOOLEAN));
+			    return false;
+		    }
+		    thresholds[i] = RequireDecisionThreshold(threshold_v);
+		    RequireQuestion("decide_decision", question_v);
+		    request.entry = RowEntry(context, "decide_decision", cache, args, has_model, 3, i, def);
+		    request.state = state_v.ToString();
+		    request.questions = {BinaryQuestion(question_v.ToString())};
+		    return true;
+	    },
+	    [&](idx_t i, const DecideBatchRequest &request, const vector<DecideAnswer> &answers) {
+		    const double p = answers[0].probability;
+		    if (!std::isfinite(p)) {
+			    throw InvalidInputException(DecideMsg(
+			        "decide_decision",
+			        "model '" + request.entry.id + "' returned an invalid probability (NaN or infinity)",
+			        "this is a problem on the model side: retry, or use another model (SELECT * FROM decide_doctor() "
+			        "checks the setup)"));
+		    }
+		    result.SetValue(i, Value::BOOLEAN(p >= thresholds[i]));
+	    });
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 }
 
@@ -198,71 +232,78 @@ void DecideChoiceFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	bool has_model = args.ColumnCount() > 3;
 	string def = DecideDefaultModel(context);
 	DecideModelCache cache{DecideRegistry::Get(context)};
-	auto count = args.size();
-	auto &state_vec = args.data[0];
-	auto &question_vec = args.data[1];
-	auto &options_vec = args.data[2];
-	for (idx_t i = 0; i < count; i++) {
-		auto state_v = state_vec.GetValue(i);
-		auto question_v = question_vec.GetValue(i);
-		auto options_v = options_vec.GetValue(i);
-		if (state_v.IsNull() || question_v.IsNull() || options_v.IsNull()) {
-			result.SetValue(i, Value(LogicalType::VARCHAR));
-			continue;
-		}
-		auto options = ListValue::GetChildren(options_v);
-		if (options.empty()) {
-			throw InvalidInputException(DecideMsg(
-			    "decide_choice", "the options list is empty",
-			    "list the answers to choose from, e.g. decide_choice(state, 'Which team?', "
-			    "['billing','defect','other'])"));
-		}
-		for (auto &o : options) {
-			if (o.IsNull()) {
-				throw InvalidInputException(DecideMsg("decide_choice", "the options list contains NULL",
-				                                      "remove the NULL option or replace it with 'other'"));
-			}
-		}
-		RequireQuestion("decide_choice", question_v);
-		auto entry = RowEntry(context, "decide_choice", cache, args, has_model, 3, i, def);
-		DecideQuestion q;
-		q.id = "q";
-		q.kind = "choice";
-		q.instruction = question_v.ToString();
-		for (auto &o : options) {
-			q.options.push_back(o.ToString());
-		}
-		auto answers = DecideEvaluate(context, entry, state_v.ToString(), {q}, "decide_choice");
-		result.SetValue(i, Value(answers[0].choice));
-	}
+	EvaluateRows(
+	    context, "decide_choice", args.size(),
+	    [&](idx_t i, DecideBatchRequest &request) {
+		    auto state_v = args.data[0].GetValue(i);
+		    auto question_v = args.data[1].GetValue(i);
+		    auto options_v = args.data[2].GetValue(i);
+		    if (state_v.IsNull() || question_v.IsNull() || options_v.IsNull()) {
+			    result.SetValue(i, Value(LogicalType::VARCHAR));
+			    return false;
+		    }
+		    auto options = ListValue::GetChildren(options_v);
+		    if (options.empty()) {
+			    throw InvalidInputException(DecideMsg(
+			        "decide_choice", "the options list is empty",
+			        "list the answers to choose from, e.g. decide_choice(state, 'Which team?', "
+			        "['billing','defect','other'])"));
+		    }
+		    for (auto &o : options) {
+			    if (o.IsNull()) {
+				    throw InvalidInputException(DecideMsg("decide_choice", "the options list contains NULL",
+				                                          "remove the NULL option or replace it with 'other'"));
+			    }
+		    }
+		    RequireQuestion("decide_choice", question_v);
+		    request.entry = RowEntry(context, "decide_choice", cache, args, has_model, 3, i, def);
+		    DecideQuestion q;
+		    q.id = "q";
+		    q.kind = "choice";
+		    q.instruction = question_v.ToString();
+		    for (auto &o : options) {
+			    q.options.push_back(o.ToString());
+		    }
+		    request.state = state_v.ToString();
+		    request.questions = {std::move(q)};
+		    return true;
+	    },
+	    [&](idx_t i, const DecideBatchRequest &, const vector<DecideAnswer> &answers) {
+		    result.SetValue(i, Value(answers[0].choice));
+	    });
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 }
 
 // decide_many(state, questions_json[, model]) -> VARCHAR batch JSON.
 //
-// One remote request per row for the typesafe provider (speculative fan-out);
-// the stub answers deterministically. Question validation (ids, kinds,
-// options, per-call limit) runs before any I/O on both paths.
+// One remote request per distinct row (a chunk's remote requests run concurrently, see
+// anofox_decide_max_concurrency); the stub answers deterministically. Question validation (ids,
+// kinds, options, per-call limit) runs before any I/O on every path.
 void DecideManyFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	ClientContext &context = state.GetContext();
 	bool has_model = args.ColumnCount() > 2;
 	string def = DecideDefaultModel(context);
 	DecideModelCache cache{DecideRegistry::Get(context)};
 	idx_t max_questions = DecideMaxQuestions(context);
-	auto count = args.size();
-	for (idx_t i = 0; i < count; i++) {
-		auto state_v = args.data[0].GetValue(i);
-		auto questions_v = args.data[1].GetValue(i);
-		if (state_v.IsNull() || questions_v.IsNull()) {
-			result.SetValue(i, Value(LogicalType::VARCHAR));
-			continue;
-		}
-		auto entry = RowEntry(context, "decide_many", cache, args, has_model, 2, i, def);
-		auto questions = DecideParseManyQuestions(questions_v.ToString(), max_questions);
-		auto answers = DecideEvaluate(context, entry, state_v.ToString(), questions, "decide_many");
-		result.SetValue(i, Value(DecideBuildManyResultJson(answers[0].model.empty() ? entry.id : answers[0].model,
-		                                                   questions, answers)));
-	}
+	EvaluateRows(
+	    context, "decide_many", args.size(),
+	    [&](idx_t i, DecideBatchRequest &request) {
+		    auto state_v = args.data[0].GetValue(i);
+		    auto questions_v = args.data[1].GetValue(i);
+		    if (state_v.IsNull() || questions_v.IsNull()) {
+			    result.SetValue(i, Value(LogicalType::VARCHAR));
+			    return false;
+		    }
+		    request.entry = RowEntry(context, "decide_many", cache, args, has_model, 2, i, def);
+		    request.questions = DecideParseManyQuestions(questions_v.ToString(), max_questions);
+		    request.state = state_v.ToString();
+		    return true;
+	    },
+	    [&](idx_t i, const DecideBatchRequest &request, const vector<DecideAnswer> &answers) {
+		    result.SetValue(i, Value(DecideBuildManyResultJson(
+		                           answers[0].model.empty() ? request.entry.id : answers[0].model, request.questions,
+		                           answers)));
+	    });
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 }
 

@@ -15,8 +15,13 @@
 
 #include "duckdb/common/common.hpp"
 
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
+#include <exception>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <limits>
 #include <string>
 #include <utility>
@@ -73,6 +78,7 @@ struct DecideRemoteProfile {
 	bool requires_key;            // false: a keyless server (e.g. a local strands-decider); send no Authorization header
 	bool criteria_names;          // true: send each choice option as its own description (servers that require
 	                              // string criteria values instead of null)
+	int default_concurrency;      // requests in flight per chunk when anofox_decide_max_concurrency is 0 (auto)
 };
 // nullptr when `provider` is not a remote profile.
 const DecideRemoteProfile *DecideFindRemoteProfile(const string &provider);
@@ -91,6 +97,27 @@ struct DecideRemoteTarget {
 	string key_env;    // explicit env var to read the key from (any host)
 	int criteria_names = -1; // -1 follow the profile, 0 send null descriptions, 1 send the option names
 	string registered_id; // the id the model is registered under (for messages)
+};
+
+// Limits how many HTTP requests are in flight at once and backs off when the service rate limits.
+// Shared by the workers of one chunk; Throttle() halves the limit (never below 1) after a 429.
+class DecideInflightGate {
+public:
+	explicit DecideInflightGate(int limit);
+	void Acquire();
+	void Release();
+	// A request was rate limited: allow fewer in flight from now on. Bursts of 429s that arrive
+	// within the same second shrink the window only once.
+	void Throttle();
+	int Limit();
+
+private:
+	std::mutex lock;
+	std::condition_variable cv;
+	int limit;
+	int inflight = 0;
+	std::chrono::steady_clock::time_point last_throttle;
+	bool throttled = false;
 };
 
 struct DecideRemoteConfig {
@@ -116,6 +143,10 @@ struct DecideRemoteConfig {
 	string registered_id;
 	string display = "TypeSafe";
 	string env_key = "TYPESAFE_API_KEY";
+	// Requests this model may have in flight at once (resolved from the setting and the profile).
+	int max_concurrency = 1;
+	// Set by DecideRemoteRunJobs for the workers of one chunk; null = no limiting.
+	std::shared_ptr<DecideInflightGate> gate;
 };
 
 // Transport-agnostic HTTP plumbing (injectable for hermetic tests).
@@ -212,6 +243,26 @@ vector<DecideAnswer> DecideRemoteEvaluateWithTransport(const DecideRemoteConfig 
 // that talk to a server on loopback).
 vector<DecideAnswer> DecideRemoteEvaluateOverHttp(const DecideRemoteConfig &cfg, const string &state,
                                                   const vector<DecideQuestion> &questions);
+// The part of a remote call that needs the ClientContext: the allow_remote gate (checked first), then
+// config resolution (key, endpoint, concurrency). Everything after it is context-free, so it can run on
+// worker threads.
+DecideRemoteConfig DecideRemotePrepare(ClientContext &context, const DecideRemoteTarget &target,
+                                       const string &function);
+
+// One remote request of a chunk. state and questions are borrowed and must outlive the run.
+struct DecideRemoteJob {
+	DecideRemoteConfig cfg;
+	const string *state = nullptr;
+	const vector<DecideQuestion> *questions = nullptr;
+	vector<DecideAnswer> answers;
+	std::exception_ptr error;
+};
+// Runs the jobs with at most min(max_concurrency of the jobs, jobs.size()) requests in flight, each
+// worker reusing its connections. A job's failure is stored in `error` and stops jobs that have not
+// started yet (they keep neither answers nor error). Jobs start in order, so when job k fails every
+// job before k has been started: the lowest index with an error is the first failing row.
+void DecideRemoteRunJobs(vector<DecideRemoteJob> &jobs);
+
 // Full round trip over DuckDB's bundled httplib (production path).
 vector<DecideAnswer> DecideRemoteEvaluate(ClientContext &context, const string &state,
                                           const vector<DecideQuestion> &questions,
