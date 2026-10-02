@@ -54,6 +54,7 @@ set(EXTENSION_SOURCES
         src/decide_local_nli.cpp
         src/decide_metrics.cpp
         src/decide_secret.cpp
+        src/decide_calibration.cpp
         src/decide_errors.cpp
 )
 
@@ -106,6 +107,7 @@ set(DECIDE_CPP_TEST_SOURCES
     test/cpp/test_decide_docs.cpp
     test/cpp/test_decide_tokenizer.cpp
     test/cpp/test_decide_local.cpp
+    test/cpp/test_decide_calibration.cpp
 )
 if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.19")
     add_library(anofox_decide_unittest_tests OBJECT ${DECIDE_CPP_TEST_SOURCES})

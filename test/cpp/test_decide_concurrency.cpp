@@ -271,3 +271,24 @@ TEST_CASE("the concurrency setting is validated", "[anofox_decide][concurrency]"
 	REQUIRE(!con.Query("SET anofox_decide_max_concurrency = 16")->HasError());
 	REQUIRE(!con.Query("SET anofox_decide_max_concurrency = 0")->HasError());
 }
+
+TEST_CASE("a model's calibration applies to rows scored through the chunk path", "[anofox_decide][concurrency]") {
+	ConcurrencyServer server(10);
+	Session s(server, "systemone");
+	// The server answers 0.9 for texts that want a refund. Platt a=2, b=0 turns that into
+	// 0.9^2 / (0.9^2 + 0.1^2) = 0.98780: the remote requests of a chunk must be calibrated like single calls.
+	s.Run("SELECT decide_register_model('cal', 'systemone', MAP {'endpoint': 'http://127.0.0.1:" +
+	      std::to_string(server.port) + "', 'calibration': 'platt:2,0'})");
+	auto result = s.Run("SELECT id, decide_probability(text, 'A refund is requested.', model := 'cal') AS p, "
+	                    "decide_probability(text, 'A refund is requested.', model := 'm') AS raw FROM " +
+	                    Tickets(6, 6) + " ORDER BY id");
+	REQUIRE(result->RowCount() == 6);
+	for (idx_t i = 0; i < 6; i++) {
+		const bool refund = (i % 2 == 1);
+		REQUIRE(result->GetValue(2, i).GetValue<double>() == Approx(refund ? 0.9 : 0.1)); // uncalibrated model
+		REQUIRE(result->GetValue(1, i).GetValue<double>() == Approx(refund ? 0.987805 : 0.012195).epsilon(1e-4));
+	}
+	// decide_many and decide_table (binary questions) go through the same path.
+	auto many = s.Run("SELECT decide_many('wants a refund', '[{\"id\":\"q\",\"kind\":\"binary\",\"instruction\":\"x\"}]', 'cal')");
+	REQUIRE_THAT(many->GetValue(0, 0).ToString(), Contains("0.98780"));
+}

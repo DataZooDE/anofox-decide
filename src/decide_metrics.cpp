@@ -20,6 +20,7 @@
 
 #include "anofox_decide_banner.hpp"
 #include "anofox_function_alias.hpp"
+#include "decide_calibration.hpp"
 #include "decide_errors.hpp"
 #include "decide_function_docs.hpp"
 #include "decide_registration.hpp"
@@ -340,6 +341,92 @@ void ECEFinalize(Vector &state_vector, AggregateInputData &, Vector &result, idx
 	}
 }
 
+// decide_fit_calibration(probability, outcome): Platt scaling fitted from labelled data. The state keeps
+// every valid (probability, outcome) pair (the fit is iterative, so it needs the data, not running sums)
+// on the heap; the destructor frees it.
+struct FitState {
+	vector<double> *p = nullptr;
+	vector<uint8_t> *y = nullptr;
+};
+
+idx_t FitStateSize(const AggregateFunction &) {
+	return sizeof(FitState);
+}
+
+void FitStateInit(const AggregateFunction &, data_ptr_t state_ptr) {
+	auto *state = new (state_ptr) FitState();
+	state->p = new vector<double>();
+	state->y = new vector<uint8_t>();
+}
+
+void FitStateDestroy(Vector &state_vector, AggregateInputData &, idx_t count) {
+	UnifiedVectorFormat sdata;
+	state_vector.ToUnifiedFormat(count, sdata);
+	auto states = reinterpret_cast<FitState **>(sdata.data);
+	for (idx_t i = 0; i < count; i++) {
+		auto &state = *states[sdata.sel->get_index(i)];
+		delete state.p;
+		delete state.y;
+		state.p = nullptr;
+		state.y = nullptr;
+	}
+}
+
+void FitUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vector, idx_t count) {
+	UnifiedVectorFormat sdata, prob_data, label_data;
+	state_vector.ToUnifiedFormat(count, sdata);
+	inputs[0].ToUnifiedFormat(count, prob_data);
+	inputs[1].ToUnifiedFormat(count, label_data);
+	for (idx_t i = 0; i < count; i++) {
+		double p;
+		int y;
+		if (!ValidPair("decide_fit_calibration", inputs[1].GetType(), prob_data, prob_data.sel->get_index(i),
+		               label_data, label_data.sel->get_index(i), p, y)) {
+			continue;
+		}
+		auto &state = RowState<FitState>(state_vector, sdata, i);
+		state.p->push_back(p);
+		state.y->push_back((uint8_t)y);
+	}
+}
+
+void FitCombine(Vector &source_vector, Vector &target_vector, AggregateInputData &, idx_t count) {
+	UnifiedVectorFormat source_data, target_data;
+	source_vector.ToUnifiedFormat(count, source_data);
+	target_vector.ToUnifiedFormat(count, target_data);
+	auto sources = reinterpret_cast<FitState **>(source_data.data);
+	auto targets = reinterpret_cast<FitState **>(target_data.data);
+	for (idx_t i = 0; i < count; i++) {
+		auto &src = *sources[source_data.sel->get_index(i)];
+		auto &tgt = *targets[target_data.sel->get_index(i)];
+		tgt.p->insert(tgt.p->end(), src.p->begin(), src.p->end());
+		tgt.y->insert(tgt.y->end(), src.y->begin(), src.y->end());
+	}
+}
+
+void FitFinalize(Vector &state_vector, AggregateInputData &, Vector &result, idx_t count, idx_t offset) {
+	UnifiedVectorFormat sdata;
+	state_vector.ToUnifiedFormat(count, sdata);
+	auto states = reinterpret_cast<FitState **>(sdata.data);
+	for (idx_t i = 0; i < count; i++) {
+		auto &state = *states[sdata.sel->get_index(i)];
+		if (state.p->empty()) {
+			FlatVector::SetNull(result, i + offset, true);
+			continue;
+		}
+		double a, b;
+		string why;
+		if (!DecideFitPlatt(*state.p, *state.y, a, b, why)) {
+			throw InvalidInputException(DecideMsg(
+			    "decide_fit_calibration", why,
+			    "pass a model's probabilities and the true outcomes, e.g. SELECT decide_fit_calibration(p, y) "
+			    "FROM labelled; (both outcomes must occur, and about 50 or more rows give a stable fit)"));
+		}
+		FlatVector::GetData<string_t>(result)[i + offset] =
+		    StringVector::AddString(result, DecideFormatPlatt(a, b));
+	}
+}
+
 // Telemetry (tabfm convention): one aggregated call per function at bind time.
 #define DECIDE_METRIC_TELEMETRY_BIND(FN, NAME)                                                                  \
 	unique_ptr<FunctionData> FN(ClientContext &, AggregateFunction &, vector<unique_ptr<Expression>> &) {        \
@@ -349,6 +436,7 @@ void ECEFinalize(Vector &state_vector, AggregateInputData &, Vector &result, idx
 DECIDE_METRIC_TELEMETRY_BIND(BrierBind, "decide_brier_score")
 DECIDE_METRIC_TELEMETRY_BIND(ECEBind, "decide_ece")
 DECIDE_METRIC_TELEMETRY_BIND(AccuracyBind, "decide_accuracy")
+DECIDE_METRIC_TELEMETRY_BIND(FitCalibrationBind, "decide_fit_calibration")
 
 // One set per metric with (DOUBLE, BOOLEAN) and (DOUBLE, BIGINT) overloads
 // (plus a threshold overload for accuracy). The set is registered under the
@@ -403,6 +491,33 @@ void RegisterDecideMetrics(ExtensionLoader &loader) {
 	               "returns NULL.",
 	               "SELECT decide_accuracy(p, y) FROM labeled;", "SELECT decide_accuracy(p, y::BIGINT) FROM labeled;",
 	               AccuracyUpdate3, "SELECT decide_accuracy(p, y, 0.7) FROM labeled;");
+
+	// decide_fit_calibration(probability, outcome) -> VARCHAR 'platt:a,b'.
+	{
+		const auto D = LogicalType::DOUBLE;
+		const auto B = LogicalType::BOOLEAN;
+		const auto I = LogicalType::BIGINT;
+		AggregateFunctionSet set("anofox_decide_fit_calibration");
+		set.AddFunction(AggregateFunction("anofox_decide_fit_calibration", {D, B}, LogicalType::VARCHAR,
+		                                  FitStateSize, FitStateInit, FitUpdate, FitCombine, FitFinalize, nullptr,
+		                                  FitCalibrationBind, FitStateDestroy));
+		set.AddFunction(AggregateFunction("anofox_decide_fit_calibration", {D, I}, LogicalType::VARCHAR,
+		                                  FitStateSize, FitStateInit, FitUpdate, FitCombine, FitFinalize, nullptr,
+		                                  FitCalibrationBind, FitStateDestroy));
+		RegisterAggregateFunctionSetWithAlias(
+		    loader, std::move(set), "decide_fit_calibration",
+		    DecideDocs("Fit Platt scaling from labelled data: given a model's yes/no probabilities and the true "
+		               "outcomes, returns the calibration spec 'platt:a,b' (p' = sigmoid(a * logit(p) + b), a > 0) "
+		               "to pass as MAP {'calibration': ...} to decide_register_model. It fixes a model whose "
+		               "cut-off is off (such as one that says yes too often at 0.5) without changing its "
+		               "ranking. Needs both outcomes and non-constant probabilities; rows with NULLs are skipped; "
+		               "empty input returns NULL. Fit on held-out labelled data, then check the result with "
+		               "decide_brier_score / decide_ece on another sample.",
+		               "metrics",
+		               {{{"probability", "outcome"}, {D, B}, "SELECT decide_fit_calibration(p, y) FROM labeled;"},
+		                {{"probability", "outcome"}, {D, I},
+		                 "SELECT decide_fit_calibration(p, y::BIGINT) FROM labeled;"}}));
+	}
 }
 
 } // namespace anofox

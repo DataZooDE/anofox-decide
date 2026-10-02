@@ -190,12 +190,14 @@ Every function is available as `anofox_decide_<name>` and as the short alias `de
 | `decide_probability(state, question[, model])` | `DOUBLE` | P(`question` holds for `state`) |
 | `decide_decision(state, question, threshold[, model])` | `BOOLEAN` | `true` when that probability reaches an explicit `threshold` (0 to 1); never guessed |
 | `decide_choice(state, question, options[, model])` | `VARCHAR` | the best of a list of options |
+| `decide_choice_distribution(state, question, options[, model])` | `MAP(VARCHAR, DOUBLE)` | the probability of every option (sums to 1), so you can threshold or abstain in SQL ([Calibration](#calibration)) |
 | `decide_score(state, question, levels[, model])` | `DOUBLE` | the expected 0-based level on an ordered rubric |
 | `decide_many(state, questions[, model])` | `VARCHAR` (JSON) | several questions about one text in one request |
 | `decide_table(state, questions[, model])` | table | the same, one row per question |
 | `decide_accuracy(p, outcome[, threshold])` | `DOUBLE` | share of rows where thresholding `p` reproduces the label (aggregate) |
 | `decide_brier_score(p, outcome)` | `DOUBLE` | mean squared error of the probabilities; 0 is perfect, 0.25 a constant 0.5 (aggregate) |
 | `decide_ece(p, outcome)` | `DOUBLE` | expected calibration error over ten equal-width bins (aggregate) |
+| `decide_fit_calibration(p, outcome)` | `VARCHAR` | fits Platt scaling to a model's raw probabilities and returns the `'platt:a,b'` spec for `decide_register_model` ([Calibration](#calibration)) (aggregate) |
 | `decide_register_model(id[, provider[, ...]])` | `BOOLEAN` | register a model for this database instance |
 | `decide_unregister_model(id)` | `BOOLEAN` | remove a registered model so it can be registered again |
 | `decide_models()` | table | the registered models, whether each can be called now, and what to do if not |
@@ -226,9 +228,9 @@ SELECT decide_probability('...', '...', model := 'jev-latest');
 SELECT decide_probability('...', '...', model := 'd1:free');
 ```
 
-Per-model options go in a `MAP` (keys `endpoint`, `path`, `model`, `key_env`, `criteria`): a self-hosted
+Per-model options go in a `MAP` (keys `endpoint`, `path`, `model`, `key_env`, `criteria`, `calibration`): a self-hosted
 server, a different model name on the wire, an explicit key variable for a custom endpoint, or
-`criteria: 'name'` for servers whose schema wants a string description per choice option instead of `null`:
+`criteria: 'name'` for servers whose schema wants a string description per choice option instead of `null`, or a fitted `calibration` ([Calibration](#calibration)):
 
 ```sql
 SELECT decide_register_model('kev-latest', 'systemone', MAP {'endpoint': 'http://127.0.0.1:8009'});
@@ -348,6 +350,45 @@ in-process router. This is English, template-generated data: a smoke test of rel
 benchmark of your tickets, so evaluate on your own (how to reproduce this run: [docs/EVALUATION.md](docs/EVALUATION.md#reproduce)). Each local ONNX model
 reproduces its upstream Python reference to within 5e-5 in probability on a small check set; the hosted
 models are called as-is.
+
+---
+
+## Calibration
+
+A model's yes/no probability is only as good as its cut-off. Some models say "yes" too often at 0.5 (Liquid
+D1 flagged every complaint as a refund request) and others too rarely. Per-model **Platt scaling**
+(`p' = sigmoid(a * logit(p) + b)`, `a > 0`, so the ranking never changes) fixes the cut-off and the
+sharpness for yes/no questions; choice and score answers are untouched. Fit it from labelled data, register
+the model with it:
+
+```sql
+-- 1. fit on a labelled sample of that model's raw probabilities
+SELECT decide_fit_calibration(p, y) FROM labelled;                      -- 'platt:1.92,-0.72'
+-- 2. register the model with the fitted spec (any provider; local models take the MAP as 6th argument)
+SELECT decide_register_model('d1-cal', 'liquid', MAP {'model': 'd1:free', 'calibration': 'platt:1.92,-0.72'});
+SELECT decide_register_model('laya-cal', 'local', '/m/laya.onnx', '/m/tokenizer.json', 'laya', MAP {'calibration': 'platt:1.1,-0.3'});
+-- 3. every yes/no probability from that model (decide_probability, decide_decision, decide_many, decide_table) is calibrated
+SELECT calibration FROM decide_models();                                   -- the spec in use, NULL when none
+```
+
+`decide_fit_calibration` needs both outcomes and non-constant probabilities, ignores NULL rows, and refuses a
+model whose probabilities rank outcomes no better than chance (a negative slope would invert it). Fit on one
+sample and check on another with `decide_brier_score` and `decide_ece`; about 50 or more labelled rows give a
+stable fit. On the 200-ticket evaluation, fitting on one half and scoring the other (20 random splits)
+cut D1's refund error from 23% to 9% and its Brier score from 0.157 to 0.065; see
+[docs/EVALUATION.md](docs/EVALUATION.md#calibration) (`tools/eval/crossfit_calibration.py` reproduces it).
+A calibration is fitted to one data distribution: refit it for your own tickets.
+
+`decide_choice_distribution(state, question, options[, model])` returns the probability of every option as a
+`MAP(VARCHAR, DOUBLE)` (it sums to 1), so you can threshold the winner's probability and abstain in plain SQL:
+
+```sql
+SELECT body, decide_choice_distribution(body, 'Which team owns this?', ['billing','defect','other'], model := 'jev-latest') AS dist
+FROM tickets;
+-- abstain below 60% confidence
+SELECT CASE WHEN list_max(map_values(d)) >= 0.6 THEN list_extract(map_keys(d), list_position(map_values(d), list_max(map_values(d)))) END AS team
+FROM (SELECT decide_choice_distribution(body, 'Which team owns this?', ['billing','defect','other'], model := 'jev-latest') AS d FROM tickets);
+```
 
 ---
 

@@ -33,6 +33,13 @@ First public release.
 - **Model quality metrics.** `decide_accuracy`, `decide_brier_score` and `decide_ece` aggregate over
   `(probability, label)` pairs, so comparing models is one query. A 200-ticket evaluation of every model
   on public data (Bitext customer support) is in `docs/EVALUATION.md`; `tools/eval` reproduces it.
+- **Per-model calibration of yes/no probabilities.** Some models rank well but are wrong at the 0.5 cut-off.
+  `decide_fit_calibration(p, outcome)` fits Platt scaling to a labelled sample and returns a `'platt:a,b'` spec;
+  register a model with `MAP {'calibration': 'platt:a,b'}` (every provider; local models take the MAP as the sixth
+  argument) and every yes/no probability from it is calibrated. The ranking never changes, and choice and score
+  answers are untouched. `decide_models()` gains a `calibration` column.
+- **`decide_choice_distribution(state, question, options[, model])`** returns the probability of every option as a
+  `MAP(VARCHAR, DOUBLE)`, so the winner's probability can be thresholded and a low-confidence row left undecided in plain SQL.
 - **Diagnostics.** `decide_doctor()` checks the whole setup (default model, remote opt-in, files, keys and
   where they came from, endpoints, telemetry) and gives the fix for each problem; `decide_models()` lists
   every registered model with `ready`, a `hint` for what to do when it is not, the profile, endpoint and

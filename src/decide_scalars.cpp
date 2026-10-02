@@ -227,36 +227,37 @@ void DecideDecisionFun(DataChunk &args, ExpressionState &state, Vector &result) 
 // literal `[]` is typed "NULL"[] and binds to neither VARCHAR[] nor ANY[],
 // so the extra overload routes it to the actionable empty-list error below
 // instead of dying in the binder with "No function matches".
-void DecideChoiceFun(DataChunk &args, ExpressionState &state, Vector &result) {
+static void DecideChoiceCore(const char *func, bool as_map, DataChunk &args, ExpressionState &state, Vector &result) {
 	ClientContext &context = state.GetContext();
 	bool has_model = args.ColumnCount() > 3;
 	string def = DecideDefaultModel(context);
 	DecideModelCache cache{DecideRegistry::Get(context)};
 	EvaluateRows(
-	    context, "decide_choice", args.size(),
+	    context, func, args.size(),
 	    [&](idx_t i, DecideBatchRequest &request) {
 		    auto state_v = args.data[0].GetValue(i);
 		    auto question_v = args.data[1].GetValue(i);
 		    auto options_v = args.data[2].GetValue(i);
 		    if (state_v.IsNull() || question_v.IsNull() || options_v.IsNull()) {
-			    result.SetValue(i, Value(LogicalType::VARCHAR));
+			    result.SetValue(i, as_map ? Value(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::DOUBLE))
+			                              : Value(LogicalType::VARCHAR));
 			    return false;
 		    }
 		    auto options = ListValue::GetChildren(options_v);
 		    if (options.empty()) {
 			    throw InvalidInputException(DecideMsg(
-			        "decide_choice", "the options list is empty",
-			        "list the answers to choose from, e.g. decide_choice(state, 'Which team?', "
+			        func, "the options list is empty",
+			        string("list the answers to choose from, e.g. ") + func + "(state, 'Which team?', "
 			        "['billing','defect','other'])"));
 		    }
 		    for (auto &o : options) {
 			    if (o.IsNull()) {
-				    throw InvalidInputException(DecideMsg("decide_choice", "the options list contains NULL",
+				    throw InvalidInputException(DecideMsg(func, "the options list contains NULL",
 				                                          "remove the NULL option or replace it with 'other'"));
 			    }
 		    }
-		    RequireQuestion("decide_choice", question_v);
-		    request.entry = RowEntry(context, "decide_choice", cache, args, has_model, 3, i, def);
+		    RequireQuestion(func, question_v);
+		    request.entry = RowEntry(context, func, cache, args, has_model, 3, i, def);
 		    DecideQuestion q;
 		    q.id = "q";
 		    q.kind = "choice";
@@ -268,10 +269,35 @@ void DecideChoiceFun(DataChunk &args, ExpressionState &state, Vector &result) {
 		    request.questions = {std::move(q)};
 		    return true;
 	    },
-	    [&](idx_t i, const DecideBatchRequest &, const vector<DecideAnswer> &answers) {
-		    result.SetValue(i, Value(answers[0].choice));
+	    [&](idx_t i, const DecideBatchRequest &request, const vector<DecideAnswer> &answers) {
+		    if (!as_map) {
+			    result.SetValue(i, Value(answers[0].choice));
+			    return;
+		    }
+		    vector<Value> keys, values;
+		    for (auto &kv : answers[0].distribution) {
+			    keys.emplace_back(kv.first);
+			    values.emplace_back(Value::DOUBLE(kv.second));
+		    }
+		    if (keys.empty()) {
+			    throw InvalidInputException(DecideMsg(
+			        func, "model '" + request.entry.id + "' returned no probability distribution",
+			        "this is a problem on the model side: retry, or use another model (SELECT * FROM decide_doctor() "
+			        "checks the setup)"));
+		    }
+		    result.SetValue(i, Value::MAP(LogicalType::VARCHAR, LogicalType::DOUBLE, std::move(keys), std::move(values)));
 	    });
 	result.SetVectorType(VectorType::FLAT_VECTOR);
+}
+
+void DecideChoiceFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	DecideChoiceCore("decide_choice", false, args, state, result);
+}
+
+// decide_choice_distribution(state, question, options[, model]) -> MAP(VARCHAR, DOUBLE): the probability of
+// every option (same arguments, NULL contract and errors as decide_choice).
+void DecideChoiceDistributionFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	DecideChoiceCore("decide_choice_distribution", true, args, state, result);
 }
 
 // decide_many(state, questions_json[, model]) -> VARCHAR batch JSON.
@@ -308,11 +334,17 @@ void DecideManyFun(DataChunk &args, ExpressionState &state, Vector &result) {
 }
 
 // decide_register_model(id[, provider[, graph_path[, tokenizer_path[, profile]]]]) -> BOOLEAN,
-// or decide_register_model(id, provider, options MAP(VARCHAR, VARCHAR)) for
-// remote providers (keys: endpoint, path, model, key_env, criteria).
+// or decide_register_model(id, provider, options MAP(VARCHAR, VARCHAR)) for remote providers
+// (keys: endpoint, path, model, key_env, criteria, calibration), or the same options MAP as a 6th
+// argument after the local positional arguments (id, 'local', graph, tokenizer, profile, MAP).
+// `calibration` ('platt:a,b') works for every provider.
 void DecideRegisterModelFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	ClientContext &context = state.GetContext();
 	auto count = args.size();
+	const idx_t ncols = args.ColumnCount();
+	const bool has_map = ncols >= 3 && args.data[ncols - 1].GetType().id() == LogicalTypeId::MAP;
+	const idx_t positional_end = has_map ? ncols - 1 : ncols; // columns [1, positional_end) are positional
+	static const char *option_names[] = {"endpoint", "path", "model", "key_env", "criteria", "calibration"};
 	for (idx_t i = 0; i < count; i++) {
 		auto id_v = args.data[0].GetValue(i);
 		if (id_v.IsNull()) {
@@ -325,10 +357,9 @@ void DecideRegisterModelFun(DataChunk &args, ExpressionState &state, Vector &res
 		string tokenizer_path;
 		string profile;
 		DecideRegisterOptions options;
-		if (args.ColumnCount() == 3 && args.data[2].GetType().id() == LogicalTypeId::MAP) {
-			auto provider_v = args.data[1].GetValue(i);
-			auto map_v = args.data[2].GetValue(i);
-			if (provider_v.IsNull() || map_v.IsNull()) {
+		if (has_map) {
+			auto map_v = args.data[ncols - 1].GetValue(i);
+			if (args.data[1].GetValue(i).IsNull() || map_v.IsNull()) {
 				throw InvalidInputException(DecideMsg("decide_register_model", "the provider or the options MAP is NULL",
 				                                      "pass both, e.g. SELECT decide_register_model('m', 'liquid', "
 				                                      "MAP {'model': 'd1:free'});"));
@@ -352,25 +383,25 @@ void DecideRegisterModelFun(DataChunk &args, ExpressionState &state, Vector &res
 					options.key_env = value;
 				} else if (key == "criteria") {
 					options.criteria = value;
+				} else if (key == "calibration") {
+					options.calibration = value;
 				} else {
 					string what = "unknown option '" + key + "'";
-					const string close = DecideDidYouMean(key, {"endpoint", "path", "model", "key_env", "criteria"});
+					const string close =
+					    DecideDidYouMean(key, vector<string>(std::begin(option_names), std::end(option_names)));
 					if (!close.empty()) {
 						what += ". Did you mean '" + close + "'?";
 					}
 					throw InvalidInputException(DecideMsg(
 					    "decide_register_model", what,
-					    "supported options: endpoint, path, model, key_env, criteria, e.g. MAP {'endpoint': "
-					    "'https://host', 'model': 'my-model'} (API keys go in CREATE SECRET or an env var, not here)"));
+					    "supported options: endpoint, path, model, key_env, criteria, calibration, e.g. MAP "
+					    "{'endpoint': 'https://host', 'model': 'my-model'} (API keys go in CREATE SECRET or an env "
+					    "var, not here)"));
 				}
 			}
-			DecideRegistry::Get(context)->RegisterModel(context, id_v.ToString(), provider_v.ToString(), "", "", "",
-			                                            options);
-			result.SetValue(i, Value::BOOLEAN(true));
-			continue;
 		}
 		const char *names[4] = {"provider", "graph path", "tokenizer path", "profile"};
-		for (idx_t a = 1; a < args.ColumnCount() && a <= 4; a++) {
+		for (idx_t a = 1; a < positional_end && a <= 4; a++) {
 			auto v = args.data[a].GetValue(i);
 			if (v.IsNull()) {
 				throw InvalidInputException(DecideMsg(
@@ -389,7 +420,7 @@ void DecideRegisterModelFun(DataChunk &args, ExpressionState &state, Vector &res
 			}
 		}
 		DecideRegistry::Get(context)->RegisterModel(context, id_v.ToString(), provider, graph_path, tokenizer_path,
-		                                            profile);
+		                                            profile, options);
 		result.SetValue(i, Value::BOOLEAN(true));
 	}
 	result.SetVectorType(VectorType::FLAT_VECTOR);
@@ -405,6 +436,7 @@ void DecideRegisterModelFun(DataChunk &args, ExpressionState &state, Vector &res
 	}
 DECIDE_SCALAR_TELEMETRY_BIND(DecideProbabilityBind, "decide_probability")
 DECIDE_SCALAR_TELEMETRY_BIND(DecideChoiceBind, "decide_choice")
+DECIDE_SCALAR_TELEMETRY_BIND(DecideChoiceDistributionBind, "decide_choice_distribution")
 DECIDE_SCALAR_TELEMETRY_BIND(DecideScoreBind, "decide_score")
 DECIDE_SCALAR_TELEMETRY_BIND(DecideDecisionBind, "decide_decision")
 DECIDE_SCALAR_TELEMETRY_BIND(DecideManyBind, "decide_many")
@@ -538,6 +570,30 @@ void RegisterDecideScalars(ExtensionLoader &loader) {
 		                {{"state", "question", "levels", "model"}, {V, V, null_options, V}, ex2}}));
 	}
 	{
+		const auto dist_type = LogicalType::MAP(V, D);
+		ScalarFunctionSet set("anofox_decide_choice_distribution");
+		set.AddFunction(DECIDE_SCALAR("anofox_decide_choice_distribution", dist_type, DecideChoiceDistributionFun, DecideChoiceDistributionBind, {V, V, options_type}));
+		set.AddFunction(DECIDE_SCALAR("anofox_decide_choice_distribution", dist_type, DecideChoiceDistributionFun, DecideChoiceDistributionBind, {V, V, options_type, V}));
+		set.AddFunction(DECIDE_SCALAR("anofox_decide_choice_distribution", dist_type, DecideChoiceDistributionFun, DecideChoiceDistributionBind, {V, V, null_options}));
+		set.AddFunction(DECIDE_SCALAR("anofox_decide_choice_distribution", dist_type, DecideChoiceDistributionFun, DecideChoiceDistributionBind, {V, V, null_options, V}));
+		const string desc =
+		    "Probability of every option for `question` given `state`, as MAP(VARCHAR, DOUBLE) (the probabilities "
+		    "sum to 1). Same arguments as decide_choice, which returns only the winner; use this to read the "
+		    "confidence, set a minimum probability and abstain, or compare models. An empty or NULL option list "
+		    "raises an actionable error.";
+		RegisterScalarFunctionSetWithAlias(
+		    loader, std::move(set), "decide_choice_distribution",
+		    DecideDocs(desc, "evaluate",
+		               {{{"state", "question", "options"}, {V, V, options_type},
+		                 "SELECT decide_choice_distribution('Invoice charged twice', 'Primary issue?', ['billing','defect','other']);"},
+		                {{"state", "question", "options", "model"}, {V, V, options_type, V},
+		                 "SELECT map_extract(decide_choice_distribution(body, 'Which team owns this?', ['billing','defect','other'], model := 'jev-latest'), 'billing')[1] AS p_billing FROM tickets;"},
+		                {{"state", "question", "options"}, {V, V, null_options},
+		                 "SELECT decide_choice_distribution('Invoice charged twice', 'Primary issue?', ['billing','defect']);"},
+		                {{"state", "question", "options", "model"}, {V, V, null_options, V},
+		                 "SELECT decide_choice_distribution('Invoice charged twice', 'Primary issue?', ['billing','defect'], model := 'stub');"}}));
+	}
+	{
 		ScalarFunctionSet set("anofox_decide_decision");
 		set.AddFunction(DECIDE_SCALAR("anofox_decide_decision", B, DecideDecisionFun, DecideDecisionBind, {V, V, D}));
 		set.AddFunction(DECIDE_SCALAR("anofox_decide_decision", B, DecideDecisionFun, DecideDecisionBind, {V, V, D, V}));
@@ -589,11 +645,14 @@ void RegisterDecideScalars(ExtensionLoader &loader) {
 		set.AddFunction(DECIDE_SCALAR("anofox_decide_register_model", B, DecideRegisterModelFun, DecideRegisterModelBind, {V, V, V, V}));
 		set.AddFunction(DECIDE_SCALAR("anofox_decide_register_model", B, DecideRegisterModelFun, DecideRegisterModelBind, {V, V, V, V, V}));
 		set.AddFunction(DECIDE_SCALAR("anofox_decide_register_model", B, DecideRegisterModelFun, DecideRegisterModelBind, {V, V, map_type}));
+		set.AddFunction(DECIDE_SCALAR("anofox_decide_register_model", B, DecideRegisterModelFun, DecideRegisterModelBind, {V, V, V, V, V, map_type}));
 		const string desc =
 		    "Register a model id for this database instance and return true. Providers: 'stub' (deterministic), "
 		    "'local' (ONNX graph and tokenizer paths, optional profile 'julia-1' or 'laya'), and the remote "
 		    "providers 'typesafe', 'liquid', 'systemone' and 'strands' (optional options MAP with endpoint, path, "
-		    "model, key_env, criteria). Duplicate ids, unsupported providers and unreadable files raise actionable errors.";
+		    "model, key_env, criteria). The options MAP also takes calibration, 'platt:a,b', for any provider: it "
+		    "rescales that model's yes/no probabilities (fit a and b with decide_fit_calibration). Duplicate ids, "
+		    "unsupported providers and unreadable files raise actionable errors.";
 		RegisterScalarFunctionSetWithAlias(
 		    loader, std::move(set), "decide_register_model",
 		    DecideDocs(desc, "models",
@@ -606,7 +665,10 @@ void RegisterDecideScalars(ExtensionLoader &loader) {
 		                {{"id", "provider", "graph_path", "tokenizer_path", "profile"}, {V, V, V, V, V},
 		                 "SELECT decide_register_model('laya', 'local', '/models/laya.onnx', '/models/tokenizer/tokenizer.json', 'laya');"},
 		                {{"id", "provider", "options"}, {V, V, map_type},
-		                 "SELECT decide_register_model('kev-latest', 'systemone', MAP {'endpoint': 'http://127.0.0.1:8009'});"}}));
+		                 "SELECT decide_register_model('kev-latest', 'systemone', MAP {'endpoint': 'http://127.0.0.1:8009'});"},
+		                {{"id", "provider", "graph_path", "tokenizer_path", "profile", "options"},
+		                 {V, V, V, V, V, map_type},
+		                 "SELECT decide_register_model('laya', 'local', '/models/laya.onnx', '/models/tokenizer/tokenizer.json', 'laya', MAP {'calibration': 'platt:1.1,-0.3'});"}}));
 	}
 }
 

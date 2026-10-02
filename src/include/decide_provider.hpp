@@ -1,5 +1,6 @@
 #pragma once
 
+#include "decide_calibration.hpp"
 #include "duckdb/storage/object_cache.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/map.hpp"
@@ -49,16 +50,20 @@ struct DecideModelEntry {
 	string wire_model;
 	string key_env;
 	string criteria; // "" follow the provider, "null" or "name": how choice options are described on the wire
+	// Platt scaling applied to this model's yes/no probabilities (see decide_calibration.hpp);
+	// `set` is false when the model is uncalibrated.
+	DecidePlatt calibration;
 };
 
 // Per-model remote options from decide_register_model's options MAP
-// (keys: endpoint, path, model, key_env, criteria).
+// (keys: endpoint, path, model, key_env, criteria, calibration).
 struct DecideRegisterOptions {
 	string endpoint;
 	string path;
 	string wire_model;
 	string key_env;
 	string criteria;
+	string calibration; // "platt:a,b" (any provider) or ""
 };
 
 // DB-instance-level model registry (tabfm TabFMState pattern): lives in
