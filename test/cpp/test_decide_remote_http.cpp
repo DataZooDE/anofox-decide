@@ -195,7 +195,7 @@ TEST_CASE("remote connection refused on loopback: start the server, and do not r
 	REQUIRE_THAT(msg, Contains("strands-decider at http://127.0.0.1:" + std::to_string(dead_port) + " is not reachable: nothing is listening on 127.0.0.1:" + std::to_string(dead_port) + " (connection refused)"));
 	REQUIRE_THAT(msg, Contains("start the server on this machine"));
 	REQUIRE_THAT(msg, !Contains("attempts"));
-	REQUIRE(took < 1.0); // no backoff sleeps: retries would have cost 200+400+800 ms
+	REQUIRE(took < 2.5); // one attempt (Windows waits out the 1 s connect timeout); retries would add 200+400+800 ms and three more waits
 }
 
 TEST_CASE("remote success path still parses the answer", "[anofox_decide][remote][http]") {
