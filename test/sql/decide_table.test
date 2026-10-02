@@ -1,5 +1,5 @@
 # name: test/sql/decide_table.test
-# description: Relation-oriented table function (BRD section 5, Next scope).
+# description: Relation-oriented table function.
 #              decide_table(state, questions_json[, model]) returns one typed
 #              row per question in input order: the relational twin of the
 #              decide_many batch JSON. Same validation contract, same providers.

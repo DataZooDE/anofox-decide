@@ -245,7 +245,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--opset", type=int, default=17)
     args = parser.parse_args(argv)
     spec = json.loads(Path(args.spec).read_text())
-    print(f"exporting {spec['repo_id']} @ {spec['sha']}")
+    # repo_id and sha come from `inspect` (Julia-1); a hand-written spec for another checkpoint may omit them.
+    print(f"exporting {spec.get('repo_id', 'unknown checkpoint')} @ {spec.get('sha', 'unknown revision')}")
     artifacts = export_model(args.spec, args.weights, args.out, args.opset)
     print(json.dumps(artifacts, indent=2))
     return 0

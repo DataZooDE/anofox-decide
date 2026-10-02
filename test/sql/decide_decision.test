@@ -1,5 +1,5 @@
 # name: test/sql/decide_decision.test
-# description: Nullable threshold decisions (BRD section 4). A binary result
+# description: Nullable threshold decisions. A binary result
 #              carries a probability plus a nullable decision derived from an
 #              EXPLICIT threshold — a probability is never silently converted
 #              to a boolean. NULL state/question/threshold returns NULL.

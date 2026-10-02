@@ -61,11 +61,15 @@ pseudonymous** identifier, not tied to any personal data.
 `function_name` is always one of a fixed, code-controlled set of the extension's
 own function names:
 
-- `decide_probability` / `decide_choice` / `decide_decision` / `decide_many`
-  (scoring)
+- `decide_probability` / `decide_choice` / `decide_score` / `decide_decision` /
+  `decide_many` (scoring)
 - `decide_table` (relational batch scoring)
-- `decide_register_model` / `decide_models` (model registry)
+- `decide_register_model` / `decide_unregister_model` / `decide_models` (model registry)
+- `decide_doctor` (setup check)
 - `decide_brier_score` / `decide_ece` / `decide_accuracy` (calibration metrics)
+
+The short `decide_*` aliases and the primary `anofox_decide_*` names are recorded under the same
+`decide_*` identifier.
 
 No arguments, options, model ids, provider names, endpoints, API keys, state
 text, questions or answers are ever attached. Remote providers receive the

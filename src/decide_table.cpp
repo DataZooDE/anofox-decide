@@ -503,9 +503,10 @@ void RegisterDecideTableFunctions(ExtensionLoader &loader) {
 		                   DECIDE_GUARD(DecideModelsBind), DecideModelsInitGlobal);
 		RegisterTableFunctionWithAlias(
 		    loader, std::move(func), "decide_models",
-		    DecideDocs("List the models registered on this database instance (model id, provider, mode "
-		               "'test'/'local'/'remote', and the local graph path). The built-in 'stub' model is always "
-		               "present; register more with decide_register_model.",
+		    DecideDocs("List the models registered on this database instance and whether each can be called now. "
+		               "Columns: model, provider, mode ('test' / 'local' / 'remote'), path, is_default, ready, hint "
+		               "(what to do when it is not ready), profile, endpoint, wire_model. The built-in 'stub' test "
+		               "model is always present; register more with decide_register_model.",
 		               "models", {{{}, {}, "SELECT * FROM decide_models();"}}));
 	}
 	{
@@ -526,11 +527,13 @@ void RegisterDecideTableFunctions(ExtensionLoader &loader) {
 		    loader, std::move(set), "decide_table",
 		    DecideDocs("Score several questions against one state and return one row per answer (question id, "
 		               "kind, probability, choice, confidence, model, plus score and distribution). `questions` is a JSON array of "
-		               "{id, kind: 'binary'|'choice', instruction[, options]} objects. Works in LATERAL over a table "
-		               "of states (per-row scoring; one provider round trip per row for remote models).",
+		               "{id, kind: 'binary'|'choice'|'score', instruction[, options | levels]} objects. With constant "
+		               "arguments it is one request for all questions; in LATERAL over a table of states it scores "
+		               "every row, one request per row and one row at a time (for many rows use the scalar functions, "
+		               "which run concurrently). Name the model with `model :=` or the third argument.",
 		               "evaluate",
 		               {{{"state", "questions"}, {V, V},
-		                 "SELECT * FROM decide_table('The bill is wrong.', '[{\"id\":\"refund\",\"kind\":\"binary\",\"instruction\":\"A refund is requested.\"}]');"},
+		                 "SELECT * FROM decide_table('The bill is wrong.', '[{\"id\":\"refund\",\"kind\":\"binary\",\"instruction\":\"A refund is requested.\"}]', model := 'stub');"},
 		                {{"state", "questions", "model"}, {V, V, V},
 		                 "SELECT * FROM tickets, LATERAL (SELECT * FROM decide_table(tickets.body, '[{\"id\":\"refund\",\"kind\":\"binary\",\"instruction\":\"A refund is requested.\"}]', model := 'jev-latest')) dt;"}}));
 	}

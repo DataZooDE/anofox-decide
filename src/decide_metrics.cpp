@@ -1,5 +1,5 @@
 //===----------------------------------------------------------------------===//
-// decide_metrics.cpp — calibration aggregates (BRD section 6, Next scope).
+// decide_metrics.cpp — calibration aggregates.
 //
 // decide_brier_score(prob, label), decide_ece(prob, label), and
 // decide_accuracy(prob, label[, threshold]): the SQL surface for "publish

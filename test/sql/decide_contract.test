@@ -1,6 +1,6 @@
 # name: test/sql/decide_contract.test
 # description: anofox_decide scaffold contract (RED first). Extension loads and
-#              exposes the MVP scalar surface with the BRD error contract.
+#              exposes the MVP scalar surface with the documented error contract.
 # group: [anofox_decide]
 
 require anofox_decide

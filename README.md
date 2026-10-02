@@ -1,65 +1,206 @@
 # anofox-decide
 
-DuckDB extension evaluating natural-language predicates and runtime-defined answer sets against text or structured state. Modeled after `../anofox-tabfm` (same DuckDB pin, extension-ci-tools harness, red/green TDD, sqllogictest + Catch2 DoD).
+**Natural-language decisions on your data, inside DuckDB.** Ask a yes/no question, pick one of the
+options *you* define, or rate a text on an ordered scale — as a SQL function, over any text or
+structured state. Purpose-built **decision models** answer with calibrated probabilities, not just
+labels, so you choose the threshold and can measure how good the answers are. No training, no prompt
+engineering, no glue code: the questions and the answer sets are written in the query.
 
 ```sql
+SELECT id,
+       decide_probability(text, 'A refund is requested.')                            AS p_refund,
+       decide_choice(text, 'Which team owns this?', ['billing', 'defect', 'other'])  AS team,
+       decide_score(text, 'How frustrated is the writer?', ['calm', 'frustrated', 'angry']) AS frustration
+FROM tickets;
+```
+
+**Pick the model that fits: hosted or on your machine.** Hosted: TypeSafe **Jev** and Liquid AI **D1**.
+Local servers: **strands-decider** and **Kev** (or any System One compatible server). In-process and
+fully offline: **Julia-1** and **Laya** on ONNX Runtime. All of them answer the same questions through
+the same functions, so you can swap the model without touching the query — and compare them on your
+own data in one statement.
+
+---
+
+## Quickstart
+
+### 1. Install & load
+
+```sql
+INSTALL anofox_decide FROM community;
 LOAD anofox_decide;
-SELECT decide_probability('The customer requests a refund.', 'A refund is requested.', model := 'stub');
-SELECT decide_choice('Primary issue?', ['billing','defect','other'], model := 'stub');
-SELECT decide_score('Help! My payouts failed for 3 days!', 'How frustrated is the writer?', ['calm','frustrated','angry'], model := 'stub');  -- expected level, 0-based
-SELECT decide_decision('The customer requests a refund.', 'A refund is requested.', 0.7, model := 'stub');
-SELECT * FROM decide_table('The bill is wrong.',
-  '[{"id":"refund","kind":"binary","instruction":"A refund is requested."},
-    {"id":"mood","kind":"score","instruction":"How frustrated?","levels":["calm","frustrated","angry"]}]', 'stub');
--- columns: question_id, kind, probability, choice, confidence, model, score, distribution
-SELECT * FROM tickets, LATERAL (SELECT * FROM decide_table(tickets.body, '[...]', 'stub')) dt;  -- fine for a few rows; see "Scoring many rows"
-SELECT decide_brier_score(p, y) FROM labeled;  -- + decide_ece / decide_accuracy(p, y[, threshold])
-SELECT * FROM decide_models();
 ```
 
-## First run
+The extension ships no model weights and calls nothing until you register a model and, for hosted
+models, opt in.
 
-There is no implicit model: a call that names no model (and with no `SET anofox_decide_model`) fails with
-instructions instead of quietly returning a constant, so a test model can never pass for a real answer. The
-fastest way to see where you stand:
+### 2. Pick a model
+
+`SELECT * FROM decide_doctor();` tells you what is ready and how to fix what is not. Then choose one:
+
+| You have | Do this |
+|---|---|
+| Nothing yet | Use the built-in `stub` to try the SQL: `model := 'stub'`. It returns constants (0.5, the first option) so it can never pass for a real answer. |
+| A Liquid AI key ([D1](https://docs.liquid.ai/lfm/models/decision-models)) | `export LIQUID_API_KEY=...`, then register `d1:free` (below). |
+| A TypeSafe key (Jev) | `export TYPESAFE_API_KEY=...`, then `decide_register_model('jev-latest', 'typesafe')`. |
+| A machine that can run a 2B model | Run [strands-decider](https://github.com/strands-labs/strands-decider) locally, no key: [Remote providers](#models-and-providers). |
+| An exported ONNX model | Run it inside DuckDB, offline: [Local models](#local-models). |
+
+A hosted model sends the text you score to the provider, so it sits behind an explicit opt-in that is off
+by default. Register it once per session, then name it per call (`model := 'd1:free'`) or make it the
+default:
 
 ```sql
-SELECT * FROM decide_doctor();   -- ok / warn / fail per check, with the fix for each problem
-SELECT model, ready, hint FROM decide_models();   -- what is registered, whether it can be called, and why not
+SET anofox_decide_allow_remote = true;                 -- explicit opt-in: the text goes to the provider
+SELECT decide_register_model('d1:free', 'liquid');     -- the id is the model name on the wire
+SET anofox_decide_model = 'd1:free';                   -- the default for calls that name no model
 ```
 
-Typical first steps: register a model (see [Remote providers](#remote-providers) or
-[Local models](#local-models)), then name it per call (`model := 'jev-latest'`) or set it once
-(`SET anofox_decide_model = 'jev-latest'`). `model := 'stub'` is a built-in test model that returns constants
-(probability 0.5, the first option) for trying the SQL surface. `decide_unregister_model('id')` removes a model
-so it can be registered again with different settings.
+A call that names no model, with no default set, fails and says how to choose one; it never quietly
+returns a constant.
 
-## Remote providers
+### 3. Decide
 
-Remote models send `state` to the provider's API, so they sit behind an
-explicit opt-in. Providers are profiles over the same System One wire format
-(`noul` / `choice` / `score`); each has its own endpoint, path and key variable, so
-several can be used side by side in one session with no `SET` in between:
+A few support tickets (`examples/data/support_tickets.csv`), scored for three questions at once. This is
+real output from Liquid D1:
 
-| Provider | Service | Default endpoint | Key env var |
+```sql
+CREATE TABLE tickets AS SELECT * FROM read_csv('examples/data/support_tickets.csv');  -- id, text, refund, team
+
+CREATE TABLE scored AS
+SELECT id, text, refund,
+       decide_probability(text, 'A refund is requested.')                                   AS p_refund,
+       decide_choice(text, 'Which team owns this?', ['billing', 'defect', 'other'])         AS team,
+       decide_score(text, 'How frustrated is the writer?', ['calm', 'frustrated', 'angry']) AS frustration
+FROM tickets;
+
+SELECT id, round(p_refund, 3) AS p_refund, team, round(frustration, 2) AS frustration, left(text, 44) AS text
+FROM scored ORDER BY id;
+```
+┌───────┬──────────┬─────────┬─────────────┬──────────────────────────────────────────────┐
+│  id   │ p_refund │  team   │ frustration │                     text                     │
+├───────┼──────────┼─────────┼─────────────┼──────────────────────────────────────────────┤
+│     1 │    0.998 │ billing │         0.2 │ I was charged twice for my March invoice, pl │
+│     2 │    0.321 │ defect  │        0.94 │ The app crashes every time I open the export │
+│     3 │    0.107 │ other   │         0.0 │ Thanks for the quick help yesterday, everyth │
+│     4 │    0.998 │ billing │         1.2 │ I want my money back, this product does not  │
+│     5 │    0.033 │ defect  │        0.64 │ Login button does nothing on Safari, error 5 │
+│     6 │    0.002 │ billing │        0.06 │ Our invoice shows the wrong VAT rate; please │
+│     7 │    0.064 │ other   │        0.01 │ Do you have an office in Munich? We would li │
+│     8 │    0.995 │ billing │        0.39 │ Cancel my subscription and reimburse the unu │
+└───────┴──────────┴─────────┴─────────────┴──────────────────────────────────────────────┘
+```
+
+Probabilities become actions with a threshold *you* pick, and the same table says how good they are:
+
+```sql
+SELECT id FROM scored WHERE p_refund >= 0.7;                       -- escalate to the refunds team
+
+SELECT decide_accuracy(p_refund, refund)    AS accuracy,           -- 1.0
+       decide_brier_score(p_refund, refund) AS brier,              -- 0.015  (lower is better)
+       decide_ece(p_refund, refund)         AS calibration_error   -- 0.067
+FROM scored;
+```
+
+The complete, runnable version is [`examples/02_support_triage.sql`](examples/02_support_triage.sql); it
+starts on the `stub` so it runs offline, and the lines marked `REAL MODEL` switch it to a real one. The
+other examples are listed in [`examples/`](examples/README.md).
+
+---
+
+## What you can ask
+
+Every question has a **kind**. You write the question and, for the kinds that need them, the answers —
+at query time, per row if you like.
+
+| Kind | You provide | You get | Function |
 |---|---|---|---|
-| `typesafe` | TypeSafe Jev | `https://api.typesafe.ai` | `TYPESAFE_API_KEY` |
-| `liquid` | Liquid AI D1 | `https://api.liquid.ai` (`/decisions/v1/systemone`) | `LIQUID_API_KEY` |
-| `systemone` | any compatible server, e.g. [Kev](https://github.com/jaredpalmer/kev) | you set it | none (see `key_env`) |
-| `strands` | [strands-decider](https://github.com/strands-labs/strands-decider) local server | `http://127.0.0.1:8000` | none (keyless) |
+| `binary` | a statement | the probability (0 to 1) that it holds for the text | `decide_probability`, and `decide_decision` with a threshold |
+| `choice` | a question and a list of options | the best option, plus the probability of each | `decide_choice` |
+| `score` | a question and an ordered rubric of 2 to 10 levels, lowest first | the expected level (0-based, e.g. `1.4` between `frustrated` and `angry`), plus the probability of each level | `decide_score` |
+
+Several questions about the same text go in one call, as a JSON array of
+`{id, kind, instruction[, options | levels]}`:
 
 ```sql
-SET anofox_decide_allow_remote=true;  -- explicit opt-in, default off
+SELECT question_id, kind, probability, choice, score, distribution
+FROM decide_table('The bill is wrong and I want my money back.',
+  '[{"id": "refund", "kind": "binary", "instruction": "A refund is requested."},
+    {"id": "team",   "kind": "choice", "instruction": "Which team owns this?", "options": ["billing", "defect", "other"]},
+    {"id": "mood",   "kind": "score",  "instruction": "How frustrated is the writer?", "levels": ["calm", "frustrated", "angry"]}]',
+  model := 'd1:free');
+```
+
+### Output columns of `decide_table`
+
+| Column | Type | Meaning |
+|---|---|---|
+| `question_id` | `VARCHAR` | the `id` you gave the question |
+| `kind` | `VARCHAR` | `binary`, `choice` or `score` |
+| `probability` | `DOUBLE` | `binary`: P(yes). `choice`: probability of the chosen option. `score`: probability of the most likely level |
+| `choice` | `VARCHAR` | the chosen option (`choice` only) |
+| `confidence` | `DOUBLE` | the model's own confidence when the service reports one, otherwise `NULL` |
+| `model` | `VARCHAR` | the model that answered |
+| `score` | `DOUBLE` | the expected 0-based level (`score` only) |
+| `distribution` | `MAP(VARCHAR, DOUBLE)` | probability per option or level (`choice`, `score`) |
+
+`decide_many` returns the same answers as one JSON document per text:
+`{"model": "...", "results": [{"id", "kind", "probability", ...}]}`.
+
+**NULLs.** A NULL text, question, option list or threshold gives a NULL result: no model is resolved and
+nothing is sent. A NULL `model` argument falls back to the session default.
+
+---
+
+## Functions
+
+Every function is available as `anofox_decide_<name>` and as the short alias `decide_<name>`.
+`duckdb_functions()` carries a description, parameter names and a runnable example for each.
+
+| Function | Returns | Purpose |
+|---|---|---|
+| `decide_probability(state, question[, model])` | `DOUBLE` | P(`question` holds for `state`) |
+| `decide_decision(state, question, threshold[, model])` | `BOOLEAN` | `true` when that probability reaches an explicit `threshold` (0 to 1); never guessed |
+| `decide_choice(state, question, options[, model])` | `VARCHAR` | the best of a list of options |
+| `decide_score(state, question, levels[, model])` | `DOUBLE` | the expected 0-based level on an ordered rubric |
+| `decide_many(state, questions[, model])` | `VARCHAR` (JSON) | several questions about one text in one request |
+| `decide_table(state, questions[, model])` | table | the same, one row per question |
+| `decide_accuracy(p, outcome[, threshold])` | `DOUBLE` | share of rows where thresholding `p` reproduces the label (aggregate) |
+| `decide_brier_score(p, outcome)` | `DOUBLE` | mean squared error of the probabilities; 0 is perfect, 0.25 a constant 0.5 (aggregate) |
+| `decide_ece(p, outcome)` | `DOUBLE` | expected calibration error over ten equal-width bins (aggregate) |
+| `decide_register_model(id[, provider[, ...]])` | `BOOLEAN` | register a model for this database instance |
+| `decide_unregister_model(id)` | `BOOLEAN` | remove a registered model so it can be registered again |
+| `decide_models()` | table | the registered models, whether each can be called now, and what to do if not |
+| `decide_doctor()` | table | `item`, `status` (`ok` / `warn` / `fail`), `detail`, `fix` for the whole setup |
+
+---
+
+## Models and providers
+
+Hosted and local models are profiles over one wire format (System One: `binary`, `choice` and `score`
+questions, probabilities back), so a model is just a registered id, and several can be used side by side
+in one session with no `SET` in between.
+
+| Provider | Service | Runs | Default endpoint | Key |
+|---|---|---|---|---|
+| `typesafe` | TypeSafe Jev | hosted API | `https://api.typesafe.ai` | `TYPESAFE_API_KEY` |
+| `liquid` | Liquid AI D1 | hosted API | `https://api.liquid.ai` | `LIQUID_API_KEY` |
+| `strands` | [strands-decider](https://github.com/strands-labs/strands-decider) 2B | local server | `http://127.0.0.1:8000` | none |
+| `systemone` | any compatible server, e.g. [Kev](https://github.com/jaredpalmer/kev) | your server | you set it | optional (`key_env`) |
+| `local` | Julia-1, Laya | in-process, offline | — | none |
+| `stub` | built-in test model | in-process | — | none |
+
+```sql
+SET anofox_decide_allow_remote = true;                       -- hosted and server models need the opt-in
 SELECT decide_register_model('jev-latest', 'typesafe');
-SELECT decide_register_model('d1:free', 'liquid');            -- the id is the model name on the wire
+SELECT decide_register_model('d1:free', 'liquid');
 SELECT decide_probability('...', '...', model := 'jev-latest');
 SELECT decide_probability('...', '...', model := 'd1:free');
 ```
 
-Per-model options go in a `MAP` (keys `endpoint`, `path`, `model`, `key_env`,
-`criteria`), e.g. a self-hosted server, a different wire model name, an explicit
-key variable for a custom endpoint, or `criteria: 'name'` for servers whose
-schema needs a string description per choice option instead of `null`:
+Per-model options go in a `MAP` (keys `endpoint`, `path`, `model`, `key_env`, `criteria`): a self-hosted
+server, a different model name on the wire, an explicit key variable for a custom endpoint, or
+`criteria: 'name'` for servers whose schema wants a string description per choice option instead of `null`:
 
 ```sql
 SELECT decide_register_model('kev-latest', 'systemone', MAP {'endpoint': 'http://127.0.0.1:8009'});
@@ -67,35 +208,28 @@ SELECT decide_register_model('d1', 'liquid', MAP {'model': 'd1:free'});
 SELECT decide_register_model('mine', 'systemone', MAP {'endpoint': 'https://llm.internal', 'key_env': 'MY_KEY_VAR'});
 ```
 
-**API keys.** Environment variables work out of the box (`export
-LIQUID_API_KEY=...`), and a DuckDB secret always overrides them. Precedence,
-highest first:
+### API keys
+
+Environment variables work out of the box (`export LIQUID_API_KEY=...`), and a DuckDB secret always
+overrides them. Precedence, highest first:
 
 1. A stored secret (write-only, redacted in `duckdb_secrets()`), matched by the endpoint host:
    ```sql
    CREATE SECRET (TYPE anofox_decide, API_KEY 'sk-...', SCOPE 'api.liquid.ai');
    CREATE SECRET (TYPE anofox_decide, API_KEY getenv('LIQUID_API_KEY'), SCOPE 'api.liquid.ai');  -- copy from the env
    ```
-2. `anofox_decide_api_key` (legacy, `typesafe` provider only; visible via `current_setting`).
+2. `anofox_decide_api_key` (legacy, `typesafe` only; visible through `current_setting`, so prefer a secret).
 3. The model's explicit `key_env` variable.
 4. The provider's own env var (table above), only on that provider's default host.
 
-A key is never sent to a host it was not configured for: a redirected
-endpoint gets nothing from the environment, and a secret scoped to one host
-is not used for another. Cleartext `http://` works for loopback hosts only.
-`anofox_decide_endpoint` remains as a legacy setting for the `typesafe`
-provider.
+A key is never sent to a host it was not configured for: a redirected endpoint gets nothing from the
+environment, and a secret scoped to one host is not used for another. Cleartext `http://` works for
+loopback hosts only.
 
-Kev (Qwen3.5 + LoRA, Apache 2.0) is a local server, not an in-process model:
-run `python -m kev.serve --run jaredpalmer/kev-0.8b --port 8009`, then register
-it as above and give it any key (it ignores the value but the provider requires
-one), e.g. `CREATE SECRET (TYPE anofox_decide, API_KEY 'local', SCOPE '127.0.0.1')`.
-Kev-4B/9B/27B are more accurate than 0.8B and need a GPU or a large Mac.
+### Local servers
 
-[strands-decider](https://github.com/strands-labs/strands-decider) (Apache 2.0, a 1.9B
-Qwen3.5 torso with a pointer head) is also a local server. It needs no key and its
-schema requires a string per choice option, which the `strands` profile handles
-(a choice question may have at most 24 options on this model). It listens on
+[strands-decider](https://github.com/strands-labs/strands-decider) (Apache 2.0; a 1.9B Qwen3.5 torso with
+a pointer head) needs no key. A choice question may have at most 24 options on this model. It listens on
 loopback without authentication, so keep it local:
 
 ```bash
@@ -105,14 +239,23 @@ pip install strands-decider
 strands-decider serve StrandsAgents/strands-decider-2B-hobson-v19 --device cpu --port 8000   # first run downloads ~4.5 GB
 ```
 ```sql
-SET anofox_decide_allow_remote=true;
+SET anofox_decide_allow_remote = true;
 SELECT decide_register_model('strands-decider', 'strands');   -- default endpoint http://127.0.0.1:8000
-SELECT decide_choice('Help! My payouts have been failing.', 'Which team?', ['billing','sales','retail'], model := 'strands-decider');
+SELECT decide_choice('Help! My payouts have been failing.', 'Which team?', ['billing', 'sales', 'retail'],
+                     model := 'strands-decider');
 ```
+
+Kev (Qwen3.5 + LoRA, Apache 2.0) is run the same way: `python -m kev.serve --run jaredpalmer/kev-0.8b
+--port 8009`, register it as `systemone` (above) and give it any key, since it ignores the value but the
+provider requires one: `CREATE SECRET (TYPE anofox_decide, API_KEY 'local', SCOPE '127.0.0.1')`. Kev-4B,
+9B and 27B are more accurate than 0.8B and need a GPU or a large Mac.
+
+---
 
 ## Scoring many rows
 
-A remote call takes one text plus any number of questions, so the cost is **one request per row** whatever the SQL looks like. What you control is how many run at the same time.
+A remote call takes one text plus any number of questions, so the cost is **one request per row**
+whatever the SQL looks like. What you control is how many run at the same time.
 
 | You write | Requests | Notes |
 |---|---|---|
@@ -120,50 +263,40 @@ A remote call takes one text plus any number of questions, so the cost is **one 
 | `decide_table(text, questions)` with constant arguments | one request for all questions | One document, many questions |
 | `LATERAL decide_table(t.text, ...)` over a table | one per row, **one after another** | DuckDB gives the function one row per call in a lateral join, so it cannot be concurrent (measured: with 8 DuckDB threads the peak is still 1 request in flight). Fine for a few rows |
 
-Measured on the real Liquid D1 service (`tests/fixtures/support_tickets.csv`, 8 tickets): 176.7 s with `SET anofox_decide_max_concurrency = 1`, 23.1 s with the default, same answers (D1 itself varies slightly from call to call).
+Measured on the real Liquid D1 service (8 tickets, three questions each): 176.7 s with
+`SET anofox_decide_max_concurrency = 1` against 23.1 s with the default, same answers (D1 itself varies
+slightly from call to call). The triage example above takes about 11 s.
 
 ```sql
--- many rows, several questions each: one scalar call per question, or one decide_many per row
-SELECT id,
-       decide_probability(body, 'A refund is requested.', model := 'd1:free')  AS refund,
-       decide_choice(body, 'Which team owns this?', ['billing','defect','other'], model := 'd1:free') AS team
-FROM tickets;
-
 SET anofox_decide_max_concurrency = 4;   -- 0 = automatic (default): 8 hosted, 1 for the local strands server; 1 = one at a time
+SET anofox_decide_timeout_ms = 60000;    -- slow models: more time per request
+SET anofox_decide_max_retries = 5;       -- retries after a 429, a 5xx or a connection failure
 ```
 
-Lower the limit if your provider rate limits you; the query already halves its window after a `429`, honours `Retry-After`, and stops starting new requests after the first error (the error of the first failing row is reported). Two identical `(text, question)` pairs in one chunk cost one request; nothing is shared across chunks or queries, because a service need not answer the same question the same way twice. Local models (`laya`, `julia-1`) run one after another.
+Lower the limit if your provider rate limits you. The query already halves its window after a `429`,
+honours `Retry-After`, and stops starting new requests after the first error (the error of the first
+failing row is the one reported). Two identical `(text, question)` pairs in one chunk cost one request;
+nothing is shared across chunks or queries, because a service need not answer the same question the same
+way twice. Local models run one after another. See
+[`examples/03_scoring_many_rows.sql`](examples/03_scoring_many_rows.sql).
 
-## Local models
+---
 
-Julia-1, fully offline after setup:
+## Evaluate and compare models
+
+The metric aggregates work on any `(probability, label)` pairs, so comparing models is one query:
 
 ```sql
-SELECT decide_register_model('julia-1', 'local', '<path>/julia1.onnx', '<path>/tokenizer/tokenizer.json');
-SELECT decide_probability('...', '...', model := 'julia-1');
+SELECT model,
+       decide_accuracy(p, refund)    AS accuracy,
+       decide_brier_score(p, refund) AS brier,
+       decide_ece(p, refund)         AS ece
+FROM runs GROUP BY model ORDER BY brier;     -- see examples/04_compare_models.sql
 ```
 
-Local models take an optional 5th argument, the **profile**: `julia-1`
-(default) or `laya`. The profile fixes how questions are rendered for that
-model family, the sequence limits, and calibration. Laya
-([convaiinnovations/laya](https://huggingface.co/convaiinnovations/laya),
-Apache 2.0, ModernBERT / mmBERT encoders) needs `rl_agent_config.json` next
-to the graph (limits + calibration temperatures):
-
-```sql
-SELECT decide_register_model('laya', 'local', '<dir>/julia1.onnx',
-                             '<snapshot>/multilingual/tokenizer/tokenizer.json', 'laya');
-```
-
-Export any of the marker-head checkpoints with `tools/export_julia`
-(`python -m export_julia.export --spec <spec.json> --weights <snapshot subdir> --out <dir>`;
-the weights dir holds `encoder/config.json` + `model.safetensors`; the
-spec needs `{"head": {"head_layers": 2, "dropout": 0.1}}`) and copy the
-checkpoint's `rl_agent_config.json` beside the graph. Tokenizers: the
-SentencePiece-style one (Julia-1, Laya multilingual) and ByteLevel BPE (Laya
-English / typed-decisions) are both supported.
-
-## Model comparison
+`decide_accuracy` thresholds at 0.5 unless you pass a threshold. NULL rows are skipped and empty input
+returns NULL; probabilities outside 0 to 1, NaN, or labels that are not 0/1 raise an error that says what
+to fix.
 
 Measured on 200 labelled tickets from the public Bitext customer-support dataset (60 refund requests,
 140 not; routing into billing / orders / account / other). Full method, caveats and per-class results:
@@ -179,77 +312,107 @@ Measured on 200 labelled tickets from the public Bitext customer-support dataset
 | Kev-0.8B (`systemone`) | local server | 70.5% | 0.850 | 44.0% |
 | Julia-1 | local, in-process | 29.5% | 0.407 | 37.5% |
 
-Always-no scores 70% on refund and always-billing 45% on routing. Jev is the most accurate overall; strands-decider is
-conservative on refund (recall 48% at the 0.5 cut-off) and a mid-table router; D1
+Always-no scores 70% on refund and always-billing 45% on routing. Jev is the most accurate overall;
+strands-decider is conservative on refund (recall 48% at the 0.5 cut-off) and a mid-table router; D1
 routes as well as Jev, but at the 0.5 cut-off over-predicts refunds (its ranking is fine, AUROC 0.970);
 Laya multilingual matches Jev on refund and is the best in-process model, with typed-decisions the best
-in-process router. English-only, template-generated data: a smoke test of relative strength, not a
-benchmark of your tickets, so evaluate on your own data (`tools/eval` reproduces this run).
+in-process router. This is English, template-generated data: a smoke test of relative strength, not a
+benchmark of your tickets, so evaluate on your own (`tools/eval` reproduces this run). Each local ONNX model
+reproduces its upstream Python reference to within 5e-5 in probability on a small check set; the hosted
+models are called as-is.
 
-Each local ONNX model reproduces its upstream Python reference to within 5e-5 in probability on a small
-check set; the hosted models are called as-is.
+---
 
-## Status
+## Local models
 
-Early (0.1): the SQL surface, remote and local providers, calibration
-metrics and CI are working. What you can use today:
+A local model runs inside DuckDB on ONNX Runtime, on the CPU and fully offline after setup. The extension
+ships no weights and no graphs: you export a checkpoint to ONNX once with
+[`tools/export_julia`](tools/export_julia/README.md), then register the files.
+
+```sql
+SELECT decide_register_model('julia-1', 'local', '<path>/julia1.onnx', '<path>/tokenizer/tokenizer.json');
+SELECT decide_probability('...', '...', model := 'julia-1');
+```
+
+The optional 5th argument is the **profile**, `julia-1` (default) or `laya`. It fixes how questions are
+rendered for that model family, the sequence limits and the calibration. Laya
+([convaiinnovations/laya](https://huggingface.co/convaiinnovations/laya), Apache 2.0, ModernBERT / mmBERT
+encoders) needs `rl_agent_config.json` from its checkpoint next to the graph:
+
+```sql
+SELECT decide_register_model('laya', 'local', '<dir>/julia1.onnx',
+                             '<snapshot>/multilingual/tokenizer/tokenizer.json', 'laya');
+```
+
+Both SentencePiece-style tokenizers (Julia-1, Laya multilingual) and ByteLevel BPE (Laya English and
+typed-decisions) are supported. `decide_doctor()` opens the files and says which one is missing. Text
+longer than the model's limit is cut off (8192 tokens for `julia-1`, adjustable with
+`anofox_decide_max_length`; Laya uses the limit in its `rl_agent_config.json`). See
+[`examples/05_local_model.sql`](examples/05_local_model.sql).
+
+---
+
+## Settings
+
+All settings are session-scoped (`SET name = value;`) and validated: a bad value fails with the allowed
+range, the default and an example.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `anofox_decide_model` | *(unset)* | Model id used when a call names none. Unset: name one per call or set it |
+| `anofox_decide_allow_remote` | `false` | Opt-in for hosted and server models; the text you score goes to their endpoint |
+| `anofox_decide_max_concurrency` | `0` | Remote requests in flight at once, 0 to 64. `0` = automatic: 8 hosted, 1 for the local strands server |
+| `anofox_decide_timeout_ms` | `30000` | Per-request timeout for remote calls |
+| `anofox_decide_max_retries` | `3` | Retries after a `429`, a `5xx` or a connection failure, 0 to 10 |
+| `anofox_decide_max_questions` | `100` | Most questions in one `decide_many` / `decide_table` call, up to 1000 |
+| `anofox_decide_max_length` | `8192` | Tokens a `julia-1` local model reads per question (Laya uses its own config) |
+| `anofox_decide_head_length` | `512` | Tokens reserved for the question and its options in local models |
+| `anofox_decide_api_key` | *(unset)* | Legacy key for the `typesafe` provider, kept in plain text; prefer `CREATE SECRET` or the env var |
+| `anofox_decide_endpoint` | `https://api.typesafe.ai` | Legacy endpoint for `typesafe`; other providers take a per-model `endpoint` |
+| `anofox_telemetry_enabled` | `true` | Anonymous usage telemetry, see [Telemetry](#telemetry) |
+| `datazoo_banner` | `true` | The once-a-day feedback banner in interactive terminals |
+
+---
+
+## Status & scope
+
+The extension is calendar-versioned (`2026.10.02` is the second of October 2026) and is built and tested
+on Linux (amd64, arm64), macOS (arm64) and Windows (amd64) against DuckDB 1.5.5. What works today:
 
 | Provider | Models | Questions | Runs where |
 |---|---|---|---|
 | `stub` | deterministic placeholder (0.5 / first option) | `binary`, `choice`, `score` | in-process, for tests and demos |
-| `typesafe` (remote) | TypeSafe Jev (`jev-latest`) | `binary`, `choice`, `score` | hosted API; opt-in via `anofox_decide_allow_remote` |
-| `liquid` (remote) | Liquid AI D1 (`d1:free`) | `binary`, `choice`, `score` | hosted API; same opt-in |
-| `systemone` (remote) | any TypeSafe-compatible server, e.g. [Kev](https://github.com/jaredpalmer/kev) | `binary`, `choice`, `score` | your endpoint (loopback `http://` or `https://`) |
-| `strands` (remote) | [strands-decider](https://github.com/strands-labs/strands-decider) 2B | `binary`, `choice`, `score` | local server on loopback, no key |
-| `local` (ONNX Runtime) | Julia-1, Laya multilingual, Laya typed-decisions (profiles `julia-1`, `laya`) | `binary`, `choice`, `score` | in-process on CPU, fully offline after setup |
+| `typesafe` | TypeSafe Jev (`jev-latest`) | `binary`, `choice`, `score` | hosted API; opt-in via `anofox_decide_allow_remote` |
+| `liquid` | Liquid AI D1 (`d1:free`) | `binary`, `choice`, `score` | hosted API; same opt-in |
+| `systemone` | any System One compatible server, e.g. Kev | `binary`, `choice`, `score` | your endpoint (`https://`, or `http://` on loopback) |
+| `strands` | strands-decider 2B | `binary`, `choice`, `score` | local server on loopback, no key |
+| `local` | Julia-1, Laya multilingual, Laya typed-decisions | `binary`, `choice`, `score` | in-process on CPU, offline after setup |
 
-Question kinds: `binary` (yes/no, `decide_probability` / `decide_decision`), `choice` (one of N,
-`decide_choice`) and `score` (ordinal: an ordered rubric of 2 to 10 level descriptions, lowest first;
-`decide_score` returns the expected 0-based level, and `decide_many` / `decide_table` also return the
-per-level probabilities). `score` is verified for parity with each model's upstream implementation and
-against the live services; unlike refund and routing it has not been scored for accuracy on labelled data.
-Not supported yet: GPU execution and the Von model (needs order-invariant attention in the export).
+`score` is verified for parity with each model's upstream implementation and against the live services;
+unlike refund and routing it has not been scored for accuracy on labelled data.
 
-Which model to pick: Jev was the most accurate in our 200-ticket evaluation. Among models that run
-in-process, Laya multilingual matched it on refund detection and Laya typed-decisions routes best
-(see the comparison above); there is no single best local model yet. Model weights are not shipped in the repo; see
-[Local models](#local-models) for setup.
+**Not yet:** GPU execution for local models; the Von model (it needs order-invariant attention in the
+export); a built-in download for local model files (today you export them with `tools/export_julia`);
+on macOS only Apple silicon is built (ONNX Runtime ships no Intel macOS archive after v1.23.2), and
+WebAssembly, musl and MinGW are not built.
 
-CI builds and tests Linux (amd64, arm64), macOS (arm64) and Windows (amd64)
-on every push, then smoke-tests the shipped `.duckdb_extension` in the stock
-DuckDB CLI. Releases (`v*` tags) upload through the deploy workflow once the
-org's AWS role trusts this repository.
+**Which model?** Jev was the most accurate in the 200-ticket evaluation. Among models that run in-process,
+Laya multilingual matched it on refund detection and Laya typed-decisions routes best; there is no single
+best local model yet. Start with whichever you have a key or the hardware for, then compare on your own
+labelled data.
 
-Further reading: [docs/SPIKE_RESULTS.md](docs/SPIKE_RESULTS.md) (provider
-contracts), [docs/julia-1-spec.json](docs/julia-1-spec.json) (pinned Julia-1
-spec), [docs/CALIBRATION_PERF.md](docs/CALIBRATION_PERF.md) (calibration and
-performance), [docs/REVIEW_FOLLOWUP.md](docs/REVIEW_FOLLOWUP.md) (review
-decisions and the model investigations).
+Further reading: [docs/EVALUATION.md](docs/EVALUATION.md) (the 200-ticket evaluation),
+[docs/SPIKE_RESULTS.md](docs/SPIKE_RESULTS.md) (provider contracts),
+[docs/CALIBRATION_PERF.md](docs/CALIBRATION_PERF.md) (calibration and performance),
+[docs/REVIEW_FOLLOWUP.md](docs/REVIEW_FOLLOWUP.md) (design decisions and model investigations),
+[CHANGELOG.md](CHANGELOG.md).
 
-## Telemetry
-
-Sends **anonymous** usage telemetry (extension load and per-function call
-counts; no state, questions, answers, model ids, endpoints, keys or SQL) through
-the shared [`posthog-telemetry`](https://github.com/DataZooDE/posthog-telemetry)
-library, exactly as [anofox-tabfm](https://github.com/DataZooDE/anofox-tabfm)
-does. Turn it off with any of:
-
-```bash
-export DATAZOO_DISABLE_TELEMETRY=1        # environment
-```
-```sql
-SET anofox_telemetry_enabled = false;      -- SQL
-```
-
-CI environments are auto-detected and telemetry is disabled there. The full
-list of what is collected is in [TELEMETRY.md](TELEMETRY.md). The load banner
-(once a day, terminal only, never in CI or pipes) is silenced with
-`SET datazoo_banner = false` or `DATAZOO_NO_BANNER=1`.
+---
 
 ## Troubleshooting
 
-Every error follows one shape, `<function>: <what went wrong>. Fix: <what to run>`, and echoes the value that
-caused it. Run `SELECT * FROM decide_doctor();` first when something does not work.
+Every error follows one shape, `<function>: <what went wrong>. Fix: <what to run>`, and echoes the value
+that caused it. Run `SELECT * FROM decide_doctor();` first when something does not work.
 
 | You see | It means | Do this |
 |---|---|---|
@@ -260,7 +423,7 @@ caused it. Run `SELECT * FROM decide_doctor();` first when something does not wo
 | `... rejected the API key (HTTP 401)` | the service refused the key; the message says where the key came from | replace it: `CREATE OR REPLACE SECRET (TYPE anofox_decide, API_KEY '<key>', SCOPE '<host>')` (a secret overrides env vars) |
 | `... does not know the model '<x>' ... (HTTP 404)` | the model name sent to the service is wrong (it is the registered id unless you set one) | `decide_register_model('<id>', '<provider>', MAP {'model': '<provider model name>'})` |
 | `... rejected the request (HTTP 422)` | the service refused the question or options; its own reason is quoted | for a `criteria` complaint register the model with `MAP {'criteria': 'name'}` |
-| `... is rate limiting requests (HTTP 429)` | too many calls; retried with the service's Retry-After | `SET anofox_decide_max_retries = 8;` or slow down |
+| `... is rate limiting requests (HTTP 429)` | too many calls; retried with the service's Retry-After | `SET anofox_decide_max_retries = 8;` or `SET anofox_decide_max_concurrency = 2;` |
 | `... had a server error (HTTP 5xx)` | the service failed; not caused by your query | retry later or use another model |
 | `... is not reachable: nothing is listening on 127.0.0.1:<port>` | a local server (strands-decider, Kev) is not running | start it; connection refused on loopback is not retried |
 | `... did not answer within N ms` | a slow model or server | `SET anofox_decide_timeout_ms = 60000;` (or `SET anofox_decide_max_retries = 0;` to fail fast) |
@@ -274,29 +437,72 @@ caused it. Run `SELECT * FROM decide_doctor();` first when something does not wo
 | `probability must be between 0 and 1` (metrics) | the first argument is not a probability | pass probabilities, not percents or logits (`p / 100.0`); NaN: `NULLIF(p, 'NaN'::DOUBLE)` |
 | `No function matches ... explicit type casts` | DuckDB's own message for argument types | cast the arguments (`x::VARCHAR`, `y = 1`); `decide_choice` options must be a list of strings `['a','b']` |
 
-NULL rules: a NULL state, question, option list or threshold gives a NULL result (no model is resolved and
-nothing is sent); a NULL `model` argument falls back to the session default. Local models print many
-`Schema error: ... already registered` lines on stderr the first time one loads; they come from the bundled
-ONNX Runtime and are harmless.
+Local models print many `Schema error: ... already registered` lines on stderr the first time one loads;
+they come from the bundled ONNX Runtime and are harmless.
 
-## Build & test
+---
 
-Clone with submodules (`git clone --recurse-submodules`; they include the shared `posthog-telemetry` and `datazoo-banner` libraries), then:
+## Feedback
+
+If `anofox_decide` misbehaves — a model that will not answer, a probability that looks wrong, an error
+that does not tell you what to do — please
+[open an issue](https://github.com/DataZooDE/anofox-decide/issues). Providers, keys and networks differ in
+ways we cannot reproduce here, so a report with the output of `SELECT * FROM decide_doctor();` and the
+failing call (without your key) is the fastest path to a fix. Unexpected errors end with that link.
+
+If it saved you time, a star on the repo helps other people find it.
+
+The first time you load the extension in an interactive terminal each day, a small banner says the same.
+It never prints when output is piped, in notebooks, or in CI. Silence it with `SET datazoo_banner = false;`
+or `DATAZOO_NO_BANNER=1`.
+
+## License
+
+- **This extension's code:** MIT.
+- **Models:** the extension ships **no model weights and no graphs**. Hosted models (TypeSafe Jev, Liquid
+  AI D1) are used under their providers' terms and receive the text you score. strands-decider, Kev,
+  Julia-1 (SupersonicLabs) and Laya (convaiinnovations) are Apache 2.0 at the time of writing; check the
+  license of any checkpoint you export or serve yourself.
+
+## Telemetry
+
+Sends **anonymous** usage telemetry (extension load and per-function call counts: no state, questions,
+answers, model ids, endpoints, keys or SQL) to PostHog EU, through the shared
+[`posthog-telemetry`](https://github.com/DataZooDE/posthog-telemetry) library, matching the other anofox
+extensions. Opt out any time:
 
 ```bash
-make release                          # release build; ONNX Runtime built via vcpkg (first build is slow)
+export DATAZOO_DISABLE_TELEMETRY=1        # environment
+```
+```sql
+SET anofox_telemetry_enabled = false;      -- SQL
+```
+
+CI environments are auto-detected and telemetry is disabled there. The full list of what is collected is in
+[TELEMETRY.md](TELEMETRY.md).
+
+## Building
+
+Clone with submodules (`git clone --recurse-submodules`; they include the shared `posthog-telemetry` and
+`datazoo-banner` libraries), then:
+
+```bash
+make release                          # release build; ONNX Runtime built via vcpkg (the first build is slow)
 make release DECIDE_ORT_VCPKG=0 CMAKE_PREFIX_PATH=<ort-install>   # faster local build against an existing ONNX Runtime
 make test_release                     # offline suite: SQL tests + Catch2 (no network, no weights)
-make test-live                        # live TypeSafe + Liquid D1 E2E; explicit SKIP without TYPESAFE_API_KEY / LIQUID_API_KEY
+make test-live                        # live TypeSafe + Liquid D1 tests; SKIP without TYPESAFE_API_KEY / LIQUID_API_KEY
 ./build/release/test/unittest test/sql/decide_contract.test       # a single file
 ```
 
-Some tests need model weights or network and warn-and-pass without them:
-Catch2 `[tokenizer]` goldens (`JULIA_WEIGHTS_DIR`, `LAYA_TYPED_DIR`), `[local]`
-real graphs (`JULIA_ONNX`, `LAYA_MULTILINGUAL_DIR` + `LAYA_ONNX`,
-`LAYA_TYPED_DIR` + `LAYA_TYPED_ONNX`), and the export pytest in
-`tools/export_julia` (`JULIA_WEIGHTS_DIR`, `JULIA_SRC_MODEL`, `JULIA_ONNX`).
-Run the suite with `TYPESAFE_API_KEY` and `LIQUID_API_KEY` unset, as CI does, so tests do not
-depend on your own key.
+A locally built extension is unsigned: start DuckDB with `duckdb -unsigned` and
+`LOAD '/path/to/anofox_decide.duckdb_extension';`, or use the `duckdb` binary from `build/release`, which
+has the extension linked in.
 
-Tests always run with `DATAZOO_DISABLE_TELEMETRY=1` (Makefile does this).
+Some tests need model weights or a network and warn-and-pass without them: Catch2 `[tokenizer]` goldens
+(`JULIA_WEIGHTS_DIR`, `LAYA_TYPED_DIR`), `[local]` real graphs (`JULIA_ONNX`, `LAYA_MULTILINGUAL_DIR` +
+`LAYA_ONNX`, `LAYA_TYPED_DIR` + `LAYA_TYPED_ONNX`), and the export pytest in `tools/export_julia`
+(`JULIA_WEIGHTS_DIR`, `JULIA_SRC_MODEL`, `JULIA_ONNX`). Run the suite with `TYPESAFE_API_KEY` and
+`LIQUID_API_KEY` unset, as CI does, so tests do not depend on your own key. Tests always run with
+`DATAZOO_DISABLE_TELEMETRY=1` (the Makefile does this).
+
+Releases are calendar-versioned tags (`vYYYY.MM.DD`); see [CHANGELOG.md](CHANGELOG.md).

@@ -1,5 +1,5 @@
 # name: test/sql/decide_calibration.test
-# description: Calibration metadata (BRD section 6, Next scope). Brier score,
+# description: Calibration metadata. Brier score,
 #              expected calibration error (10 equal-width buckets), and
 #              threshold-0.5 accuracy over (probability, label) pairs: the
 #              SQL surface for "publish Brier/ECE by model and task; validate

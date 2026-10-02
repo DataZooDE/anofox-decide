@@ -43,11 +43,13 @@ jobs:
   duckdb-v1_5_5-deploy:
     name: Deploy extension binaries (v1.5.5)
     needs: [duckdb-v1_5_5-build, duckdb-v1_5_5-smoke-test]
-    # Releases only: a version tag. Uploading needs the org's AWS OIDC role to
-    # trust this repository and the DEPLOY_S3_BUCKET variable; until that is
-    # set up the job would fail on `main`, so it is tag-gated (success() is
-    # explicit because a job-level `if:` replaces the implicit check).
-    if: success() && startsWith(github.ref, 'refs/tags/v')
+    # Releases only: a version tag. Uploading to the anofox extension repository
+    # needs the DEPLOY_S3_BUCKET repository variable and the org's AWS OIDC role
+    # trusting this repository. Without the variable the job is skipped (grey)
+    # instead of failing the release run; the DuckDB community-extensions build
+    # does not use this job. success() is explicit because a job-level `if:`
+    # replaces the implicit check.
+    if: success() && startsWith(github.ref, 'refs/tags/v') && vars.DEPLOY_S3_BUCKET != ''
     uses: ./.github/workflows/_extension_deploy.yml
     secrets: inherit
     with:
