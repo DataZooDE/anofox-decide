@@ -231,8 +231,17 @@ caused it. Run `SELECT * FROM decide_doctor();` first when something does not wo
 |---|---|---|
 | `no model selected` | the call names no model and no default is set | `decide_probability(..., model := '<id>')` or `SET anofox_decide_model = '<id>'`; register one first with `decide_register_model` |
 | `model '<id>' is not registered (given by ...)` | the id is a typo, or never registered, or removed | the message lists the registered ids and a close match; `SELECT * FROM decide_models()` |
-| `remote evaluation is disabled` | remote models send your text to an endpoint and are off by default | `SET anofox_decide_allow_remote = true;` |
-| `no API key for the ... provider` | no secret, setting or env var supplies a key | export the provider's variable (`LIQUID_API_KEY`, `TYPESAFE_API_KEY`) or `CREATE SECRET (TYPE anofox_decide, API_KEY '...', SCOPE '<host>')` |
+| `model '<id>' is a ... model: calling it sends your text to ..., and remote calls are off` | remote models send your text to an endpoint and are off by default | `SET anofox_decide_allow_remote = true;` |
+| `no API key for ... at <host>` | no secret, setting or env var supplies a key | export the provider's variable (`LIQUID_API_KEY`, `TYPESAFE_API_KEY`) or `CREATE SECRET (TYPE anofox_decide, API_KEY '...', SCOPE '<host>')`; a keyless local server uses provider `strands` |
+| `... rejected the API key (HTTP 401)` | the service refused the key; the message says where the key came from | replace it: `CREATE OR REPLACE SECRET (TYPE anofox_decide, API_KEY '<key>', SCOPE '<host>')` (a secret overrides env vars) |
+| `... does not know the model '<x>' ... (HTTP 404)` | the model name sent to the service is wrong (it is the registered id unless you set one) | `decide_register_model('<id>', '<provider>', MAP {'model': '<provider model name>'})` |
+| `... rejected the request (HTTP 422)` | the service refused the question or options; its own reason is quoted | for a `criteria` complaint register the model with `MAP {'criteria': 'name'}` |
+| `... is rate limiting requests (HTTP 429)` | too many calls; retried with the service's Retry-After | `SET anofox_decide_max_retries = 8;` or slow down |
+| `... had a server error (HTTP 5xx)` | the service failed; not caused by your query | retry later or use another model |
+| `... is not reachable: nothing is listening on 127.0.0.1:<port>` | a local server (strands-decider, Kev) is not running | start it; connection refused on loopback is not retried |
+| `... did not answer within N ms` | a slow model or server | `SET anofox_decide_timeout_ms = 60000;` (or `SET anofox_decide_max_retries = 0;` to fail fast) |
+| `... answered HTTP 200 but not with JSON (an HTML page)` | the endpoint or path is not a System One server (a login or error page) | check the endpoint and path in `decide_models()` |
+| `endpoint '<x>' contains a path` / `has an invalid port` | an endpoint is only `scheme://host[:port]` | `MAP {'endpoint': 'https://host', 'path': '/v1/...'}` |
 | `the graph file '...' does not exist` | the path is wrong; relative paths resolve against the DuckDB working directory | pass the full path of the exported `.onnx`; see [Local models](#local-models) |
 | `provider '<x>' takes no file paths` | a remote provider was given a path argument | remote providers take an options `MAP`: `decide_register_model('m', 'typesafe', MAP {'endpoint': 'https://host'})` |
 | `model '<id>' is already registered` | ids are unique per database instance | `decide_unregister_model('<id>')`, then register again |

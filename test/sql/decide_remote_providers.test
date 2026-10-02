@@ -75,7 +75,7 @@ SELECT decide_register_model('nope', 'openai')
 statement error
 SELECT decide_probability('x', 'y', model := 'd1:free')
 ----
-<REGEX>:.*(remote evaluation is disabled|no API key).*
+<REGEX>:.*model 'd1:free' is a Liquid AI model: calling it sends your text to https://api.liquid.ai, and remote calls are off.*
 
 # With no key anywhere the error names the provider's own variable and the
 # secret recipe (hermetic: env LIQUID_API_KEY is unset in CI).
@@ -85,7 +85,7 @@ SET anofox_decide_allow_remote=true
 statement error
 SELECT decide_probability('x', 'y', model := 'd1:free')
 ----
-<REGEX>:.*Liquid AI.*(LIQUID_API_KEY|CREATE SECRET).*
+<REGEX>:.*decide_probability: no API key for Liquid AI at api.liquid.ai\. Fix: provide a key: \(1\) export LIQUID_API_KEY=<key>.*CREATE SECRET.*SCOPE 'api.liquid.ai'.*
 
 # A stored secret scoped to Liquid's host is never used for another provider's
 # host: the typesafe model still has no key. (The positive case, a secret
@@ -97,7 +97,7 @@ CREATE SECRET liquid_test (TYPE anofox_decide, API_KEY 'sk-not-real', SCOPE 'api
 statement error
 SELECT decide_probability('x', 'y', model := 'jev-latest')
 ----
-<REGEX>:.*no API key for the TypeSafe provider.*
+<REGEX>:.*no API key for TypeSafe at api.typesafe.ai.*
 
 # --- strands-decider (keyless local server) ---------------------------------
 
@@ -132,11 +132,15 @@ SELECT decide_register_model('stub-criteria', 'stub', MAP {'criteria': 'name'})
 ----
 <REGEX>:.*only applies to remote providers.*
 
-# A keyless provider needs no secret: the call reaches the allow_remote gate
-# (SET above) and then the network layer, instead of failing on a missing key.
-# Nothing listens on the default loopback port in CI, so the failure is a
-# connection error, never a key error.
-statement error
-SELECT decide_probability('x', 'y', model := 'strands-decider')
+# A keyless provider needs no secret: the call goes straight to the network layer and fails on
+# the connection, never on a missing key. Port 9 (discard) has no listener, so this is hermetic
+# and does not depend on a real server being (or not being) on the default port.
+query I
+SELECT decide_register_model('strands-nowhere', 'strands', MAP {'endpoint': 'http://127.0.0.1:9'})
 ----
-<REGEX>:.*(strands-decider endpoint unreachable|failed after).*
+1
+
+statement error
+SELECT decide_probability('x', 'y', model := 'strands-nowhere')
+----
+<REGEX>:.*decide_probability: strands-decider at http://127.0.0.1:9 is not reachable: nothing is listening on 127.0.0.1:9 \(connection refused\)\. Fix: start the server on this machine.*

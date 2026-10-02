@@ -90,6 +90,7 @@ struct DecideRemoteTarget {
 	string wire_model; // model name on the wire (the registered id if empty)
 	string key_env;    // explicit env var to read the key from (any host)
 	int criteria_names = -1; // -1 follow the profile, 0 send null descriptions, 1 send the option names
+	string registered_id; // the id the model is registered under (for messages)
 };
 
 struct DecideRemoteConfig {
@@ -108,7 +109,11 @@ struct DecideRemoteConfig {
 	// Where the key came from ("a stored secret", "the anofox_decide_api_key setting", "env var X"), for
 	// diagnostics and error messages; empty when no key was needed.
 	string key_source;
-	// Only for error messages.
+	// Only for error messages: the SQL function the user called, the provider profile and the
+	// registered model id.
+	string function = "decide";
+	string provider = "typesafe";
+	string registered_id;
 	string display = "TypeSafe";
 	string env_key = "TYPESAFE_API_KEY";
 };
@@ -119,8 +124,34 @@ struct DecideHttpResponse {
 	bool transport_ok = false;
 	int status = -1;
 	string body;
-	string transport_error;
+	string transport_error; // human-readable reason when transport_ok is false
+	// Retry-After header (seconds) of an HTTP response, "" when absent.
+	string retry_after;
+	// Why the transport failed: "connection" (refused, or the host name did not resolve), "timeout",
+	// "read" (dropped or timed out mid-request), "tls", "proxy", "invalid_endpoint", "other".
+	string error_kind;
 };
+
+// Text and class of an error: user_error=true is a problem the user can fix (InvalidInput), false is
+// a transient or remote one (IO).
+struct DecideErrorInfo {
+	string message;
+	bool user_error = false;
+};
+
+// Human-readable message out of an error body. Understands {"error":{"message","type"}},
+// {"error":"..."}, {"detail":"..."}, {"detail":[{"loc","msg"}]} and {"message"}; returns "" when it
+// recognises nothing (or the body is HTML). Never throws; capped at ~240 chars; a message that
+// contains `api_key` is replaced by "<redacted>".
+string DecideExtractServerMessage(const string &body, const string &api_key = "");
+bool DecideBodyLooksLikeHtml(const string &body);
+// Message for an HTTP error status, with the next step. attempts is how many requests were
+// actually sent, elapsed_s the total wall time.
+DecideErrorInfo DecideFormatHttpError(const DecideRemoteConfig &cfg, int status, const string &body, int attempts,
+                                      double elapsed_s);
+// Message for a transport failure (connection refused, timeout, TLS, ...).
+DecideErrorInfo DecideFormatTransportError(const DecideRemoteConfig &cfg, const DecideHttpResponse &response,
+                                           int attempts, double elapsed_s);
 using DecideHttpPost =
     std::function<DecideHttpResponse(const string &, int, bool, const string &, const DecideHeaderList &,
                                      const string &, int)>;
@@ -130,7 +161,11 @@ using DecideHttpPost =
 // null; needed by servers whose schema requires string values (strands-decider).
 string DecideBuildRequestJson(const string &state, const string &model, const vector<DecideQuestion> &questions,
                               bool criteria_names = false);
-vector<DecideAnswer> DecideParseResponseJson(const string &body, const vector<DecideQuestion> &questions);
+// `function`, `service` ("Liquid AI at https://api.liquid.ai") and `model_id` only shape the error text.
+vector<DecideAnswer> DecideParseResponseJson(const string &body, const vector<DecideQuestion> &questions,
+                                             const string &function = "decide",
+                                             const string &service = "the remote service",
+                                             const string &model_id = "");
 // decide_many batch JSON (also pure): parse the questions argument, render results.
 // func_name attributes validation errors (default "decide_many"; the table
 // surface passes "decide_table").
@@ -166,16 +201,21 @@ void DecideValidateEndpoint(const string &endpoint, const char *what);
 // naming the provider's env var, never the key itself. Does NOT enforce the
 // allow_remote gate — DecideRemoteEvaluate does, so the gate error and the
 // key error stay distinguishable.
-DecideRemoteConfig DecideResolveConfig(ClientContext &context, const DecideRemoteTarget &target);
+DecideRemoteConfig DecideResolveConfig(ClientContext &context, const DecideRemoteTarget &target,
+                                       const string &function = "decide");
 
 // Full round trip over an explicit transport (tests inject fakes).
 vector<DecideAnswer> DecideRemoteEvaluateWithTransport(const DecideRemoteConfig &cfg, const string &state,
                                                        const vector<DecideQuestion> &questions,
                                                        const DecideHttpPost &transport);
+// The same round trip with an already resolved config over the real httplib transport (used by tests
+// that talk to a server on loopback).
+vector<DecideAnswer> DecideRemoteEvaluateOverHttp(const DecideRemoteConfig &cfg, const string &state,
+                                                  const vector<DecideQuestion> &questions);
 // Full round trip over DuckDB's bundled httplib (production path).
 vector<DecideAnswer> DecideRemoteEvaluate(ClientContext &context, const string &state,
                                           const vector<DecideQuestion> &questions,
-                                          const DecideRemoteTarget &target);
+                                          const DecideRemoteTarget &target, const string &function = "decide");
 
 } // namespace anofox
 } // namespace duckdb

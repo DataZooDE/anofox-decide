@@ -178,3 +178,20 @@ duplicate ids, and file-open errors use plain text, the right role and a Hugging
 show range, default and an example, `head_length` and `max_length` are cross-checked; threshold and metric errors
 echo the value; empty questions and empty `CREATE SECRET` are rejected. Planned next: PR C2 (remote HTTP/transport
 errors) and PR C3 (local truncation, pairing, registration depth).
+
+## Error guidance, remote provider (2 Oct 2026, PR C2)
+
+HTTP and transport failures now say what happened, to whom, and what to do. Server error bodies are parsed
+(`DecideExtractServerMessage`: `{"error":{"message","type"}}`, `{"error":"..."}`, `{"detail":"..."}`, FastAPI
+`{"detail":[{"loc","msg"}]}` summarised to three entries, `{"detail":{"message"}}`; HTML detected and described;
+capped at 240 chars; redacted if it echoes the key). Per-status text and next step: 401 (names the key's source,
+`CREATE OR REPLACE SECRET` fix), 403, 404 and a 400 about the model (shows the wire model, the registered id and the
+`MAP {'model': ...}` fix), 422 (with the `criteria` hint), 429 (real attempt count, `max_retries`), 5xx ("not your
+query"), timeouts. Transport errors keep httplib's reason (`error_kind`: refused, timeout, read, tls, proxy,
+invalid endpoint); connection refused on loopback is not retried and says to start the server; the attempt count is
+the number actually sent. The `allow_remote` gate is checked before key resolution and names the model and host; the
+missing-key message lists the options per provider and notices an unset `key_env`; endpoint validation fixes the raw
+`std::stoi` crash and explains path/port/userinfo mistakes; one wording for the cleartext-http refusal; response
+parse failures name the service and model, use public kind names, list what the server did send and add the
+`criteria` hint for renamed options. Tested against a real HTTP server on loopback (12 scenarios: 401, 404, 400,
+422, 429, 503, HTML 200, error body 200, timeout, refused, success, key reflection).

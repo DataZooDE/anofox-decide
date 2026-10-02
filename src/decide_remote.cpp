@@ -80,25 +80,48 @@ void SplitEndpoint(const string &endpoint, string &host, int &port, bool &ssl, c
 		rest = endpoint.substr(7);
 		port = 80;
 	} else {
-		throw InvalidInputException("decide: %s must start with https:// or http://, got '%s' "
-		                            "(e.g. https://api.typesafe.ai)",
-		                            what, endpoint);
+		throw InvalidInputException(DecideMsg(
+		    "decide", string(what) + " '" + endpoint + "' needs a scheme",
+		    "write it as https://<host> for a hosted API, or http://127.0.0.1:<port> for a server on this machine"));
 	}
 	auto slash = rest.find('/');
 	if (slash != string::npos) {
-		throw InvalidInputException("decide: %s must be scheme://host[:port] without a path, got '%s' "
-		                            "(set the API path separately)",
-		                            what, endpoint);
+		const string path = rest.substr(slash);
+		throw InvalidInputException(DecideMsg(
+		    "decide", string(what) + " '" + endpoint + "' contains a path ('" + path + "'): an endpoint is only "
+		                                                                               "scheme://host[:port]",
+		    "put the path in its own option: MAP {'endpoint': '" + endpoint.substr(0, endpoint.size() - path.size()) +
+		        "', 'path': '" + path + "'}"));
 	}
-	auto colon = rest.find(':');
+	if (rest.find('@') != string::npos || rest.find('?') != string::npos || rest.find('#') != string::npos) {
+		throw InvalidInputException(DecideMsg(
+		    "decide", string(what) + " '" + endpoint + "' contains user info, a query or a fragment",
+		    "an endpoint is only scheme://host[:port]; API keys go in CREATE SECRET or an env var, never in the URL"));
+	}
+	auto colon = rest.rfind(':');
+	if (rest.rfind(']') != string::npos && (colon == string::npos || colon < rest.rfind(']'))) {
+		colon = string::npos; // IPv6 literal without a port
+	}
 	if (colon != string::npos) {
 		host = rest.substr(0, colon);
-		port = std::stoi(rest.substr(colon + 1));
+		const string port_text = rest.substr(colon + 1);
+		bool digits = !port_text.empty() && port_text.size() <= 5;
+		for (char c : port_text) {
+			digits = digits && std::isdigit((unsigned char)c);
+		}
+		const int value = digits ? std::stoi(port_text) : 0;
+		if (!digits || value < 1 || value > 65535) {
+			throw InvalidInputException(DecideMsg(
+			    "decide", string(what) + " '" + endpoint + "' has an invalid port '" + port_text + "'",
+			    "use a number from 1 to 65535, e.g. http://127.0.0.1:8000 (or leave the port out)"));
+		}
+		port = value;
 	} else {
 		host = rest;
 	}
 	if (host.empty()) {
-		throw InvalidInputException("decide: %s has an empty host (e.g. https://api.typesafe.ai)", what);
+		throw InvalidInputException(DecideMsg("decide", string(what) + " '" + endpoint + "' has no host name",
+		                                      "write it as https://<host> or http://127.0.0.1:<port>"));
 	}
 }
 
@@ -160,6 +183,14 @@ bool DecideHostTakesEnvKey(const string &host) {
 	return DecideProfileTakesEnvKey(*DecideFindRemoteProfile("typesafe"), host);
 }
 
+// One wording for the cleartext-http refusal (registration and call time).
+[[noreturn]] static void ThrowCleartext(const string &host, const string &function) {
+	throw InvalidInputException(DecideMsg(
+	    function, "refusing cleartext http:// to the non-loopback host '" + host +
+	                  "': it would send your API key and your text unencrypted",
+	    "use https://" + host + ", or run the server on this machine and use http://127.0.0.1:<port>"));
+}
+
 void DecideValidateEndpoint(const string &endpoint, const char *what) {
 	string host;
 	int port;
@@ -168,9 +199,7 @@ void DecideValidateEndpoint(const string &endpoint, const char *what) {
 	// Cleartext http leaves the key and the payload visible on the wire:
 	// loopback only (tests against a local mock, a local model server).
 	if (!ssl && !DecideHostIsLoopback(host)) {
-		throw InvalidInputException("decide: refusing cleartext http:// to non-loopback host '%s' "
-		                            "(use https://, or http://localhost for local servers)",
-		                            host);
+		ThrowCleartext(host, "decide_register_model");
 	}
 }
 
@@ -302,14 +331,31 @@ string DecideBuildRequestJson(const string &state, const string &model, const ve
 	return body;
 }
 
-vector<DecideAnswer> DecideParseResponseJson(const string &body, const vector<DecideQuestion> &questions) {
+static string CollapseWhitespace(const string &in);
+static string Truncate(const string &in, size_t max_len);
+
+vector<DecideAnswer> DecideParseResponseJson(const string &body, const vector<DecideQuestion> &questions,
+                                             const string &function, const string &service, const string &model_id) {
+	auto kind_name = [](const string &kind) { return kind == "noul" ? string("binary") : kind; };
+	// "<service>, model 'id', question 'q'" prefix; the user sees which service and model answered.
+	auto bad = [&](const string &qid, const string &what, const string &fix = "") {
+		string where = service + (model_id.empty() ? "" : " (model '" + model_id + "')");
+		throw InvalidInputException(DecideMsg(
+		    function, where + " " + (qid.empty() ? "" : "answered question '" + qid + "' wrongly: ") + what,
+		    fix.empty() ? "check the endpoint and path of the model (SELECT * FROM decide_models()); if they are right "
+		                  "this is a problem on the service side"
+		                : fix));
+	};
 	YyjsonDoc doc(yyjson_read(body.c_str(), body.size(), 0));
 	if (!doc.doc) {
-		throw InvalidInputException("decide: remote endpoint returned invalid JSON (%.200s)", body.c_str());
+		const string peek = DecideBodyLooksLikeHtml(body) ? string("an HTML page")
+		                                                  : "text starting '" + Truncate(CollapseWhitespace(body), 60) + "'";
+		bad("", "answered HTTP 200 but not with JSON (" + peek + ")",
+		    "this endpoint or path is probably not a System One server; check them in SELECT * FROM decide_models()");
 	}
 	auto root = yyjson_doc_get_root(doc.doc);
 	if (!root || !yyjson_is_obj(root)) {
-		throw InvalidInputException("decide: remote endpoint returned a JSON value without an answer object");
+		bad("", "answered with a JSON value that is not an object");
 	}
 	string model;
 	auto model_v = yyjson_obj_get(root, "model");
@@ -318,21 +364,35 @@ vector<DecideAnswer> DecideParseResponseJson(const string &body, const vector<De
 	}
 	auto answers_v = yyjson_obj_get(root, "answers");
 	if (!answers_v || !yyjson_is_obj(answers_v)) {
-		throw InvalidInputException("decide: remote endpoint returned no 'answers' object");
+		string keys;
+		yyjson_obj_iter kiter;
+		yyjson_obj_iter_init(root, &kiter);
+		yyjson_val *kkey;
+		while ((kkey = yyjson_obj_iter_next(&kiter))) {
+			keys += (keys.empty() ? "" : ", ") + string(yyjson_get_str(kkey), yyjson_get_len(kkey));
+		}
+		const string server = DecideExtractServerMessage(body);
+		bad("", "answered without an 'answers' object (it sent: " + (keys.empty() ? string("nothing") : keys) + ")" +
+		            (server.empty() ? "" : ": \"" + server + "\""));
 	}
 	vector<DecideAnswer> out;
 	for (auto &q : questions) {
 		auto a = yyjson_obj_get(answers_v, q.id.c_str());
 		if (!a || !yyjson_is_obj(a)) {
-			throw InvalidInputException("decide: remote endpoint returned no answer for question '%s' "
-			                            "(model '%s')",
-			                            q.id, model);
+			string got;
+			yyjson_obj_iter aiter;
+			yyjson_obj_iter_init(answers_v, &aiter);
+			yyjson_val *akey;
+			while ((akey = yyjson_obj_iter_next(&aiter))) {
+				got += (got.empty() ? "" : ", ") + string(yyjson_get_str(akey), yyjson_get_len(akey));
+			}
+			bad(q.id, "sent no answer for it (answers present: " + (got.empty() ? string("none") : got) + ")");
 		}
 		auto type_v = yyjson_obj_get(a, "type");
 		string atype = (type_v && yyjson_is_str(type_v)) ? ValStr(type_v) : "";
 		if (atype != q.kind) {
-			throw InvalidInputException("decide: remote answer for '%s' has type '%s', expected '%s'",
-			                            q.id, atype, q.kind);
+			bad(q.id, "it answered with type '" + (atype.empty() ? string("(missing)") : atype) + "' but the question is a " +
+			               kind_name(q.kind) + " question");
 		}
 		DecideAnswer ans;
 		ans.id = q.id;
@@ -341,9 +401,7 @@ vector<DecideAnswer> DecideParseResponseJson(const string &body, const vector<De
 		if (q.kind == "noul") {
 			auto p = yyjson_obj_get(a, "noul");
 			if (!IsFiniteNum(p) || yyjson_get_num(p) < 0.0 || yyjson_get_num(p) > 1.0) {
-				throw InvalidInputException("decide: remote answer for '%s' has an invalid noul probability "
-				                            "(expected a finite number in [0,1])",
-				                            q.id);
+				bad(q.id, "the yes-probability is missing or not a number between 0 and 1");
 			}
 			ans.probability = yyjson_get_num(p);
 		} else if (q.kind == "score") {
@@ -351,7 +409,7 @@ vector<DecideAnswer> DecideParseResponseJson(const string &body, const vector<De
 			const size_t n = q.options.size();
 			auto probs_v = yyjson_obj_get(a, "probabilities");
 			if (!probs_v || !yyjson_is_obj(probs_v)) {
-				throw InvalidInputException("decide: remote answer for '%s' has no 'probabilities' map", q.id);
+				bad(q.id, "no 'probabilities' map (the answer lacks the per-option distribution)");
 			}
 			// Level probabilities are keyed by index ("0".."n-1"); every level must be present.
 			vector<double> p(n, -1.0);
@@ -368,14 +426,11 @@ vector<DecideAnswer> DecideParseResponseJson(const string &body, const vector<De
 					}
 				}
 				if (idx == n) {
-					throw InvalidInputException("decide: remote answer for '%s' names level '%s', which is not "
-					                            "one of the %d requested levels (expected keys \"0\"..\"%d\")",
-					                            q.id, level, (int)n, (int)n - 1);
+					bad(q.id, "it names level '" + level + "', which is not one of the " + std::to_string(n) +
+					               " requested levels (expected keys \"0\" to \"" + std::to_string(n - 1) + "\")");
 				}
 				if (!IsFiniteNum(val) || yyjson_get_num(val) < 0.0 || yyjson_get_num(val) > 1.0) {
-					throw InvalidInputException("decide: remote answer for '%s' has an invalid probability "
-					                            "for level '%s' (expected finite in [0,1])",
-					                            q.id, level);
+					bad(q.id, "the probability for level '" + level + "' is not a number between 0 and 1");
 				}
 				p[idx] = yyjson_get_num(val);
 			}
@@ -384,8 +439,7 @@ vector<DecideAnswer> DecideParseResponseJson(const string &body, const vector<De
 			size_t top = 0;
 			for (size_t i = 0; i < n; i++) {
 				if (p[i] < 0.0) {
-					throw InvalidInputException("decide: remote answer for '%s' has no probability for level '%d'",
-					                            q.id, (int)i);
+					bad(q.id, "no probability for level '" + std::to_string(i) + "'");
 				}
 				sum += p[i];
 				derived += (double)i * p[i];
@@ -395,9 +449,7 @@ vector<DecideAnswer> DecideParseResponseJson(const string &body, const vector<De
 				ans.distribution.emplace_back(q.options[i], p[i]);
 			}
 			if (std::fabs(sum - 1.0) > ProbSumTolerance(n)) {
-				throw InvalidInputException("decide: remote answer for '%s' has level probabilities summing to "
-				                            "%f, expected 1.0",
-				                            q.id, sum);
+				bad(q.id, "the level probabilities sum to " + std::to_string(sum) + ", not 1");
 			}
 			ans.probability = p[top];
 			// Prefer the server's expected level; derive it from the distribution when it is absent.
@@ -405,9 +457,7 @@ vector<DecideAnswer> DecideParseResponseJson(const string &body, const vector<De
 			if (score_v && yyjson_is_num(score_v)) {
 				double server = yyjson_get_num(score_v);
 				if (!std::isfinite(server) || server < -1e-6 || server > (double)(n - 1) + 1e-6) {
-					throw InvalidInputException("decide: remote answer for '%s' has an expected level of %f "
-					                            "outside [0,%d]",
-					                            q.id, server, (int)n - 1);
+					bad(q.id, "the expected level " + std::to_string(server) + " lies outside 0 to " + std::to_string(n - 1));
 				}
 				ans.expected = server;
 			} else {
@@ -420,12 +470,12 @@ vector<DecideAnswer> DecideParseResponseJson(const string &body, const vector<De
 		} else {
 			auto top_v = yyjson_obj_get(a, "choice");
 			if (!top_v || !yyjson_is_str(top_v)) {
-				throw InvalidInputException("decide: remote answer for '%s' has no 'choice' option", q.id);
+				bad(q.id, "no 'choice' field (the selected option is missing)");
 			}
 			ans.choice = ValStr(top_v);
 			auto probs_v = yyjson_obj_get(a, "probabilities");
 			if (!probs_v || !yyjson_is_obj(probs_v)) {
-				throw InvalidInputException("decide: remote answer for '%s' has no 'probabilities' map", q.id);
+				bad(q.id, "no 'probabilities' map (the answer lacks the per-option distribution)");
 			}
 			double sum = 0.0;
 			yyjson_obj_iter iter;
@@ -435,22 +485,19 @@ vector<DecideAnswer> DecideParseResponseJson(const string &body, const vector<De
 				auto val = yyjson_obj_iter_get_val(key);
 				string opt(yyjson_get_str(key), yyjson_get_len(key));
 				if (!IsFiniteNum(val) || yyjson_get_num(val) < 0.0 || yyjson_get_num(val) > 1.0) {
-					throw InvalidInputException("decide: remote answer for '%s' has an invalid probability "
-					                            "for option '%s' (expected finite in [0,1])",
-					                            q.id, opt);
+					bad(q.id, "the probability for option '" + opt + "' is not a number between 0 and 1");
 				}
 				if (std::find(q.options.begin(), q.options.end(), opt) == q.options.end()) {
-					throw InvalidInputException("decide: remote answer for '%s' names option '%s', which was "
-					                            "not requested",
-					                            q.id, opt);
+					bad(q.id, "it names option '" + opt + "', which was not requested (requested: " +
+					               DecideJoinQuoted(q.options) + ")",
+					    "the service changed an option name (case or spaces?) or ignored the question; if it needs a "
+					    "description per option register the model with MAP {'criteria': 'name'}");
 				}
 				ans.distribution.emplace_back(opt, yyjson_get_num(val));
 				sum += yyjson_get_num(val);
 			}
 			if (std::fabs(sum - 1.0) > ProbSumTolerance(ans.distribution.size())) {
-				throw InvalidInputException("decide: remote answer for '%s' has probabilities summing to %f, "
-				                            "expected 1.0",
-				                            q.id, sum);
+				bad(q.id, "the option probabilities sum to " + std::to_string(sum) + ", not 1");
 			}
 			bool found = false;
 			for (auto &kv : ans.distribution) {
@@ -460,9 +507,8 @@ vector<DecideAnswer> DecideParseResponseJson(const string &body, const vector<De
 				}
 			}
 			if (!found) {
-				throw InvalidInputException("decide: remote answer for '%s' selects '%s', which has no "
-				                            "probability entry",
-				                            q.id, ans.choice);
+				bad(q.id, "it selects '" + ans.choice + "', which has no probability entry (options: " +
+				               DecideJoinQuoted(q.options) + ")");
 			}
 			auto conf_v = yyjson_obj_get(a, "confidence");
 			if (conf_v && yyjson_is_num(conf_v)) {
@@ -725,13 +771,17 @@ static void ApplyProxyEnv(ClientT &cli, bool ssl, const string &target_host) {
 
 //--- Config ------------------------------------------------------------------
 
-DecideRemoteConfig DecideResolveConfig(ClientContext &context, const DecideRemoteTarget &target) {
+DecideRemoteConfig DecideResolveConfig(ClientContext &context, const DecideRemoteTarget &target,
+                                       const string &function) {
 	auto profile = DecideFindRemoteProfile(target.provider);
 	if (!profile) {
 		throw InvalidInputException("decide: '%s' is not a remote provider (remote providers: %s)", target.provider,
 		                            DecideRemoteProviderList());
 	}
 	DecideRemoteConfig cfg;
+	cfg.function = function;
+	cfg.provider = target.provider;
+	cfg.registered_id = target.registered_id;
 	cfg.model = target.wire_model;
 	cfg.display = profile->display;
 	cfg.env_key = profile->env_key;
@@ -762,9 +812,7 @@ DecideRemoteConfig DecideResolveConfig(ClientContext &context, const DecideRemot
 	// Cleartext http leaves the key and the payload visible on the wire:
 	// loopback only (tests against a local mock, a local model server).
 	if (!cfg.ssl && !DecideHostIsLoopback(cfg.host)) {
-		throw InvalidInputException("decide: refusing cleartext http:// to non-loopback host '%s' "
-		                            "(use https://, or http://localhost for tests)",
-		                            cfg.host);
+		ThrowCleartext(cfg.host, function);
 	}
 	// 1. Stored secret (always wins: write-only, redacted in duckdb_secrets(),
 	//    optionally scoped to an endpoint host prefix).
@@ -816,18 +864,27 @@ DecideRemoteConfig DecideResolveConfig(ClientContext &context, const DecideRemot
 		cfg.send_auth = false;
 	}
 	if (cfg.api_key.empty() && profile->requires_key) {
-		string hint = "CREATE SECRET (TYPE anofox_decide, API_KEY '<key>', SCOPE '" + cfg.host + "')";
-		if (target.provider == "typesafe") {
-			hint += ", SET anofox_decide_api_key='<key>'";
-		}
-		if (*profile->env_key) {
-			hint += string(", or export ") + profile->env_key + " for the default endpoint";
+		string how;
+		if (target.provider == "systemone") {
+			how = "(1) CREATE SECRET (TYPE anofox_decide, API_KEY '<key>', SCOPE '" + cfg.host + "'); or (2) register the "
+			      "model with MAP {'key_env': '<ENV_VAR>'} and export that variable before starting DuckDB. If the "
+			      "server needs no key, register it with provider 'strands' instead";
 		} else {
-			hint += ", or register the model with MAP {'key_env': '<ENV_VAR>'}";
+			how = "(1) export " + string(profile->env_key) + "=<key> before starting DuckDB; or (2) CREATE SECRET (TYPE "
+			      "anofox_decide, API_KEY '<key>', SCOPE '" + cfg.host + "');";
+			if (target.provider == "typesafe") {
+				how += " or (3) SET anofox_decide_api_key = '<key>'; (kept in plain text)";
+			}
 		}
-		throw InvalidInputException("decide: no API key for the %s provider at host '%s' (%s; stored keys are "
-		                            "never shown)",
-		                            profile->display, cfg.host, hint);
+		string what = "no API key for " + string(profile->display) + " at " + cfg.host;
+		if (!target.key_env.empty()) {
+			const char *named = std::getenv(target.key_env.c_str());
+			if (!named || !*named) {
+				what += " (the model names key_env '" + target.key_env + "', but that variable is not set in the "
+				        "DuckDB process)";
+			}
+		}
+		throw InvalidInputException(DecideMsg(function, what, "provide a key: " + how));
 	}
 	Value timeout_v;
 	if (context.TryGetCurrentSetting("anofox_decide_timeout_ms", timeout_v) && !timeout_v.IsNull()) {
@@ -842,6 +899,255 @@ DecideRemoteConfig DecideResolveConfig(ClientContext &context, const DecideRemot
 		cfg.allow_remote = BooleanValue::Get(allow_v.DefaultCastAs(LogicalType::BOOLEAN));
 	}
 	return cfg;
+}
+
+//--- Error text ----------------------------------------------------------------
+
+static string CollapseWhitespace(const string &in) {
+	string out;
+	bool space = false;
+	for (unsigned char c : in) {
+		if (c == '\n' || c == '\r' || c == '\t' || c == ' ') {
+			space = !out.empty();
+			continue;
+		}
+		if (space) {
+			out.push_back(' ');
+			space = false;
+		}
+		out.push_back(std::iscntrl(c) ? '?' : (char)c);
+	}
+	return out;
+}
+
+static string Truncate(const string &in, size_t max_len) {
+	return in.size() <= max_len ? in : in.substr(0, max_len) + "...";
+}
+
+bool DecideBodyLooksLikeHtml(const string &body) {
+	size_t i = 0;
+	while (i < body.size() && std::isspace((unsigned char)body[i])) {
+		i++;
+	}
+	string head;
+	for (size_t j = i; j < body.size() && j < i + 15; j++) {
+		head.push_back((char)std::tolower((unsigned char)body[j]));
+	}
+	return head.rfind("<!doctype", 0) == 0 || head.rfind("<html", 0) == 0 || head.rfind("<head", 0) == 0 ||
+	       head.rfind("<body", 0) == 0;
+}
+
+string DecideExtractServerMessage(const string &body, const string &api_key) {
+	if (body.empty() || DecideBodyLooksLikeHtml(body)) {
+		return "";
+	}
+	YyjsonDoc doc(yyjson_read(body.c_str(), body.size(), 0));
+	string msg;
+	if (doc.doc) {
+		auto root = yyjson_doc_get_root(doc.doc);
+		auto str_of = [](yyjson_val *v) { return (v && yyjson_is_str(v)) ? ValStr(v) : string(); };
+		if (root && yyjson_is_obj(root)) {
+			auto err = yyjson_obj_get(root, "error");
+			auto detail = yyjson_obj_get(root, "detail");
+			if (err && yyjson_is_obj(err)) {
+				msg = str_of(yyjson_obj_get(err, "message"));
+				const string type = str_of(yyjson_obj_get(err, "type"));
+				if (msg.empty()) {
+					msg = str_of(yyjson_obj_get(err, "detail"));
+				}
+				if (!msg.empty() && !type.empty()) {
+					msg += " [" + type + "]";
+				}
+			} else if (err && yyjson_is_str(err)) {
+				msg = str_of(err);
+			} else if (detail && yyjson_is_str(detail)) {
+				msg = str_of(detail);
+			} else if (detail && yyjson_is_obj(detail)) {
+				// {"detail":{"error_type":"api_usage_error","message":"Unknown model: m"}}
+				msg = str_of(yyjson_obj_get(detail, "message"));
+			} else if (detail && yyjson_is_arr(detail)) {
+				// FastAPI validation errors: [{"loc":["body","questions","q","criteria","a"],"msg":"..."}]
+				size_t shown = 0;
+				const size_t total = yyjson_arr_size(detail);
+				size_t idx, max;
+				yyjson_val *item;
+				yyjson_arr_foreach(detail, idx, max, item) {
+					if (shown == 3) {
+						break;
+					}
+					string loc;
+					auto loc_v = yyjson_obj_get(item, "loc");
+					if (loc_v && yyjson_is_arr(loc_v)) {
+						size_t li, lmax;
+						yyjson_val *part;
+						yyjson_arr_foreach(loc_v, li, lmax, part) {
+							string seg = yyjson_is_str(part) ? ValStr(part)
+							                                 : (yyjson_is_int(part) ? std::to_string(yyjson_get_sint(part)) : "");
+							if (li == 0 && seg == "body") {
+								continue;
+							}
+							loc += (loc.empty() ? "" : ".") + seg;
+						}
+					}
+					const string m = str_of(yyjson_obj_get(item, "msg"));
+					if (!m.empty()) {
+						msg += (msg.empty() ? "" : "; ") + (loc.empty() ? m : loc + ": " + m);
+						shown++;
+					}
+				}
+				if (shown > 0 && total > shown) {
+					msg += " (+" + std::to_string(total - shown) + " more)";
+				}
+			} else {
+				msg = str_of(yyjson_obj_get(root, "message"));
+				if (msg.empty()) {
+					msg = str_of(yyjson_obj_get(root, "msg"));
+				}
+			}
+		}
+	}
+	msg = Truncate(CollapseWhitespace(msg), 240);
+	if (!api_key.empty() && msg.find(api_key) != string::npos) {
+		return "<redacted>";
+	}
+	return msg;
+}
+
+static string HostPort(const DecideRemoteConfig &cfg) {
+	const bool default_port = (cfg.ssl && cfg.port == 443) || (!cfg.ssl && cfg.port == 80);
+	return cfg.host + (default_port ? "" : ":" + std::to_string(cfg.port));
+}
+
+static string Who(const DecideRemoteConfig &cfg) {
+	return cfg.display + " at " + string(cfg.ssl ? "https://" : "http://") + HostPort(cfg);
+}
+
+static string AttemptsPhrase(int attempts, double elapsed_s) {
+	if (attempts <= 1) {
+		return "";
+	}
+	char buf[32];
+	std::snprintf(buf, sizeof(buf), "%.1f", elapsed_s);
+	return " after " + std::to_string(attempts) + " attempts over " + buf + " s";
+}
+
+static bool ModelProblem(const string &server_msg) {
+	string low;
+	for (unsigned char c : server_msg) {
+		low.push_back((char)std::tolower(c));
+	}
+	return low.find("model") != string::npos &&
+	       (low.find("unknown") != string::npos || low.find("not exist") != string::npos ||
+	        low.find("not found") != string::npos || low.find("invalid") != string::npos);
+}
+
+DecideErrorInfo DecideFormatHttpError(const DecideRemoteConfig &cfg, int status, const string &body, int attempts,
+                                      double elapsed_s) {
+	DecideErrorInfo info;
+	string server = DecideExtractServerMessage(body, cfg.api_key);
+	const bool html = DecideBodyLooksLikeHtml(body);
+	const string srv = server.empty() ? "" : ": \"" + server + "\"";
+	const string fn = cfg.function;
+	const string who = Who(cfg);
+	const string id = cfg.registered_id.empty() ? cfg.model : cfg.registered_id;
+	string what, fix;
+	info.user_error = true;
+	if (status == 401) {
+		what = who + " rejected the API key (HTTP 401)" + srv;
+		fix = (cfg.key_source.empty() ? string("check the API key") : "the key came from " + cfg.key_source) +
+		      "; use a valid one: CREATE OR REPLACE SECRET (TYPE anofox_decide, API_KEY '<key>', SCOPE '" + cfg.host +
+		      "'); (a stored secret overrides env vars)";
+	} else if (status == 403) {
+		what = who + " refused access (HTTP 403)" + srv;
+		fix = "the key is valid but not allowed to use model '" + cfg.model +
+		      "' or this endpoint; check the key's permissions or plan with the provider";
+	} else if (status == 404 || ((status == 400 || status == 422) && ModelProblem(server))) {
+		what = who + " does not know the model '" + cfg.model + "' or the path '" + cfg.path + "' (HTTP " +
+		       std::to_string(status) + ")" + srv;
+		fix = "the model name sent is '" + cfg.model + "'" +
+		      (cfg.model == id ? " (the registered id)" : "") +
+		      "; use the provider's own model name: SELECT decide_register_model('" + id + "', '" + cfg.provider +
+		      "', MAP {'model': '<provider model name>'}); or fix the path with MAP {'path': '/...'}";
+	} else if (status == 400 || status == 422) {
+		what = who + " rejected the request (HTTP " + std::to_string(status) + ")" + srv;
+		string low;
+		for (unsigned char c : body) {
+			low.push_back((char)std::tolower(c));
+		}
+		if (low.find("criteria") != string::npos) {
+			fix = "the answer options were refused; register the model with MAP {'criteria': 'name'} (each option "
+			      "sent as its own description) or MAP {'criteria': 'null'}";
+		} else {
+			fix = "the request was built from your question and options; check them, and that this endpoint speaks "
+			      "the System One protocol (SELECT * FROM decide_models())";
+		}
+	} else if (status == 429) {
+		info.user_error = false;
+		what = who + " is rate limiting requests (HTTP 429)" + AttemptsPhrase(attempts, elapsed_s) + srv;
+		fix = "slow down or retry later; allow more retries with SET anofox_decide_max_retries = 8; (Retry-After is "
+		      "honoured)";
+	} else if (status == 408 || status == 504) {
+		info.user_error = false;
+		what = who + " timed out (HTTP " + std::to_string(status) + ")" + AttemptsPhrase(attempts, elapsed_s) + srv;
+		fix = "retry later, or give slow models more time: SET anofox_decide_timeout_ms = " +
+		      std::to_string(std::max(60000, cfg.timeout_ms * 2)) + ";";
+	} else if (status >= 500) {
+		info.user_error = false;
+		what = who + " had a server error (HTTP " + std::to_string(status) + ")" + AttemptsPhrase(attempts, elapsed_s) +
+		       srv;
+		fix = "this is not a problem with your query: retry later, or use another model (SELECT * FROM decide_models())";
+	} else {
+		what = who + " answered HTTP " + std::to_string(status) + srv;
+		fix = "check the endpoint and path in SELECT * FROM decide_models()";
+	}
+	if (server.empty() && html) {
+		what += " with an HTML page instead of JSON (a login or error page: is this the right endpoint?)";
+	}
+	info.message = DecideMsg(fn, what, fix);
+	return info;
+}
+
+DecideErrorInfo DecideFormatTransportError(const DecideRemoteConfig &cfg, const DecideHttpResponse &response,
+                                           int attempts, double elapsed_s) {
+	DecideErrorInfo info;
+	const string who = Who(cfg);
+	const string kind = response.error_kind;
+	const bool loopback = DecideHostIsLoopback(cfg.host);
+	string what, fix;
+	if (kind == "invalid_endpoint") {
+		info.user_error = true;
+		what = "the endpoint '" + string(cfg.ssl ? "https://" : "http://") + HostPort(cfg) + "' cannot be used";
+		fix = "an endpoint is scheme://host[:port], e.g. MAP {'endpoint': 'https://host'}";
+	} else if (kind == "connection") {
+		if (loopback) {
+			what = who + " is not reachable: nothing is listening on " + HostPort(cfg) + " (connection refused)";
+			fix = "start the server on this machine (e.g. `strands-decider serve <model> --port " +
+			      std::to_string(cfg.port) + "`, or your Kev / local server) and retry";
+		} else {
+			what = who + " is not reachable: no connection to " + HostPort(cfg) + AttemptsPhrase(attempts, elapsed_s) +
+			       " (connection refused, or the host name could not be resolved)";
+			fix = "check the host name and port, that the server is running, and that this machine can reach it "
+			      "(proxy settings: HTTPS_PROXY / NO_PROXY)";
+		}
+	} else if (kind == "timeout" || kind == "read") {
+		what = who + " did not answer within " + std::to_string(cfg.timeout_ms) + " ms" +
+		       AttemptsPhrase(attempts, elapsed_s);
+		fix = "give a slow model more time: SET anofox_decide_timeout_ms = " +
+		      std::to_string(std::max(60000, cfg.timeout_ms * 2)) +
+		      "; or fail fast with SET anofox_decide_max_retries = 0;";
+	} else if (kind == "tls") {
+		what = "the secure connection to " + HostPort(cfg) + " failed (" + response.transport_error + ")";
+		fix = "check the system CA certificates and any proxy that intercepts HTTPS; plain http:// is only allowed "
+		      "for servers on this machine";
+	} else if (kind == "proxy") {
+		what = "connecting to " + HostPort(cfg) + " through the proxy failed";
+		fix = "check HTTPS_PROXY / HTTP_PROXY / NO_PROXY (localhost is never proxied)";
+	} else {
+		what = who + " could not be reached (" + response.transport_error + ")" + AttemptsPhrase(attempts, elapsed_s);
+		fix = "check the endpoint and your network (SELECT * FROM decide_models() shows the endpoint)";
+	}
+	info.message = DecideMsg(cfg.function, what, fix);
+	return info;
 }
 
 //--- Transport ---------------------------------------------------------------
@@ -861,7 +1167,10 @@ static DecideHttpPost DecideHttplibTransport() {
 				duckdb_httplib_openssl::SSLClient cli(host, port);
 				ApplyProxyEnv(cli, true, host);
 				if (!cli.is_valid()) {
-					return DecideHttpResponse {false, -1, "", "invalid HTTPS endpoint"};
+					DecideHttpResponse bad;
+					bad.transport_error = "invalid HTTPS endpoint";
+					bad.error_kind = "invalid_endpoint";
+					return bad;
 				}
 				cli.set_connection_timeout(secs, usecs);
 				cli.set_read_timeout(secs, usecs);
@@ -871,7 +1180,10 @@ static DecideHttpPost DecideHttplibTransport() {
 				duckdb_httplib_openssl::Client cli(host, port);
 				ApplyProxyEnv(cli, false, host);
 				if (!cli.is_valid()) {
-					return DecideHttpResponse {false, -1, "", "invalid HTTP endpoint"};
+					DecideHttpResponse bad;
+					bad.transport_error = "invalid HTTP endpoint";
+					bad.error_kind = "invalid_endpoint";
+					return bad;
 				}
 				cli.set_connection_timeout(secs, usecs);
 				cli.set_read_timeout(secs, usecs);
@@ -879,30 +1191,64 @@ static DecideHttpPost DecideHttplibTransport() {
 				res = cli.Post(path.c_str(), h, body, "application/json");
 			}
 			if (!res) {
-				return DecideHttpResponse {false, -1, "", "connection failed or timed out"};
+				DecideHttpResponse out;
+				out.transport_error = duckdb_httplib_openssl::to_string(res.error());
+				switch (res.error()) {
+				case duckdb_httplib_openssl::Error::Connection:
+					out.error_kind = "connection";
+					break;
+				case duckdb_httplib_openssl::Error::ConnectionTimeout:
+					out.error_kind = "timeout";
+					break;
+				case duckdb_httplib_openssl::Error::Read:
+				case duckdb_httplib_openssl::Error::Write:
+					out.error_kind = "read";
+					break;
+				case duckdb_httplib_openssl::Error::SSLConnection:
+				case duckdb_httplib_openssl::Error::SSLLoadingCerts:
+				case duckdb_httplib_openssl::Error::SSLServerVerification:
+				case duckdb_httplib_openssl::Error::SSLServerHostnameVerification:
+					out.error_kind = "tls";
+					break;
+				case duckdb_httplib_openssl::Error::ProxyConnection:
+					out.error_kind = "proxy";
+					break;
+				default:
+					out.error_kind = "other";
+					break;
+				}
+				return out;
 			}
-			string retry_after = res->get_header_value("Retry-After", "");
 			DecideHttpResponse out;
 			out.transport_ok = true;
 			out.status = res->status;
 			out.body = res->body;
-			out.transport_error = retry_after;
+			out.retry_after = res->get_header_value("Retry-After", "");
 			return out;
 		} catch (const std::exception &e) {
-			return DecideHttpResponse {false, -1, "", e.what()};
+			DecideHttpResponse bad;
+			bad.transport_error = e.what();
+			bad.error_kind = "other";
+			return bad;
 		}
 	};
 }
 
 //--- Evaluate ----------------------------------------------------------------
 
+static string GateMessage(const string &function, const string &id, const string &display, const string &endpoint) {
+	return DecideMsg(function,
+	                 "model '" + id + "' is a " + display + " model: calling it sends your text to " + endpoint +
+	                     ", and remote calls are off",
+	                 "SET anofox_decide_allow_remote = true;");
+}
+
 vector<DecideAnswer> DecideRemoteEvaluateWithTransport(const DecideRemoteConfig &cfg, const string &state,
                                                        const vector<DecideQuestion> &questions,
                                                        const DecideHttpPost &transport) {
 	if (!cfg.allow_remote) {
-		throw InvalidInputException("decide: remote evaluation is disabled "
-		                            "(SET anofox_decide_allow_remote=true to enable; remote calls send state "
-		                            "to the configured endpoint)");
+		throw InvalidInputException(GateMessage(cfg.function, cfg.registered_id.empty() ? cfg.model : cfg.registered_id,
+		                                        cfg.display, string(cfg.ssl ? "https://" : "http://") + HostPort(cfg)));
 	}
 	string body = DecideBuildRequestJson(state, cfg.model, questions, cfg.criteria_names);
 	// NOTE: no Content-Type here — httplib's Post(path, headers, body,
@@ -912,12 +1258,20 @@ vector<DecideAnswer> DecideRemoteEvaluateWithTransport(const DecideRemoteConfig 
 	if (cfg.send_auth) {
 		headers.emplace_back("Authorization", "Bearer " + cfg.api_key);
 	}
-	int attempts = 1 + std::max(0, cfg.max_retries);
-	DecideHttpResponse last {false, -1, "", "no attempt made"};
-	for (int attempt = 0; attempt < attempts; attempt++) {
+	const int max_attempts = 1 + std::max(0, cfg.max_retries);
+	const auto started = std::chrono::steady_clock::now();
+	auto elapsed = [&]() {
+		return std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+	};
+	DecideHttpResponse last;
+	last.transport_error = "no attempt made";
+	int attempts_run = 0;
+	for (int attempt = 0; attempt < max_attempts; attempt++) {
 		last = transport(cfg.host, cfg.port, cfg.ssl, cfg.path, headers, body, cfg.timeout_ms);
+		attempts_run++;
 		if (last.transport_ok && last.status == 200) {
-			return DecideParseResponseJson(last.body, questions);
+			return DecideParseResponseJson(last.body, questions, cfg.function, Who(cfg),
+			                               cfg.registered_id.empty() ? cfg.model : cfg.registered_id);
 		}
 		bool retryable =
 		    !last.transport_ok || DecideStatusRetryable(last.status) || last.status < 0 || last.status >= 500;
@@ -925,13 +1279,19 @@ vector<DecideAnswer> DecideRemoteEvaluateWithTransport(const DecideRemoteConfig 
 		if (last.transport_ok && last.status >= 400 && last.status < 500 && !DecideStatusRetryable(last.status)) {
 			retryable = false;
 		}
-		if (!retryable || attempt + 1 == attempts) {
+		// A refused connection to a server on this machine will not fix itself in a second, and a
+		// malformed endpoint never will: do not make the user wait for retries.
+		if (!last.transport_ok && (last.error_kind == "invalid_endpoint" ||
+		                           (last.error_kind == "connection" && DecideHostIsLoopback(cfg.host)))) {
+			retryable = false;
+		}
+		if (!retryable || attempt + 1 == max_attempts) {
 			break;
 		}
 		long wait_ms = std::min<long>(200L << attempt, 5000L);
-		if (!last.transport_error.empty()) {
+		if (!last.retry_after.empty()) {
 			try {
-				long ra = std::stol(last.transport_error) * 1000L;
+				long ra = std::stol(last.retry_after) * 1000L;
 				if (ra >= 0) {
 					wait_ms = std::min(ra, 30000L);
 				}
@@ -941,27 +1301,42 @@ vector<DecideAnswer> DecideRemoteEvaluateWithTransport(const DecideRemoteConfig 
 		std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));
 	}
 	if (!last.transport_ok) {
-		throw IOException("decide: %s endpoint unreachable after %d attempt(s): %s "
-		                  "(check the endpoint and network access)",
-		                  cfg.display, attempts, last.transport_error);
+		auto info = DecideFormatTransportError(cfg, last, attempts_run, elapsed());
+		if (info.user_error) {
+			throw InvalidInputException(info.message);
+		}
+		throw IOException(info.message);
 	}
-	if (last.status == 401) {
-		throw InvalidInputException("decide: %s rejected the API key (HTTP 401; check %s, a stored secret or "
-		                            "anofox_decide_api_key — the key itself is never shown)",
-		                            cfg.display, cfg.env_key.empty() ? "the model's key" : cfg.env_key.c_str());
+	auto info = DecideFormatHttpError(cfg, last.status, last.body, attempts_run, elapsed());
+	if (info.user_error) {
+		throw InvalidInputException(info.message);
 	}
-	if (last.status == 422) {
-		throw InvalidInputException("decide: %s rejected the request as invalid (HTTP 422): %.200s", cfg.display,
-		                            last.body.c_str());
-	}
-	throw IOException("decide: %s failed after %d attempt(s) (last HTTP %d): %.200s", cfg.display, attempts,
-	                  last.status, last.body.c_str());
+	throw IOException(info.message);
+}
+
+vector<DecideAnswer> DecideRemoteEvaluateOverHttp(const DecideRemoteConfig &cfg, const string &state,
+                                                  const vector<DecideQuestion> &questions) {
+	return DecideRemoteEvaluateWithTransport(cfg, state, questions, DecideHttplibTransport());
 }
 
 vector<DecideAnswer> DecideRemoteEvaluate(ClientContext &context, const string &state,
                                           const vector<DecideQuestion> &questions,
-                                          const DecideRemoteTarget &target) {
-	auto cfg = DecideResolveConfig(context, target);
+                                          const DecideRemoteTarget &target, const string &function) {
+	// The opt-in comes first: it is the one thing every remote model needs, and a missing key
+	// should not be the first thing a user hits only to meet the gate right after.
+	Value allow_v;
+	bool allow = false;
+	if (context.TryGetCurrentSetting("anofox_decide_allow_remote", allow_v) && !allow_v.IsNull()) {
+		allow = BooleanValue::Get(allow_v.DefaultCastAs(LogicalType::BOOLEAN));
+	}
+	if (!allow) {
+		auto profile = DecideFindRemoteProfile(target.provider);
+		const string endpoint = !target.endpoint.empty() ? target.endpoint : string(profile ? profile->default_endpoint : "");
+		throw InvalidInputException(GateMessage(function, target.registered_id.empty() ? target.wire_model : target.registered_id,
+		                                        profile ? profile->display : target.provider,
+		                                        endpoint.empty() ? string("its endpoint") : endpoint));
+	}
+	auto cfg = DecideResolveConfig(context, target, function);
 	return DecideRemoteEvaluateWithTransport(cfg, state, questions, DecideHttplibTransport());
 }
 
