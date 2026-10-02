@@ -89,10 +89,16 @@ static unique_ptr<FileHandle> DecideOpenLocalFile(ClientContext &context, const 
 		    "SET enable_external_access = false; or register the model first."));
 	} catch (const std::exception &e) {
 		string reason = DecideCleanExceptionMessage(e);
-		if (reason.find("No such file or directory") != string::npos) {
-			reason = "does not exist";
-		} else if (reason.find("Is a directory") != string::npos) {
-			reason = "is a directory, not a file";
+		// Ask the filesystem instead of matching the OS error text, which differs per platform
+		// ("No such file or directory" on POSIX, "The system cannot find the path specified" on Windows).
+		try {
+			auto &fs = FileSystem::GetFileSystem(context);
+			if (fs.DirectoryExists(path)) {
+				reason = "is a directory, not a file";
+			} else if (!fs.FileExists(path)) {
+				reason = "does not exist";
+			}
+		} catch (...) {
 		}
 		string what = RolePhrase(role) + " '" + path + "' " + (reason.size() > 40 ? "cannot be opened: " : "") + reason;
 		string fix = RoleFix(role, path);
