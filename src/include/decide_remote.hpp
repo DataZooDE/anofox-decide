@@ -29,7 +29,12 @@ class ClientContext;
 namespace anofox {
 
 // One evaluated question. kind is "noul" (kind "binary" in decide_many JSON
-// maps to noul) or "choice"; options only for choice.
+// maps to noul), "choice" or "score"; options only for choice (the answer
+// options) and score (the ordered rubric levels, ascending: index 0 is the low
+// end; 2..DECIDE_MAX_SCORE_LEVELS unique non-empty strings).
+constexpr size_t DECIDE_MIN_SCORE_LEVELS = 2;
+constexpr size_t DECIDE_MAX_SCORE_LEVELS = 10;
+
 struct DecideQuestion {
 	string id;
 	string kind;
@@ -38,7 +43,9 @@ struct DecideQuestion {
 };
 
 // One parsed answer. probability is P(yes) for noul and the top-option
-// probability for choice; confidence is NaN when the service omits it.
+// (or, for score, the top-level) probability; for score `expected` is the
+// expected level index sum(i * p_i) and `distribution` is keyed by the level
+// descriptions in rubric order. confidence is NaN when the service omits it.
 struct DecideAnswer {
 	string id;
 	string kind;
@@ -46,8 +53,13 @@ struct DecideAnswer {
 	string choice;
 	vector<std::pair<string, double>> distribution;
 	double confidence = std::numeric_limits<double>::quiet_NaN();
+	double expected = std::numeric_limits<double>::quiet_NaN(); // score only
 	string model;
 };
+
+// Validates a score rubric (2..10 unique non-empty levels); throws an
+// actionable error naming `func_name` and the question id.
+void DecideValidateScoreLevels(const string &func_name, const string &id, const vector<string> &levels);
 
 // A remote provider profile: everything that differs between System One
 // compatible services (the wire format itself is shared). Single source of

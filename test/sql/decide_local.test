@@ -63,3 +63,31 @@ statement error
 SELECT decide_choice('x', 'y?', ['only-one'], model := 'tiny-local')
 ----
 <REGEX>:.*2\.\.20.*
+
+# Score over the tiny fixture (qtype 1): a finite expected level inside the
+# rubric, deterministic across calls, and the per-level distribution sums to 1.
+query I
+SELECT (s BETWEEN 0.0 AND 2.0)::INTEGER FROM (
+  SELECT decide_score('Help! My payouts are failing.', 'How frustrated is the writer?', ['calm','frustrated','angry'], model := 'tiny-local') AS s)
+----
+1
+
+query I
+SELECT decide_score('The bill is wrong.', 'How urgent?', ['low','high'], model := 'tiny-local')
+     = decide_score('The bill is wrong.', 'How urgent?', ['low','high'], model := 'tiny-local')
+----
+true
+
+query I
+SELECT round(list_sum(map_values(distribution)), 6) FROM decide_table('The bill is wrong.',
+  '[{"id":"f","kind":"score","instruction":"How urgent?","levels":["low","medium","high"]}]', model := 'tiny-local')
+----
+1.0
+
+# Mixed batch: binary + choice + score in one local call keeps each row's own width.
+query I
+SELECT count(*) FROM decide_table('The bill is wrong.',
+  '[{"id":"u","kind":"binary","instruction":"urgent?"},{"id":"t","kind":"choice","instruction":"team","options":["a","b"]},{"id":"f","kind":"score","instruction":"How urgent?","levels":["low","medium","high"]}]',
+  model := 'tiny-local')
+----
+3

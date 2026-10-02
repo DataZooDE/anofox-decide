@@ -1,0 +1,147 @@
+# name: test/sql/decide_score.test
+# description: Ordinal score questions: decide_score, the 'score' kind in
+#              decide_many / decide_table, and the new decide_table columns.
+#              Hermetic (stub provider): deterministic uniform answers.
+# group: [anofox_decide]
+
+require anofox_decide
+
+statement ok
+LOAD anofox_decide
+
+# Stub: uniform over the levels, expected level = midpoint of the 0-based index.
+query I
+SELECT decide_score('Help! My payouts have been failing.', 'How frustrated is the writer?', ['calm','frustrated','angry'])
+----
+1.0
+
+query I
+SELECT decide_score('x', 'y', ['low','high'])
+----
+0.5
+
+query I
+SELECT decide_score('x', 'y', ['a','b','c','d','e'], 'stub')
+----
+2.0
+
+# anofox_ full name works too.
+query I
+SELECT anofox_decide_score('x', 'y', ['a','b','c'])
+----
+1.0
+
+# NULL contract: NULL state, question or levels give NULL.
+query III
+SELECT decide_score(NULL, 'y', ['a','b']), decide_score('x', NULL, ['a','b']), decide_score('x', 'y', NULL::VARCHAR[])
+----
+NULL	NULL	NULL
+
+# Rubric validation: 2 to 10 unique non-empty levels, no NULLs.
+statement error
+SELECT decide_score('x', 'y', ['only'])
+----
+<REGEX>:.*decide_score.*needs 2 to 10 levels.*got 1.*
+
+statement error
+SELECT decide_score('x', 'y', ['a','b','c','d','e','f','g','h','i','j','k'])
+----
+<REGEX>:.*needs 2 to 10 levels.*got 11.*
+
+statement error
+SELECT decide_score('x', 'y', [])
+----
+<REGEX>:.*needs 2 to 10 levels.*got 0.*
+
+statement error
+SELECT decide_score('x', 'y', ['a','a'])
+----
+<REGEX>:.*repeats the level 'a'.*
+
+statement error
+SELECT decide_score('x', 'y', ['a',''])
+----
+<REGEX>:.*empty level description.*
+
+statement error
+SELECT decide_score('x', 'y', ['a',NULL])
+----
+<REGEX>:.*levels must not contain NULL.*
+
+statement error
+SELECT decide_score('x', 'y', ['a','b'], 'no-such-model')
+----
+<REGEX>:.*unknown model.*
+
+# Row-wise over a table, with the per-row model argument.
+query II
+SELECT id, decide_score(txt, 'How urgent?', ['can wait','this week','today']) FROM (VALUES (1,'a'),(2,'b')) v(id, txt) ORDER BY id
+----
+1	1.0
+2	1.0
+
+# decide_many: the 'score' kind takes a 'levels' array.
+query I
+SELECT decide_many('Help!', '[{"id":"f","kind":"score","instruction":"How frustrated?","levels":["calm","frustrated","angry"]}]') LIKE '%"kind":"score"%"score":1.0%'
+----
+true
+
+statement error
+SELECT decide_many('Help!', '[{"id":"f","kind":"score","instruction":"How frustrated?"}]')
+----
+<REGEX>:.*score question 'f' needs a non-empty 'levels' array.*
+
+statement error
+SELECT decide_many('Help!', '[{"id":"f","kind":"score","instruction":"How frustrated?","levels":["only"]}]')
+----
+<REGEX>:.*needs 2 to 10 levels.*
+
+statement error
+SELECT decide_many('Help!', '[{"id":"f","kind":"essay","instruction":"x"}]')
+----
+<REGEX>:.*unsupported kind 'essay'.*score.*
+
+# decide_table: score rows carry the expected level and the distribution;
+# choice rows now carry a distribution; binary rows have NULL in both.
+query TTRT
+SELECT question_id, kind, score, choice FROM decide_table('Help!',
+  '[{"id":"u","kind":"binary","instruction":"urgent?"},{"id":"t","kind":"choice","instruction":"team","options":["a","b"]},{"id":"f","kind":"score","instruction":"How frustrated?","levels":["calm","frustrated","angry"]}]')
+ORDER BY question_id
+----
+f	score	1.0	NULL
+t	choice	NULL	a
+u	binary	NULL	NULL
+
+query II
+SELECT question_id, cardinality(distribution) FROM decide_table('Help!',
+  '[{"id":"u","kind":"binary","instruction":"urgent?"},{"id":"t","kind":"choice","instruction":"team","options":["a","b"]},{"id":"f","kind":"score","instruction":"How frustrated?","levels":["calm","frustrated","angry"]}]')
+ORDER BY question_id
+----
+f	3
+t	2
+u	NULL
+
+query I
+SELECT round(distribution['frustrated'], 4) FROM decide_table('Help!',
+  '[{"id":"f","kind":"score","instruction":"How frustrated?","levels":["calm","frustrated","angry"]}]')
+----
+0.3333
+
+# LATERAL over a table of states: one score answer per input row.
+query IR
+SELECT t.id, dt.score FROM (VALUES (1,'a'),(2,'b'),(3,'c')) t(id, txt),
+  LATERAL (SELECT * FROM decide_table(t.txt, '[{"id":"f","kind":"score","instruction":"How frustrated?","levels":["calm","angry"]}]')) dt
+ORDER BY t.id
+----
+1	0.5
+2	0.5
+3	0.5
+
+# Existing columns keep their position; the new ones are appended.
+statement ok
+CREATE VIEW decide_table_shape AS SELECT * FROM decide_table('x', '[{"id":"q","kind":"binary","instruction":"y"}]')
+
+query T
+SELECT string_agg(name, ',' ORDER BY cid) FROM pragma_table_info('decide_table_shape')
+----
+question_id,kind,probability,choice,confidence,model,score,distribution

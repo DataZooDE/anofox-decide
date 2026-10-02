@@ -13,25 +13,25 @@ require anofox_decide
 statement ok
 LOAD anofox_decide
 
-# All ten public functions exist under both names.
+# All eleven public functions exist under both names.
 query I
 SELECT count(DISTINCT function_name)
 FROM duckdb_functions()
-WHERE function_name IN ('decide_probability','decide_choice','decide_decision','decide_many',
+WHERE function_name IN ('decide_probability','decide_choice','decide_score','decide_decision','decide_many',
                         'decide_register_model','decide_models','decide_table',
                         'decide_brier_score','decide_ece','decide_accuracy')
 ----
-10
+11
 
 query I
 SELECT count(DISTINCT function_name)
 FROM duckdb_functions()
-WHERE function_name IN ('anofox_decide_probability','anofox_decide_choice','anofox_decide_decision',
+WHERE function_name IN ('anofox_decide_probability','anofox_decide_choice','anofox_decide_score','anofox_decide_decision',
                         'anofox_decide_many','anofox_decide_register_model','anofox_decide_models',
                         'anofox_decide_table','anofox_decide_brier_score','anofox_decide_ece',
                         'anofox_decide_accuracy')
 ----
-10
+11
 
 # Every overload of every function carries a non-empty description ...
 query I
@@ -77,7 +77,7 @@ SELECT count(DISTINCT function_name)
 FROM duckdb_functions()
 WHERE function_name LIKE 'decide\_%' ESCAPE '\' AND alias_of = 'anofox_' || function_name
 ----
-10
+11
 
 # Spot-check the documented signatures.
 query T
@@ -91,3 +91,9 @@ SELECT parameters FROM duckdb_functions()
 WHERE function_name = 'decide_accuracy' AND len(parameters) = 3 AND parameter_types[2] = 'BOOLEAN'
 ----
 [probability, outcome, threshold]
+
+query T
+SELECT parameters FROM duckdb_functions()
+WHERE function_name = 'decide_score' AND len(parameters) = 4 AND parameter_types[3] = 'VARCHAR[]'
+----
+[state, question, levels, model]

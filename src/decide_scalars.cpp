@@ -89,6 +89,46 @@ void DecideProbabilityFun(DataChunk &args, ExpressionState &state, Vector &resul
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 }
 
+// decide_score(state, question, levels[, model]) -> DOUBLE: the expected level
+// index (0-based) over an ordered rubric of 2..10 level descriptions, lowest
+// first. NULL state/question/levels -> NULL; bad rubrics raise actionable errors.
+void DecideScoreFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	ClientContext &context = state.GetContext();
+	bool has_model = args.ColumnCount() > 3;
+	string def = DecideDefaultModel(context);
+	DecideModelCache cache{DecideRegistry::Get(context)};
+	auto count = args.size();
+	for (idx_t i = 0; i < count; i++) {
+		auto state_v = args.data[0].GetValue(i);
+		auto question_v = args.data[1].GetValue(i);
+		auto levels_v = args.data[2].GetValue(i);
+		if (state_v.IsNull() || question_v.IsNull() || levels_v.IsNull()) {
+			result.SetValue(i, Value(LogicalType::DOUBLE));
+			continue;
+		}
+		auto levels = ListValue::GetChildren(levels_v);
+		DecideQuestion q;
+		q.id = "q";
+		q.kind = "score";
+		q.instruction = question_v.ToString();
+		for (auto &level : levels) {
+			if (level.IsNull()) {
+				throw InvalidInputException("decide_score levels must not contain NULL (give every level a "
+				                            "description, lowest first)");
+			}
+			q.options.push_back(level.ToString());
+		}
+		DecideValidateScoreLevels("decide_score", q.id, q.options);
+		auto entry = RowEntry(cache, args, has_model, 3, i, def);
+		auto answers = DecideEvaluate(context, entry, state_v.ToString(), {q});
+		if (!std::isfinite(answers[0].expected)) {
+			throw InvalidInputException("decide_score: model '%s' returned a non-finite score", entry.id);
+		}
+		result.SetValue(i, Value::DOUBLE(answers[0].expected));
+	}
+	result.SetVectorType(VectorType::FLAT_VECTOR);
+}
+
 // decide_decision(state, question, threshold[, model]) -> BOOLEAN (nullable).
 //
 // BRD section 4: a binary result is a probability plus a nullable decision
@@ -286,6 +326,7 @@ void DecideRegisterModelFun(DataChunk &args, ExpressionState &state, Vector &res
 	}
 DECIDE_SCALAR_TELEMETRY_BIND(DecideProbabilityBind, "decide_probability")
 DECIDE_SCALAR_TELEMETRY_BIND(DecideChoiceBind, "decide_choice")
+DECIDE_SCALAR_TELEMETRY_BIND(DecideScoreBind, "decide_score")
 DECIDE_SCALAR_TELEMETRY_BIND(DecideDecisionBind, "decide_decision")
 DECIDE_SCALAR_TELEMETRY_BIND(DecideManyBind, "decide_many")
 DECIDE_SCALAR_TELEMETRY_BIND(DecideRegisterModelBind, "decide_register_model")
@@ -362,6 +403,30 @@ void RegisterDecideScalars(ExtensionLoader &loader) {
 		                 "SELECT decide_choice('Invoice charged twice', 'Primary issue?', ['billing','defect'], model := 'stub');"}}));
 	}
 	{
+		ScalarFunctionSet set("anofox_decide_score");
+		set.AddFunction(DECIDE_SCALAR("anofox_decide_score", D, DecideScoreFun, DecideScoreBind, {V, V, options_type}));
+		set.AddFunction(DECIDE_SCALAR("anofox_decide_score", D, DecideScoreFun, DecideScoreBind, {V, V, options_type, V}));
+		set.AddFunction(DECIDE_SCALAR("anofox_decide_score", D, DecideScoreFun, DecideScoreBind, {V, V, null_options}));
+		set.AddFunction(DECIDE_SCALAR("anofox_decide_score", D, DecideScoreFun, DecideScoreBind, {V, V, null_options, V}));
+		const string desc =
+		    "Rate `state` on an ordered rubric of 2 to 10 level descriptions (lowest first) and return the "
+		    "expected level index (0-based) as a DOUBLE, e.g. 1.4 between 'frustrated' (1) and 'angry' (2). "
+		    "Per-level probabilities and confidence are available through decide_many and decide_table. "
+		    "NULL state, question or levels returns NULL; empty, repeated, NULL or out-of-range levels raise an "
+		    "actionable error.";
+		const string ex1 = "SELECT decide_score('Help! My payouts failed for 3 days!', 'How frustrated is the writer?', "
+		                   "['calm','frustrated','angry']);";
+		const string ex2 = "SELECT decide_score(body, 'How urgent is this?', ['can wait','this week','today'], "
+		                   "model := 'jev-latest') FROM tickets;";
+		RegisterScalarFunctionSetWithAlias(
+		    loader, std::move(set), "decide_score",
+		    DecideDocs(desc, "evaluate",
+		               {{{"state", "question", "levels"}, {V, V, options_type}, ex1},
+		                {{"state", "question", "levels", "model"}, {V, V, options_type, V}, ex2},
+		                {{"state", "question", "levels"}, {V, V, null_options}, ex1},
+		                {{"state", "question", "levels", "model"}, {V, V, null_options, V}, ex2}}));
+	}
+	{
 		ScalarFunctionSet set("anofox_decide_decision");
 		set.AddFunction(DECIDE_SCALAR("anofox_decide_decision", B, DecideDecisionFun, DecideDecisionBind, {V, V, D}));
 		set.AddFunction(DECIDE_SCALAR("anofox_decide_decision", B, DecideDecisionFun, DecideDecisionBind, {V, V, D, V}));
@@ -383,8 +448,9 @@ void RegisterDecideScalars(ExtensionLoader &loader) {
 		RegisterScalarFunctionSetWithAlias(
 		    loader, std::move(set), "decide_many",
 		    DecideDocs("Evaluate several questions against one `state` in a single provider call. `questions` is a "
-		               "JSON array of {id, kind: 'binary'|'choice', instruction[, options]} objects; returns a JSON "
-		               "array with one answer (probability, or choice plus distribution) per question, in order. "
+		               "JSON array of {id, kind: 'binary'|'choice'|'score', instruction[, options | levels]} objects; returns a "
+		               "JSON array with one answer (probability; choice plus distribution; or score plus per-level "
+		               "probabilities) per question, in order. "
 		               "Remote providers receive one request for the whole batch.",
 		               "evaluate",
 		               {{{"state", "questions"}, {V, V},

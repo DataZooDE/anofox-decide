@@ -142,3 +142,23 @@ so the `null` descriptions we send everywhere else are rejected with HTTP 422 (c
 configured), and choice options sent as their own descriptions; the options MAP gained `criteria: 'null' |
 'name'` for any other server with the same schema. Server limit: 24 options per choice question
 (`num_slots`). On the 200-ticket evaluation it scores 81% refund / 65% routing (6.6 min on CPU).
+
+## `score` (ordinal) questions (2 Oct 2026)
+
+Added end to end: `decide_score(state, question, levels[, model]) -> DOUBLE` (expected 0-based level), the
+`score` kind in `decide_many` (`levels` array) and `decide_table` (new trailing columns `score` and
+`distribution`, the latter also filled for choice rows), the stub provider, all remote providers and the local
+Julia-1 / Laya models. Levels are an ordered rubric of 2 to 10 unique non-empty descriptions. Wire format
+verified live against Jev, D1 and strands-decider: `criteria` is a JSON array, answers carry `score`,
+`legend`, `probabilities` keyed `"0"..` and `confidence`; the parser derives the expected level from the
+distribution when a server omits `score`. Local scoring: Julia-1 uses the level descriptions as given
+(`julia/typed.py`), Laya renders `level <i>: <text>` (0-based) and applies its `score:*` temperatures; the
+temperature index had no score case before. Parity with the upstream Python on 3 questions per model:
+Julia-1 1.00148/0.99969/1.02204 vs 1.00148/0.99969/1.02204, Laya multilingual 1.0581/0.5510/1.8222, Laya
+typed-decisions 1.4665/0.1438/1.7720 (all within 1e-4 / the upstream 4-decimal rounding).
+
+Fixes found on the way: the remote response parser treated every non-noul answer as choice (a latent bug for
+any new kind), `decide_many`/`decide_table` labelled every non-binary answer "choice", and the probability-sum
+check (1e-3) rejected valid Jev answers because Jev rounds to 2 decimals (1 of 120 real score answers summed to
+0.99); the tolerance is now 1e-3 + 0.005 per option for choice and score. Not done: an accuracy evaluation of
+score on labelled data (the Bitext set has no ordinal labels).
