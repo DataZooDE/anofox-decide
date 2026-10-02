@@ -65,12 +65,12 @@ static void RequireQuestion(const char *function, const Value &question) {
 // Single binary question through the shared evaluator (F6): P(question
 // holds | state) as a finite probability in [0,1].
 double ScoreBinary(ClientContext &context, const DecideModelEntry &entry, const string &state,
-                   const string &question) {
+                   const string &question, const char *function) {
 	DecideQuestion q;
 	q.id = "q";
 	q.kind = "noul";
 	q.instruction = question;
-	return DecideEvaluate(context, entry, state, {q})[0].probability;
+	return DecideEvaluate(context, entry, state, {q}, function)[0].probability;
 }
 
 // Explicit threshold for decide_decision goes through the shared provider
@@ -97,7 +97,7 @@ void DecideProbabilityFun(DataChunk &args, ExpressionState &state, Vector &resul
 		}
 		RequireQuestion("decide_probability", question_v);
 		auto entry = RowEntry(context, "decide_probability", cache, args, has_model, 2, i, def);
-		double p = ScoreBinary(context, entry, state_v.ToString(), question_v.ToString());
+		double p = ScoreBinary(context, entry, state_v.ToString(), question_v.ToString(), "decide_probability");
 		result.SetValue(i, Value::DOUBLE(p));
 	}
 	result.SetVectorType(VectorType::FLAT_VECTOR);
@@ -136,7 +136,7 @@ void DecideScoreFun(DataChunk &args, ExpressionState &state, Vector &result) {
 		DecideValidateScoreLevels("decide_score", q.id, q.options);
 		RequireQuestion("decide_score", question_v);
 		auto entry = RowEntry(context, "decide_score", cache, args, has_model, 3, i, def);
-		auto answers = DecideEvaluate(context, entry, state_v.ToString(), {q});
+		auto answers = DecideEvaluate(context, entry, state_v.ToString(), {q}, "decide_score");
 		if (!std::isfinite(answers[0].expected)) {
 			throw InvalidInputException(DecideMsg(
 			    "decide_score", "model '" + entry.id + "' returned an invalid score (NaN or infinity)",
@@ -175,7 +175,7 @@ void DecideDecisionFun(DataChunk &args, ExpressionState &state, Vector &result) 
 		double threshold = RequireDecisionThreshold(threshold_v);
 		RequireQuestion("decide_decision", question_v);
 		auto entry = RowEntry(context, "decide_decision", cache, args, has_model, 3, i, def);
-		double p = ScoreBinary(context, entry, state_v.ToString(), question_v.ToString());
+		double p = ScoreBinary(context, entry, state_v.ToString(), question_v.ToString(), "decide_decision");
 		if (!std::isfinite(p)) {
 			throw InvalidInputException(DecideMsg(
 			    "decide_decision", "model '" + entry.id + "' returned an invalid probability (NaN or infinity)",
@@ -232,7 +232,7 @@ void DecideChoiceFun(DataChunk &args, ExpressionState &state, Vector &result) {
 		for (auto &o : options) {
 			q.options.push_back(o.ToString());
 		}
-		auto answers = DecideEvaluate(context, entry, state_v.ToString(), {q});
+		auto answers = DecideEvaluate(context, entry, state_v.ToString(), {q}, "decide_choice");
 		result.SetValue(i, Value(answers[0].choice));
 	}
 	result.SetVectorType(VectorType::FLAT_VECTOR);
@@ -259,7 +259,7 @@ void DecideManyFun(DataChunk &args, ExpressionState &state, Vector &result) {
 		}
 		auto entry = RowEntry(context, "decide_many", cache, args, has_model, 2, i, def);
 		auto questions = DecideParseManyQuestions(questions_v.ToString(), max_questions);
-		auto answers = DecideEvaluate(context, entry, state_v.ToString(), questions);
+		auto answers = DecideEvaluate(context, entry, state_v.ToString(), questions, "decide_many");
 		result.SetValue(i, Value(DecideBuildManyResultJson(answers[0].model.empty() ? entry.id : answers[0].model,
 		                                                   questions, answers)));
 	}

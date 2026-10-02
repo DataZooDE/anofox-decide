@@ -394,6 +394,7 @@ void RequireKnownProvider(const DecideModelEntry &entry) {
 static DecideRemoteTarget TargetOf(const DecideModelEntry &entry) {
 	DecideRemoteTarget target;
 	target.provider = entry.provider;
+	target.registered_id = entry.id;
 	target.endpoint = entry.endpoint;
 	target.path = entry.path;
 	target.wire_model = entry.wire_model.empty() ? entry.id : entry.wire_model;
@@ -431,7 +432,7 @@ DecideModelStatus DecideDescribeModel(ClientContext &context, const DecideModelE
 			return status;
 		}
 		try {
-			auto cfg = DecideResolveConfig(context, TargetOf(entry));
+			auto cfg = DecideResolveConfig(context, TargetOf(entry), "decide_doctor");
 			status.ready = true;
 			status.detail = "ready: " + cfg.display + " at " + DecideRemoteEndpointOf(entry) +
 			                (cfg.send_auth ? ", key from " + cfg.key_source : ", no key needed");
@@ -460,10 +461,10 @@ DecideModelStatus DecideDescribeModel(ClientContext &context, const DecideModelE
 }
 
 vector<DecideAnswer> DecideEvaluate(ClientContext &context, const DecideModelEntry &entry, const string &state,
-                                    const vector<DecideQuestion> &questions) {
+                                    const vector<DecideQuestion> &questions, const char *function) {
 	RequireKnownProvider(entry);
 	if (DecideFindRemoteProfile(entry.provider)) {
-		return DecideRemoteEvaluate(context, state, questions, TargetOf(entry));
+		return DecideRemoteEvaluate(context, state, questions, TargetOf(entry), function);
 	}
 	if (entry.provider == "local") {
 		return DecideLocalScore(context, entry, state, questions);

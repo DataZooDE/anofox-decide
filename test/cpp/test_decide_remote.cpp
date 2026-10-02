@@ -1,5 +1,6 @@
 #include "catch.hpp"
 #include "anofox_decide_extension.hpp"
+#include "decide_errors.hpp"
 #include "decide_remote.hpp"
 
 #include "duckdb.hpp"
@@ -100,7 +101,7 @@ TEST_CASE("remote response parser reads noul and choice answers", "[anofox_decid
 		    DecideParseResponseJson(
 		        R"({"model":"m","answers":{"dept":{"type":"choice","choice":"billing","probabilities":{"billing":0.5,"defect":0.5,"other":1e999}}}})",
 		        {ChoiceQ()}),
-		    Contains("invalid JSON"));
+		    Contains("not with JSON"));
 		// Top choice outside the requested options.
 		REQUIRE_THROWS_WITH(
 		    DecideParseResponseJson(
@@ -311,8 +312,8 @@ TEST_CASE("remote provider profiles are the single source of truth", "[anofox_de
 		REQUIRE_NOTHROW(DecideValidateEndpoint("https://api.liquid.ai", "e"));
 		REQUIRE_NOTHROW(DecideValidateEndpoint("http://127.0.0.1:8009", "e"));
 		REQUIRE_THROWS_WITH(DecideValidateEndpoint("http://api.liquid.ai", "e"), Contains("non-loopback"));
-		REQUIRE_THROWS_WITH(DecideValidateEndpoint("ftp://x", "e"), Contains("https:// or http://"));
-		REQUIRE_THROWS_WITH(DecideValidateEndpoint("https://x/v1", "e"), Contains("without a path"));
+		REQUIRE_THROWS_WITH(DecideValidateEndpoint("ftp://x", "e"), Contains("needs a scheme"));
+		REQUIRE_THROWS_WITH(DecideValidateEndpoint("https://x/v1", "e"), Contains("contains a path"));
 	}
 }
 
@@ -439,7 +440,7 @@ TEST_CASE("liquid requests hit the D1 path with a bearer key and the wire model"
 			return r;
 		};
 		REQUIRE_THROWS_WITH(DecideRemoteEvaluateWithTransport(cfg, "s", {NoulQ()}, unauthorized),
-		                    Contains("Liquid AI rejected the API key"));
+		                    Contains("rejected the API key (HTTP 401)"));
 		REQUIRE_THROWS_WITH(DecideRemoteEvaluateWithTransport(cfg, "s", {NoulQ()}, unauthorized),
 		                    Contains("LIQUID_API_KEY"));
 	}
@@ -602,14 +603,14 @@ TEST_CASE("score response parsing", "[anofox_decide][remote]") {
 	}
 	SECTION("malformed answers are rejected with actionable errors") {
 		REQUIRE_THROWS_WITH(DecideParseResponseJson(R"({"answers":{"frustration":{"type":"choice"}}})", questions),
-		                    Contains("has type 'choice', expected 'score'"));
+		                    Contains("it answered with type 'choice' but the question is a score question"));
 		REQUIRE_THROWS_WITH(DecideParseResponseJson(R"({"answers":{"frustration":{"type":"score","score":1.0}}})", questions),
 		                    Contains("no 'probabilities' map"));
 		// Not summing to 1.
 		REQUIRE_THROWS_WITH(
 		    DecideParseResponseJson(
 		        R"({"answers":{"frustration":{"type":"score","probabilities":{"0":0.2,"1":0.2,"2":0.2}}}})", questions),
-		    Contains("summing to"));
+		    Contains("sum to"));
 		// A level that was never requested.
 		REQUIRE_THROWS_WITH(
 		    DecideParseResponseJson(
@@ -624,12 +625,12 @@ TEST_CASE("score response parsing", "[anofox_decide][remote]") {
 		REQUIRE_THROWS_WITH(
 		    DecideParseResponseJson(
 		        R"({"answers":{"frustration":{"type":"score","probabilities":{"0":1.5,"1":0.0,"2":0.0}}}})", questions),
-		    Contains("invalid probability"));
+		    Contains("is not a number between 0 and 1"));
 		REQUIRE_THROWS_WITH(
 		    DecideParseResponseJson(
 		        R"({"answers":{"frustration":{"type":"score","score":2.5,"probabilities":{"0":0.0,"1":0.0,"2":1.0}}}})",
 		        questions),
-		    Contains("outside [0,2]"));
+		    Contains("lies outside 0 to 2"));
 	}
 	SECTION("a mixed batch parses each kind independently (no choice fall-through for score)") {
 		auto mixed = vector<DecideQuestion> {NoulQ(), ScoreQ()};
@@ -691,10 +692,78 @@ TEST_CASE("probability sums tolerate 2-decimal rounding but not a wrong shape", 
 	REQUIRE_THROWS_WITH(
 	    DecideParseResponseJson(
 	        R"({"answers":{"frustration":{"type":"score","probabilities":{"0":0.2,"1":0.2,"2":0.2}}}})", {ScoreQ()}),
-	    Contains("summing to"));
+	    Contains("sum to"));
 	REQUIRE_THROWS_WITH(
 	    DecideParseResponseJson(
 	        R"({"answers":{"dept":{"type":"choice","choice":"billing","probabilities":{"billing":0.5,"defect":0.1,"other":0.1}}}})",
 	        {ChoiceQ()}),
-	    Contains("summing to"));
+	    Contains("sum to"));
+}
+
+TEST_CASE("endpoint validation explains each mistake and the fix", "[anofox_decide][remote]") {
+	auto msg = [](const string &endpoint) {
+		try {
+			DecideValidateEndpoint(endpoint, "the model's endpoint");
+		} catch (const std::exception &e) {
+			return DecideCleanExceptionMessage(e);
+		}
+		return string();
+	};
+	// Fine.
+	REQUIRE(msg("https://api.liquid.ai").empty());
+	REQUIRE(msg("http://127.0.0.1:8000").empty());
+	REQUIRE(msg("http://localhost").empty());
+	// No scheme.
+	REQUIRE_THAT(msg("api.liquid.ai"), Contains("the model's endpoint 'api.liquid.ai' needs a scheme"));
+	REQUIRE_THAT(msg("api.liquid.ai"), Contains("https://<host>"));
+	// A path moves to its own option, computed from the input.
+	REQUIRE_THAT(msg("https://host.example/v1/systemone"), Contains("contains a path ('/v1/systemone')"));
+	REQUIRE_THAT(msg("https://host.example/v1/systemone"),
+	             Contains("MAP {'endpoint': 'https://host.example', 'path': '/v1/systemone'}"));
+	// Ports: a clear message instead of a raw std::stoi exception.
+	REQUIRE_THAT(msg("http://127.0.0.1:abc"), Contains("has an invalid port 'abc'"));
+	REQUIRE_THAT(msg("http://127.0.0.1:99999"), Contains("has an invalid port '99999'"));
+	REQUIRE_THAT(msg("http://127.0.0.1:99999999999999"), Contains("has an invalid port"));
+	REQUIRE_THAT(msg("http://127.0.0.1:"), Contains("has an invalid port ''"));
+	// User info, query strings and a missing host.
+	REQUIRE_THAT(msg("https://user:pw@host.example"), Contains("contains user info, a query or a fragment"));
+	REQUIRE_THAT(msg("https://host.example?key=1"), Contains("contains user info, a query or a fragment"));
+	REQUIRE_THAT(msg("https://"), Contains("has no host name"));
+	// Cleartext http to a remote host: one wording, with the fix.
+	auto cleartext = msg("http://api.liquid.ai");
+	REQUIRE_THAT(cleartext, Contains("refusing cleartext http:// to the non-loopback host 'api.liquid.ai'"));
+	REQUIRE_THAT(cleartext, Contains("use https://api.liquid.ai"));
+}
+
+TEST_CASE("a connect timeout on loopback is reported as nothing listening and not retried", "[anofox_decide][remote]") {
+	// Windows lets the SYN to a closed loopback port time out instead of refusing it.
+	DecideRemoteConfig cfg;
+	cfg.host = "127.0.0.1";
+	cfg.port = 8000;
+	cfg.ssl = false;
+	cfg.allow_remote = true;
+	cfg.max_retries = 3;
+	cfg.display = "strands-decider";
+	cfg.function = "decide_probability";
+	int calls = 0;
+	auto transport = [&](const string &, int, bool, const string &, const DecideHeaderList &, const string &, int) {
+		calls++;
+		DecideHttpResponse r;
+		r.transport_error = "Connection timed out";
+		r.error_kind = "timeout";
+		return r;
+	};
+	DecideQuestion q;
+	q.id = "q";
+	q.kind = "noul";
+	q.instruction = "x";
+	try {
+		DecideRemoteEvaluateWithTransport(cfg, "s", {q}, transport);
+		FAIL("expected an error");
+	} catch (const std::exception &e) {
+		auto msg = DecideCleanExceptionMessage(e);
+		REQUIRE_THAT(msg, Contains("nothing is listening on 127.0.0.1:8000"));
+		REQUIRE_THAT(msg, !Contains("did not answer"));
+	}
+	REQUIRE(calls == 1);
 }

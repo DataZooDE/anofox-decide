@@ -61,7 +61,7 @@ SET anofox_decide_allow_remote = true
 
 # With the opt-in on and no key: the readiness check reports the key problem, not a stack of errors.
 query TT
-SELECT ready, hint LIKE '%no API key for the Liquid AI provider%' FROM decide_models() WHERE model = 'd1:free'
+SELECT ready, hint LIKE '%no API key for Liquid AI at api.liquid.ai%' FROM decide_models() WHERE model = 'd1:free'
 ----
 false	true
 

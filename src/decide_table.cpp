@@ -354,7 +354,7 @@ unique_ptr<GlobalTableFunctionState> DecideTableInitGlobal(ClientContext &contex
 	}
 	auto entry = DecideResolveModel(context, "decide_table", bind.model, bind.model_from_setting);
 	gstate->model = entry.id;
-	gstate->answers = DecideEvaluate(context, entry, bind.state, bind.questions);
+	gstate->answers = DecideEvaluate(context, entry, bind.state, bind.questions, "decide_table");
 	return gstate;
 }
 
@@ -456,7 +456,7 @@ OperatorResultType DecideTableInOut(ExecutionContext &context, TableFunctionInpu
 				lstate.last_model = model;
 				lstate.have_entry = true;
 			}
-			lstate.answers = DecideEvaluate(client, lstate.last_entry, state_v.ToString(), questions);
+			lstate.answers = DecideEvaluate(client, lstate.last_entry, state_v.ToString(), questions, "decide_table");
 			lstate.model_id = lstate.last_entry.id;
 			lstate.answer_idx = 0;
 			lstate.row_open = true;

@@ -153,7 +153,7 @@ void RequireKnownProvider(const DecideModelEntry &entry);
 // local goes to ORT, stub answers deterministically (0.5 binary, first
 // option with a one-hot distribution and top-option probability 1.0).
 vector<DecideAnswer> DecideEvaluate(ClientContext &context, const DecideModelEntry &entry, const string &state,
-                                    const vector<DecideQuestion> &questions);
+                                    const vector<DecideQuestion> &questions, const char *function = "decide");
 // Explicit-threshold gate shared by decide_decision and the 3-arg
 // decide_accuracy (Q2): NaN and out-of-[0,1] thresholds are actionable
 // errors naming the calling function, never silent clamps.

@@ -1,0 +1,4 @@
+{
+  "description": "Live tests assert on HTTP error messages, so DuckDB's default skip-on-'HTTP' rule must be off (it would turn a passing 401 check into a silent skip). The list cannot be empty, so it holds a string that never occurs in an error.",
+  "skip_error_messages": ["<never-matches-anofox-decide>"]
+}

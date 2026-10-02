@@ -13,6 +13,18 @@ LOAD anofox_decide
 statement ok
 SELECT decide_register_model('cfg-test', 'typesafe')
 
+# The opt-in gate comes first: with remote calls off, the error says what the call would do
+# and how to allow it, before any key or endpoint problem.
+statement error
+SELECT decide_probability('x', 'y', model := 'cfg-test')
+----
+<REGEX>:.*model 'cfg-test' is a TypeSafe model: calling it sends your text to https://api.typesafe.ai, and remote calls are off\. Fix: SET anofox_decide_allow_remote = true;.*
+
+# From here on the opt-in is on, so key and endpoint problems are what the calls report. All of
+# them fail before any I/O (hermetic).
+statement ok
+SET anofox_decide_allow_remote = true
+
 # Cleartext http to a non-loopback host is refused before any I/O, even
 # with an explicit key set.
 statement ok
@@ -46,15 +58,15 @@ RESET anofox_decide_endpoint
 statement ok
 RESET anofox_decide_api_key
 
-# A stored secret satisfies ResolveConfig: with the default endpoint the
-# call reaches the allow_remote gate (deterministic, hermetic — no I/O).
+# A stored secret satisfies the key lookup. A call would now go to the network, so check it
+# hermetically through the readiness report that runs the same resolution.
 statement ok
 CREATE SECRET decide_test (TYPE anofox_decide, API_KEY 'sk-test-placeholder')
 
-statement error
-SELECT decide_probability('x', 'y', model := 'cfg-test')
+query TT
+SELECT ready, hint LIKE '%key from a stored secret (scope ''api.typesafe.ai'')%' FROM decide_models() WHERE model = 'cfg-test'
 ----
-<REGEX>:.*remote evaluation is disabled.*
+true	true
 
 # The stored key never renders in cleartext (redacted as `key=redacted`).
 query I

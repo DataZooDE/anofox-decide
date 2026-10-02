@@ -101,6 +101,7 @@ endif()
 set(DECIDE_CPP_TEST_SOURCES
     test/cpp/test_decide_stub.cpp
     test/cpp/test_decide_remote.cpp
+    test/cpp/test_decide_remote_http.cpp
     test/cpp/test_decide_tokenizer.cpp
     test/cpp/test_decide_local.cpp
 )
@@ -111,8 +112,10 @@ if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.
         ${CMAKE_CURRENT_SOURCE_DIR}/src/include
         ${CMAKE_SOURCE_DIR}/third_party/catch
         ${CMAKE_SOURCE_DIR}/third_party/yyjson/include
+        ${CMAKE_SOURCE_DIR}/third_party/httplib
+        ${OPENSSL_INCLUDE_DIR}
     )
-    target_link_libraries(anofox_decide_unittest_tests PRIVATE duckdb_static)
+    target_link_libraries(anofox_decide_unittest_tests PRIVATE duckdb_static OpenSSL::SSL OpenSSL::Crypto)
 
     function(anofox_decide_register_cpp_tests)
         if(TARGET unittest)
