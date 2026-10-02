@@ -204,7 +204,7 @@ void DecideManyFun(DataChunk &args, ExpressionState &state, Vector &result) {
 
 // decide_register_model(id[, provider[, graph_path[, tokenizer_path[, profile]]]]) -> BOOLEAN,
 // or decide_register_model(id, provider, options MAP(VARCHAR, VARCHAR)) for
-// remote providers (keys: endpoint, path, model, key_env).
+// remote providers (keys: endpoint, path, model, key_env, criteria).
 void DecideRegisterModelFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	ClientContext &context = state.GetContext();
 	auto count = args.size();
@@ -240,9 +240,11 @@ void DecideRegisterModelFun(DataChunk &args, ExpressionState &state, Vector &res
 					options.wire_model = value;
 				} else if (key == "key_env") {
 					options.key_env = value;
+				} else if (key == "criteria") {
+					options.criteria = value;
 				} else {
 					throw InvalidInputException("decide_register_model: unknown option '%s' "
-					                            "(supported: endpoint, path, model, key_env)",
+					                            "(supported: endpoint, path, model, key_env, criteria)",
 					                            key);
 				}
 			}
@@ -401,8 +403,8 @@ void RegisterDecideScalars(ExtensionLoader &loader) {
 		const string desc =
 		    "Register a model id for this database instance and return true. Providers: 'stub' (deterministic), "
 		    "'local' (ONNX graph and tokenizer paths, optional profile 'julia-1' or 'laya'), and the remote "
-		    "providers 'typesafe', 'liquid' and 'systemone' (optional options MAP with endpoint, path, model, "
-		    "key_env). Duplicate ids, unsupported providers and unreadable files raise actionable errors.";
+		    "providers 'typesafe', 'liquid', 'systemone' and 'strands' (optional options MAP with endpoint, path, "
+		    "model, key_env, criteria). Duplicate ids, unsupported providers and unreadable files raise actionable errors.";
 		RegisterScalarFunctionSetWithAlias(
 		    loader, std::move(set), "decide_register_model",
 		    DecideDocs(desc, "models",

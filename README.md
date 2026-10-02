@@ -26,6 +26,7 @@ several can be used side by side in one session with no `SET` in between:
 | `typesafe` | TypeSafe Jev | `https://api.typesafe.ai` | `TYPESAFE_API_KEY` |
 | `liquid` | Liquid AI D1 | `https://api.liquid.ai` (`/decisions/v1/systemone`) | `LIQUID_API_KEY` |
 | `systemone` | any compatible server, e.g. [Kev](https://github.com/jaredpalmer/kev) | you set it | none (see `key_env`) |
+| `strands` | [strands-decider](https://github.com/strands-labs/strands-decider) local server | `http://127.0.0.1:8000` | none (keyless) |
 
 ```sql
 SET anofox_decide_allow_remote=true;  -- explicit opt-in, default off
@@ -35,9 +36,10 @@ SELECT decide_probability('...', '...', model := 'jev-latest');
 SELECT decide_probability('...', '...', model := 'd1:free');
 ```
 
-Per-model options go in a `MAP` (keys `endpoint`, `path`, `model`, `key_env`),
-e.g. a self-hosted server, a different wire model name, or an explicit key
-variable for a custom endpoint:
+Per-model options go in a `MAP` (keys `endpoint`, `path`, `model`, `key_env`,
+`criteria`), e.g. a self-hosted server, a different wire model name, an explicit
+key variable for a custom endpoint, or `criteria: 'name'` for servers whose
+schema needs a string description per choice option instead of `null`:
 
 ```sql
 SELECT decide_register_model('kev-latest', 'systemone', MAP {'endpoint': 'http://127.0.0.1:8009'});
@@ -69,6 +71,24 @@ run `python -m kev.serve --run jaredpalmer/kev-0.8b --port 8009`, then register
 it as above and give it any key (it ignores the value but the provider requires
 one), e.g. `CREATE SECRET (TYPE anofox_decide, API_KEY 'local', SCOPE '127.0.0.1')`.
 Kev-4B/9B/27B are more accurate than 0.8B and need a GPU or a large Mac.
+
+[strands-decider](https://github.com/strands-labs/strands-decider) (Apache 2.0, a 1.9B
+Qwen3.5 torso with a pointer head) is also a local server. It needs no key and its
+schema requires a string per choice option, which the `strands` profile handles
+(a choice question may have at most 24 options on this model). It listens on
+loopback without authentication, so keep it local:
+
+```bash
+python3.12 -m venv .venv && . .venv/bin/activate
+pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu   # or a CUDA/MPS build
+pip install strands-decider
+strands-decider serve StrandsAgents/strands-decider-2B-hobson-v19 --device cpu --port 8000   # first run downloads ~4.5 GB
+```
+```sql
+SET anofox_decide_allow_remote=true;
+SELECT decide_register_model('strands-decider', 'strands');   -- default endpoint http://127.0.0.1:8000
+SELECT decide_choice('Help! My payouts have been failing.', 'Which team?', ['billing','sales','retail'], model := 'strands-decider');
+```
 
 ## Local models
 
@@ -111,10 +131,12 @@ Measured on 200 labelled tickets from the public Bitext customer-support dataset
 | Laya multilingual | local, in-process | 92.0% | 0.970 | 62.0% |
 | Liquid D1 (`liquid`) | hosted API | 77.0% | 0.970 | 91.0% |
 | Laya typed-decisions | local, in-process | 88.5% | 0.978 | 76.0% |
+| strands-decider 2B (`strands`) | local server | 81.0% | 0.918 | 65.0% |
 | Kev-0.8B (`systemone`) | local server | 70.5% | 0.850 | 44.0% |
 | Julia-1 | local, in-process | 29.5% | 0.407 | 37.5% |
 
-Always-no scores 70% on refund and always-billing 45% on routing. Jev is the most accurate overall; D1
+Always-no scores 70% on refund and always-billing 45% on routing. Jev is the most accurate overall; strands-decider is
+conservative on refund (recall 48% at the 0.5 cut-off) and a mid-table router; D1
 routes as well as Jev, but at the 0.5 cut-off over-predicts refunds (its ranking is fine, AUROC 0.970);
 Laya multilingual matches Jev on refund and is the best in-process model, with typed-decisions the best
 in-process router. English-only, template-generated data: a smoke test of relative strength, not a
@@ -134,6 +156,7 @@ metrics and CI are working. What you can use today:
 | `typesafe` (remote) | TypeSafe Jev (`jev-latest`) | `binary`, `choice` | hosted API; opt-in via `anofox_decide_allow_remote` |
 | `liquid` (remote) | Liquid AI D1 (`d1:free`) | `binary`, `choice` | hosted API; same opt-in |
 | `systemone` (remote) | any TypeSafe-compatible server, e.g. [Kev](https://github.com/jaredpalmer/kev) | `binary`, `choice` | your endpoint (loopback `http://` or `https://`) |
+| `strands` (remote) | [strands-decider](https://github.com/strands-labs/strands-decider) 2B | `binary`, `choice` | local server on loopback, no key |
 | `local` (ONNX Runtime) | Julia-1, Laya multilingual, Laya typed-decisions (profiles `julia-1`, `laya`) | `binary`, `choice` | in-process on CPU, fully offline after setup |
 
 Not supported yet: `score` (ordinal) questions, GPU execution, and the

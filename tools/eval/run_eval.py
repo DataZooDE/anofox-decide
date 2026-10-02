@@ -12,6 +12,7 @@ Models (all optional, pick with --models):
   laya-ml, laya-td, julia      local ONNX graphs (env: LAYA_ML_DIR/LAYA_ML_ONNX, LAYA_TD_DIR/LAYA_TD_ONNX,
                                JULIA_WEIGHTS_DIR/JULIA_ONNX)
   kev                          a running Kev server (--kev-url, default http://127.0.0.1:8009)
+  strands                      a running `strands-decider serve` (--strands-url, default http://127.0.0.1:8000)
 
 Needs a built extension (default build/release). Telemetry is always disabled here.
 """
@@ -38,7 +39,7 @@ def esc(s):
     return s.replace("'", "''")
 
 
-def models(env, kev_url):
+def models(env, kev_url, strands_url):
     """name -> (display, registration SQL, model id, needs-key env var or None)."""
     def need(*names):
         missing = [n for n in names if not env.get(n)]
@@ -64,6 +65,9 @@ def models(env, kev_url):
                 "CREATE SECRET (TYPE anofox_decide, API_KEY 'local', SCOPE '127.0.0.1');"
                 f"SELECT decide_register_model('kev-latest','systemone',MAP {{'endpoint':'{kev_url}'}});",
                 "kev-latest", []),
+        "strands": ("strands-decider 2B (server)",
+                    f"SELECT decide_register_model('strands-decider','strands',MAP {{'endpoint':'{strands_url}'}});",
+                    "strands-decider", []),
     }
 
 
@@ -236,16 +240,17 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tickets", required=True, help="tickets.csv from make_sample.py")
     ap.add_argument("--out", required=True, help="output directory")
-    ap.add_argument("--models", default="d1,jev,laya-ml,laya-td,julia,kev")
+    ap.add_argument("--models", default="d1,jev,laya-ml,laya-td,julia,kev,strands")
     ap.add_argument("--duckdb", default=str(ROOT / "build/release/duckdb"))
     ap.add_argument("--extension", default=str(ROOT / "build/release/extension/anofox_decide/anofox_decide.duckdb_extension"))
     ap.add_argument("--kev-url", default="http://127.0.0.1:8009")
+    ap.add_argument("--strands-url", default="http://127.0.0.1:8000")
     ap.add_argument("--analyse-only", action="store_true", help="skip scoring; reuse results_*.csv in --out")
     a = ap.parse_args()
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
-    specs = models(env, a.kev_url)
+    specs = models(env, a.kev_url, a.strands_url)
     names = [m for m in a.models.split(",") if m]
     unknown = [m for m in names if m not in specs]
     if unknown:

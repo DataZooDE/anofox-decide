@@ -58,6 +58,9 @@ struct DecideRemoteProfile {
 	const char *default_endpoint; // scheme://host[:port]; "" = the model must set endpoint
 	const char *path;             // API path
 	const char *env_key;          // env var holding the key; "" = none
+	bool requires_key;            // false: a keyless server (e.g. a local strands-decider); send no Authorization header
+	bool criteria_names;          // true: send each choice option as its own description (servers that require
+	                              // string criteria values instead of null)
 };
 // nullptr when `provider` is not a remote profile.
 const DecideRemoteProfile *DecideFindRemoteProfile(const string &provider);
@@ -72,6 +75,7 @@ struct DecideRemoteTarget {
 	string path;
 	string wire_model; // model name on the wire (the registered id if empty)
 	string key_env;    // explicit env var to read the key from (any host)
+	int criteria_names = -1; // -1 follow the profile, 0 send null descriptions, 1 send the option names
 };
 
 struct DecideRemoteConfig {
@@ -84,6 +88,9 @@ struct DecideRemoteConfig {
 	int timeout_ms = 30000;
 	int max_retries = 3;
 	bool allow_remote = false;
+	// Choice criteria style and whether to send the Authorization header.
+	bool criteria_names = false;
+	bool send_auth = true;
 	// Only for error messages.
 	string display = "TypeSafe";
 	string env_key = "TYPESAFE_API_KEY";
@@ -102,7 +109,10 @@ using DecideHttpPost =
                                      const string &, int)>;
 
 // Pure JSON mapping (no I/O; fully unit-tested).
-string DecideBuildRequestJson(const string &state, const string &model, const vector<DecideQuestion> &questions);
+// criteria_names: send each choice option as its own description ({"billing":"billing"}) instead of
+// null; needed by servers whose schema requires string values (strands-decider).
+string DecideBuildRequestJson(const string &state, const string &model, const vector<DecideQuestion> &questions,
+                              bool criteria_names = false);
 vector<DecideAnswer> DecideParseResponseJson(const string &body, const vector<DecideQuestion> &questions);
 // decide_many batch JSON (also pure): parse the questions argument, render results.
 // func_name attributes validation errors (default "decide_many"; the table

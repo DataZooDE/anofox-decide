@@ -87,13 +87,17 @@ void DecideRegistry::RegisterModel(ClientContext &context, const string &id, con
 		                            provider, DecideRemoteProviderList());
 	}
 	const bool has_options = !options.endpoint.empty() || !options.path.empty() || !options.wire_model.empty() ||
-	                         !options.key_env.empty();
+	                         !options.key_env.empty() || !options.criteria.empty();
 	if (has_options && !remote_profile) {
-		throw InvalidInputException("decide_register_model: options (endpoint/path/model/key_env) only apply to "
+		throw InvalidInputException("decide_register_model: options (endpoint/path/model/key_env/criteria) only apply to "
 		                            "remote providers (%s); provider is '%s'",
 		                            DecideRemoteProviderList(), provider);
 	}
 	if (remote_profile) {
+		if (!options.criteria.empty() && options.criteria != "null" && options.criteria != "name") {
+			throw InvalidInputException("decide_register_model: criteria must be 'null' or 'name', got '%s'",
+			                            options.criteria);
+		}
 		if (!options.endpoint.empty()) {
 			DecideValidateEndpoint(options.endpoint, "the model's endpoint");
 		}
@@ -135,6 +139,7 @@ void DecideRegistry::RegisterModel(ClientContext &context, const string &id, con
 	entry.path = options.path;
 	entry.wire_model = options.wire_model;
 	entry.key_env = options.key_env;
+	entry.criteria = options.criteria;
 	if (provider == "local") {
 		if (!tokenizer_path.empty()) {
 			entry.tokenizer_path = tokenizer_path;
@@ -219,6 +224,7 @@ vector<DecideAnswer> DecideEvaluate(ClientContext &context, const DecideModelEnt
 		target.path = entry.path;
 		target.wire_model = entry.wire_model.empty() ? entry.id : entry.wire_model;
 		target.key_env = entry.key_env;
+		target.criteria_names = entry.criteria == "name" ? 1 : (entry.criteria == "null" ? 0 : -1);
 		return DecideRemoteEvaluate(context, state, questions, target);
 	}
 	if (entry.provider == "local") {

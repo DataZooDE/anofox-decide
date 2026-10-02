@@ -444,3 +444,91 @@ TEST_CASE("liquid requests hit the D1 path with a bearer key and the wire model"
 		                    Contains("LIQUID_API_KEY"));
 	}
 }
+
+// --- strands-decider profile (keyless local server, string criteria) --------
+
+TEST_CASE("choice criteria style: null by default, option names for strict servers", "[anofox_decide][remote]") {
+	auto null_body = DecideBuildRequestJson("s", "m", {ChoiceQ()});
+	REQUIRE_THAT(null_body, Contains("\"billing\":null"));
+	auto name_body = DecideBuildRequestJson("s", "m", {ChoiceQ()}, true);
+	REQUIRE_THAT(name_body, Contains("\"billing\":\"billing\""));
+	REQUIRE_THAT(name_body, Contains("\"defect\":\"defect\""));
+	REQUIRE(name_body.find("null") == string::npos);
+	// noul questions never carry criteria in either mode.
+	REQUIRE(DecideBuildRequestJson("s", "m", {NoulQ()}, true).find("criteria") == string::npos);
+}
+
+TEST_CASE("strands profile: loopback default, no key needed, no Authorization header", "[anofox_decide][remote]") {
+	auto strands = DecideFindRemoteProfile("strands");
+	REQUIRE(strands != nullptr);
+	REQUIRE(string(strands->default_endpoint) == "http://127.0.0.1:8000");
+	REQUIRE_FALSE(strands->requires_key);
+	REQUIRE(strands->criteria_names);
+	// The profile has no env key and no default host that could take one.
+	REQUIRE_FALSE(DecideProfileTakesEnvKey(*strands, "127.0.0.1"));
+
+	DuckDB db(nullptr);
+	db.LoadStaticExtension<AnofoxDecideExtension>();
+	Connection con(db);
+	auto &ctx = *con.context;
+	EnvGuard clean({{"LIQUID_API_KEY", nullptr}, {"TYPESAFE_API_KEY", nullptr}, {"MY_TEST_KEY", nullptr}});
+
+	SECTION("resolves without any key") {
+		auto cfg = DecideResolveConfig(ctx, Target("strands"));
+		REQUIRE(cfg.host == "127.0.0.1");
+		REQUIRE(cfg.port == 8000);
+		REQUIRE_FALSE(cfg.ssl);
+		REQUIRE(cfg.path == "/v1/systemone");
+		REQUIRE_FALSE(cfg.send_auth);
+		REQUIRE(cfg.criteria_names);
+		REQUIRE(cfg.api_key.empty());
+	}
+	SECTION("a per-model criteria option overrides the profile") {
+		auto t = Target("strands");
+		t.criteria_names = 0;
+		REQUIRE_FALSE(DecideResolveConfig(ctx, t).criteria_names);
+		auto k = Target("typesafe");
+		k.criteria_names = 1;
+		REQUIRE_FALSE(con.Query("SET anofox_decide_api_key='x'")->HasError());
+		REQUIRE(DecideResolveConfig(ctx, k).criteria_names);
+	}
+	SECTION("a key from a secret or key_env is still sent when present") {
+		auto t = Target("strands");
+		t.key_env = "MY_TEST_KEY";
+		SetEnv("MY_TEST_KEY", "env-key");
+		auto cfg = DecideResolveConfig(ctx, t);
+		REQUIRE(cfg.send_auth);
+		REQUIRE(cfg.api_key == "env-key");
+		REQUIRE_FALSE(con.Query("CREATE SECRET sk (TYPE anofox_decide, API_KEY 'secret-key', SCOPE '127.0.0.1')")
+		                  ->HasError());
+		REQUIRE(DecideResolveConfig(ctx, t).api_key == "secret-key");
+	}
+	SECTION("providers that require a key still refuse to run without one") {
+		REQUIRE_THROWS_WITH(DecideResolveConfig(ctx, Target("liquid")), Contains("no API key"));
+	}
+	SECTION("the request omits Authorization when keyless and uses string criteria") {
+		auto cfg = DecideResolveConfig(ctx, Target("strands"));
+		cfg.allow_remote = true;
+		string seen_body;
+		bool saw_auth = false;
+		DecideHttpPost transport = [&](const string &, int, bool, const string &, const DecideHeaderList &headers,
+		                               const string &body, int) {
+			seen_body = body;
+			for (auto &h : headers) {
+				if (h.first == "Authorization") {
+					saw_auth = true;
+				}
+			}
+			DecideHttpResponse r;
+			r.transport_ok = true;
+			r.status = 200;
+			r.body = R"({"model":"strands-decider-2B-hobson-v19","answers":{"dept":{"type":"choice","choice":"billing","probabilities":{"billing":0.845,"defect":0.091,"other":0.064},"confidence":0.768}},"usage":{"input_tokens":86,"output_tokens":1},"latency_ms":140.03})";
+			return r;
+		};
+		auto answers = DecideRemoteEvaluateWithTransport(cfg, "Help! My payouts failed.", {ChoiceQ()}, transport);
+		REQUIRE_FALSE(saw_auth);
+		REQUIRE_THAT(seen_body, Contains("\"billing\":\"billing\""));
+		REQUIRE(answers.size() == 1);
+		REQUIRE(answers[0].choice == "billing");
+	}
+}
