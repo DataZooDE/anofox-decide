@@ -53,6 +53,11 @@ void ValidateMaxQuestions(ClientContext &context, SetScope scope, Value &paramet
 	RequireRange("anofox_decide_max_questions", 1, 1000, 100, Int(parameter), 200);
 }
 
+void ValidateMaxConcurrency(ClientContext &context, SetScope scope, Value &parameter) {
+	ValidateNonNull("anofox_decide_max_concurrency", "0", context, scope, parameter);
+	RequireRange("anofox_decide_max_concurrency", 0, 64, 0, Int(parameter), 4);
+}
+
 void ValidateMaxRetries(ClientContext &context, SetScope scope, Value &parameter) {
 	ValidateNonNull("anofox_decide_max_retries", "3", context, scope, parameter);
 	RequireRange("anofox_decide_max_retries", 0, 10, 3, Int(parameter), 5);
@@ -124,6 +129,11 @@ void RegisterDecideSettings(ExtensionLoader &loader) {
 	config.AddExtensionOption("anofox_decide_max_questions",
 	                          "Maximum questions per decide_many / decide_table call (default 100, at most 1000)",
 	                          LogicalType::BIGINT, Value::BIGINT(100), ValidateMaxQuestions);
+	config.AddExtensionOption("anofox_decide_max_concurrency",
+	                          "How many remote requests one query sends at the same time (0 to 64, default 0 = "
+	                          "automatic: 8 for hosted providers, 1 for the local strands server). 1 sends them one "
+	                          "after another. Lower it if the service rate limits you",
+	                          LogicalType::BIGINT, Value::BIGINT(0), ValidateMaxConcurrency);
 	config.AddExtensionOption("anofox_decide_model",
 	                          "Model id used when a decide_* call names no model (must be registered, see "
 	                          "decide_models()). Unset by default: name a model per call or SET it. 'stub' is a "

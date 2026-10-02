@@ -234,7 +234,10 @@ void DecideDoctorScan(ClientContext &context, TableFunctionInput &data, DataChun
 // (one evaluation per query); correlated arguments in a LATERAL join route
 // through the in_out operator, which scores every outer row. Named
 // `model :=` works in both forms (laterally it rides the positional slot);
-// lateral calls take one remote request per outer row.
+// lateral calls take one remote request per outer row, one after
+// another: DuckDB hands an in-out function one row per call whenever the correlated column is
+// carried through (measured: peak 1 request in flight with 8 DuckDB threads). For many rows use the
+// scalar functions, which receive whole chunks and send them concurrently.
 //===----------------------------------------------------------------------===//
 
 struct DecideTableData : public TableFunctionData {

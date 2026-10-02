@@ -14,7 +14,10 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/main/secret/secret.hpp"
 
+#include <atomic>
 #include <cctype>
+#include <map>
+#include <thread>
 #include <chrono>
 #include <cstdlib>
 #include <set>
@@ -129,13 +132,13 @@ void SplitEndpoint(const string &endpoint, string &host, int &port, bool &ssl, c
 // endpoint, path and key variable differ. Liquid D1 verified live against
 // POST https://api.liquid.ai/decisions/v1/systemone (model "d1:free").
 const DecideRemoteProfile kRemoteProfiles[] = {
-    {"typesafe", "TypeSafe", "https://api.typesafe.ai", "/v1/systemone", "TYPESAFE_API_KEY", true, false},
-    {"liquid", "Liquid AI", "https://api.liquid.ai", "/decisions/v1/systemone", "LIQUID_API_KEY", true, false},
+    {"typesafe", "TypeSafe", "https://api.typesafe.ai", "/v1/systemone", "TYPESAFE_API_KEY", true, false, 8},
+    {"liquid", "Liquid AI", "https://api.liquid.ai", "/decisions/v1/systemone", "LIQUID_API_KEY", true, false, 8},
     // Generic System One-compatible server (e.g. Kev): the model supplies the endpoint.
-    {"systemone", "System One endpoint", "", "/v1/systemone", "", true, false},
+    {"systemone", "System One endpoint", "", "/v1/systemone", "", true, false, 8},
     // strands-decider (`strands-decider serve`): a local, keyless server on loopback whose schema
     // requires string criteria values for choice questions.
-    {"strands", "strands-decider", "http://127.0.0.1:8000", "/v1/systemone", "", false, true},
+    {"strands", "strands-decider", "http://127.0.0.1:8000", "/v1/systemone", "", false, true, 1}, // one local model server: it serialises anyway
 };
 
 } // namespace
@@ -1150,81 +1153,139 @@ DecideErrorInfo DecideFormatTransportError(const DecideRemoteConfig &cfg, const 
 	return info;
 }
 
+//--- In-flight limiter --------------------------------------------------------
+
+DecideInflightGate::DecideInflightGate(int limit_p) : limit(std::max(1, limit_p)) {
+}
+
+void DecideInflightGate::Acquire() {
+	std::unique_lock<std::mutex> guard(lock);
+	cv.wait(guard, [&]() { return inflight < limit; });
+	inflight++;
+}
+
+void DecideInflightGate::Release() {
+	{
+		std::lock_guard<std::mutex> guard(lock);
+		inflight--;
+	}
+	cv.notify_one();
+}
+
+void DecideInflightGate::Throttle() {
+	std::lock_guard<std::mutex> guard(lock);
+	const auto now = std::chrono::steady_clock::now();
+	if (throttled && now - last_throttle < std::chrono::seconds(1)) {
+		return;
+	}
+	throttled = true;
+	last_throttle = now;
+	limit = std::max(1, limit / 2);
+}
+
+int DecideInflightGate::Limit() {
+	std::lock_guard<std::mutex> guard(lock);
+	return limit;
+}
+
 //--- Transport ---------------------------------------------------------------
 
-static DecideHttpPost DecideHttplibTransport() {
-	return [](const string &host, int port, bool ssl, const string &path, const DecideHeaderList &headers,
-	          const string &body, int timeout_ms) -> DecideHttpResponse {
+// Connections kept open between the requests of one worker (HTTP keep-alive): a chunk of rows pays the
+// TCP and TLS handshake once per worker instead of once per row. Not thread safe: one per worker.
+struct DecideConnections {
+	std::map<string, std::unique_ptr<duckdb_httplib_openssl::Client>> clients;
+};
+
+static DecideHttpResponse DecideTransportFailure(duckdb_httplib_openssl::Error error) {
+	DecideHttpResponse out;
+	out.transport_error = duckdb_httplib_openssl::to_string(error);
+	switch (error) {
+	case duckdb_httplib_openssl::Error::Connection:
+		out.error_kind = "connection";
+		break;
+	case duckdb_httplib_openssl::Error::ConnectionTimeout:
+		out.error_kind = "timeout";
+		break;
+	case duckdb_httplib_openssl::Error::Read:
+	case duckdb_httplib_openssl::Error::Write:
+		out.error_kind = "read";
+		break;
+	case duckdb_httplib_openssl::Error::SSLConnection:
+	case duckdb_httplib_openssl::Error::SSLLoadingCerts:
+	case duckdb_httplib_openssl::Error::SSLServerVerification:
+	case duckdb_httplib_openssl::Error::SSLServerHostnameVerification:
+		out.error_kind = "tls";
+		break;
+	case duckdb_httplib_openssl::Error::ProxyConnection:
+		out.error_kind = "proxy";
+		break;
+	default:
+		out.error_kind = "other";
+		break;
+	}
+	return out;
+}
+
+static DecideHttpPost DecideMakeHttplibTransport() {
+	auto connections = std::make_shared<DecideConnections>();
+	return [connections](const string &host, int port, bool ssl, const string &path, const DecideHeaderList &headers,
+	                     const string &body, int timeout_ms) -> DecideHttpResponse {
 		try {
 			duckdb_httplib_openssl::Headers h;
 			for (auto &kv : headers) {
 				h.emplace(kv.first, kv.second);
 			}
-			int secs = std::max(1, timeout_ms / 1000);
-			long usecs = (long)(timeout_ms % 1000) * 1000;
-			duckdb_httplib_openssl::Result res;
-			if (ssl) {
-				duckdb_httplib_openssl::SSLClient cli(host, port);
-				ApplyProxyEnv(cli, true, host);
-				if (!cli.is_valid()) {
-					DecideHttpResponse bad;
-					bad.transport_error = "invalid HTTPS endpoint";
-					bad.error_kind = "invalid_endpoint";
-					return bad;
+			const int secs = std::max(1, timeout_ms / 1000);
+			const long usecs = (long)(timeout_ms % 1000) * 1000;
+			const string key = string(ssl ? "https://" : "http://") + host + ":" + std::to_string(port) + "/" +
+			                   std::to_string(timeout_ms);
+			// A reused connection may have been closed by the server while it sat idle; a failure on one
+			// is retried once on a fresh connection and never reaches the caller's retry accounting.
+			for (int fresh = 0; fresh < 2; fresh++) {
+				auto it = connections->clients.find(key);
+				const bool reused = it != connections->clients.end();
+				if (!reused) {
+					std::unique_ptr<duckdb_httplib_openssl::Client> cli;
+					if (ssl) {
+						cli = make_uniq<duckdb_httplib_openssl::Client>("https://" + host + ":" + std::to_string(port));
+					} else {
+						cli = make_uniq<duckdb_httplib_openssl::Client>(host, port);
+					}
+					ApplyProxyEnv(*cli, ssl, host);
+					if (!cli->is_valid()) {
+						DecideHttpResponse bad;
+						bad.transport_error = ssl ? "invalid HTTPS endpoint" : "invalid HTTP endpoint";
+						bad.error_kind = "invalid_endpoint";
+						return bad;
+					}
+					cli->set_keep_alive(true);
+					cli->set_connection_timeout(secs, usecs);
+					cli->set_read_timeout(secs, usecs);
+					cli->set_write_timeout(secs, usecs);
+					it = connections->clients.emplace(key, std::move(cli)).first;
 				}
-				cli.set_connection_timeout(secs, usecs);
-				cli.set_read_timeout(secs, usecs);
-				cli.set_write_timeout(secs, usecs);
-				res = cli.Post(path.c_str(), h, body, "application/json");
-			} else {
-				duckdb_httplib_openssl::Client cli(host, port);
-				ApplyProxyEnv(cli, false, host);
-				if (!cli.is_valid()) {
-					DecideHttpResponse bad;
-					bad.transport_error = "invalid HTTP endpoint";
-					bad.error_kind = "invalid_endpoint";
-					return bad;
+				auto res = it->second->Post(path.c_str(), h, body, "application/json");
+				if (res) {
+					DecideHttpResponse out;
+					out.transport_ok = true;
+					out.status = res->status;
+					out.body = res->body;
+					out.retry_after = res->get_header_value("Retry-After", "");
+					if (res->get_header_value("Connection", "") == "close") {
+						connections->clients.erase(key);
+					}
+					return out;
 				}
-				cli.set_connection_timeout(secs, usecs);
-				cli.set_read_timeout(secs, usecs);
-				cli.set_write_timeout(secs, usecs);
-				res = cli.Post(path.c_str(), h, body, "application/json");
+				connections->clients.erase(key);
+				const auto error = res.error();
+				const bool stale = reused && (error == duckdb_httplib_openssl::Error::Read ||
+				                              error == duckdb_httplib_openssl::Error::Write ||
+				                              error == duckdb_httplib_openssl::Error::Connection);
+				if (!stale || fresh == 1) {
+					return DecideTransportFailure(error);
+				}
 			}
-			if (!res) {
-				DecideHttpResponse out;
-				out.transport_error = duckdb_httplib_openssl::to_string(res.error());
-				switch (res.error()) {
-				case duckdb_httplib_openssl::Error::Connection:
-					out.error_kind = "connection";
-					break;
-				case duckdb_httplib_openssl::Error::ConnectionTimeout:
-					out.error_kind = "timeout";
-					break;
-				case duckdb_httplib_openssl::Error::Read:
-				case duckdb_httplib_openssl::Error::Write:
-					out.error_kind = "read";
-					break;
-				case duckdb_httplib_openssl::Error::SSLConnection:
-				case duckdb_httplib_openssl::Error::SSLLoadingCerts:
-				case duckdb_httplib_openssl::Error::SSLServerVerification:
-				case duckdb_httplib_openssl::Error::SSLServerHostnameVerification:
-					out.error_kind = "tls";
-					break;
-				case duckdb_httplib_openssl::Error::ProxyConnection:
-					out.error_kind = "proxy";
-					break;
-				default:
-					out.error_kind = "other";
-					break;
-				}
-				return out;
-			}
-			DecideHttpResponse out;
-			out.transport_ok = true;
-			out.status = res->status;
-			out.body = res->body;
-			out.retry_after = res->get_header_value("Retry-After", "");
-			return out;
+			return DecideTransportFailure(duckdb_httplib_openssl::Error::Unknown);
 		} catch (const std::exception &e) {
 			DecideHttpResponse bad;
 			bad.transport_error = e.what();
@@ -1233,6 +1294,7 @@ static DecideHttpPost DecideHttplibTransport() {
 		}
 	};
 }
+
 
 //--- Evaluate ----------------------------------------------------------------
 
@@ -1267,7 +1329,23 @@ vector<DecideAnswer> DecideRemoteEvaluateWithTransport(const DecideRemoteConfig 
 	last.transport_error = "no attempt made";
 	int attempts_run = 0;
 	for (int attempt = 0; attempt < max_attempts; attempt++) {
-		last = transport(cfg.host, cfg.port, cfg.ssl, cfg.path, headers, body, cfg.timeout_ms);
+		if (cfg.gate) {
+			cfg.gate->Acquire();
+		}
+		try {
+			last = transport(cfg.host, cfg.port, cfg.ssl, cfg.path, headers, body, cfg.timeout_ms);
+		} catch (...) {
+			if (cfg.gate) {
+				cfg.gate->Release();
+			}
+			throw;
+		}
+		if (cfg.gate) {
+			cfg.gate->Release();
+			if (last.transport_ok && (last.status == 429 || last.status == 529)) {
+				cfg.gate->Throttle();
+			}
+		}
 		attempts_run++;
 		// Only a connect timeout is reported as "timeout" (a slow answer is "read"). On this machine a
 		// connect can only time out when nothing is listening: Windows does not refuse a closed
@@ -1322,12 +1400,11 @@ vector<DecideAnswer> DecideRemoteEvaluateWithTransport(const DecideRemoteConfig 
 
 vector<DecideAnswer> DecideRemoteEvaluateOverHttp(const DecideRemoteConfig &cfg, const string &state,
                                                   const vector<DecideQuestion> &questions) {
-	return DecideRemoteEvaluateWithTransport(cfg, state, questions, DecideHttplibTransport());
+	return DecideRemoteEvaluateWithTransport(cfg, state, questions, DecideMakeHttplibTransport());
 }
 
-vector<DecideAnswer> DecideRemoteEvaluate(ClientContext &context, const string &state,
-                                          const vector<DecideQuestion> &questions,
-                                          const DecideRemoteTarget &target, const string &function) {
+DecideRemoteConfig DecideRemotePrepare(ClientContext &context, const DecideRemoteTarget &target,
+                                       const string &function) {
 	// The opt-in comes first: it is the one thing every remote model needs, and a missing key
 	// should not be the first thing a user hits only to meet the gate right after.
 	Value allow_v;
@@ -1335,15 +1412,75 @@ vector<DecideAnswer> DecideRemoteEvaluate(ClientContext &context, const string &
 	if (context.TryGetCurrentSetting("anofox_decide_allow_remote", allow_v) && !allow_v.IsNull()) {
 		allow = BooleanValue::Get(allow_v.DefaultCastAs(LogicalType::BOOLEAN));
 	}
+	auto profile = DecideFindRemoteProfile(target.provider);
 	if (!allow) {
-		auto profile = DecideFindRemoteProfile(target.provider);
-		const string endpoint = !target.endpoint.empty() ? target.endpoint : string(profile ? profile->default_endpoint : "");
-		throw InvalidInputException(GateMessage(function, target.registered_id.empty() ? target.wire_model : target.registered_id,
-		                                        profile ? profile->display : target.provider,
-		                                        endpoint.empty() ? string("its endpoint") : endpoint));
+		const string endpoint =
+		    !target.endpoint.empty() ? target.endpoint : string(profile ? profile->default_endpoint : "");
+		throw InvalidInputException(
+		    GateMessage(function, target.registered_id.empty() ? target.wire_model : target.registered_id,
+		                profile ? profile->display : target.provider, endpoint.empty() ? string("its endpoint") : endpoint));
 	}
 	auto cfg = DecideResolveConfig(context, target, function);
-	return DecideRemoteEvaluateWithTransport(cfg, state, questions, DecideHttplibTransport());
+	// 0 = automatic (the provider's default); an explicit number applies to every remote model.
+	Value conc_v;
+	int64_t configured = 0;
+	if (context.TryGetCurrentSetting("anofox_decide_max_concurrency", conc_v) && !conc_v.IsNull()) {
+		configured = BigIntValue::Get(conc_v.DefaultCastAs(LogicalType::BIGINT));
+	}
+	cfg.max_concurrency = configured > 0 ? (int)configured : (profile ? profile->default_concurrency : 1);
+	return cfg;
+}
+
+vector<DecideAnswer> DecideRemoteEvaluate(ClientContext &context, const string &state,
+                                          const vector<DecideQuestion> &questions,
+                                          const DecideRemoteTarget &target, const string &function) {
+	auto cfg = DecideRemotePrepare(context, target, function);
+	return DecideRemoteEvaluateWithTransport(cfg, state, questions, DecideMakeHttplibTransport());
+}
+
+void DecideRemoteRunJobs(vector<DecideRemoteJob> &jobs) {
+	if (jobs.empty()) {
+		return;
+	}
+	int limit = 64;
+	for (auto &job : jobs) {
+		limit = std::min(limit, std::max(1, job.cfg.max_concurrency));
+	}
+	auto gate = std::make_shared<DecideInflightGate>(limit);
+	for (auto &job : jobs) {
+		job.cfg.gate = gate;
+	}
+	std::atomic<size_t> next {0};
+	std::atomic<bool> failed {false};
+	auto worker = [&]() {
+		auto transport = DecideMakeHttplibTransport(); // this worker's connections
+		while (!failed.load()) {
+			const size_t i = next.fetch_add(1);
+			if (i >= jobs.size()) {
+				break;
+			}
+			try {
+				jobs[i].answers = DecideRemoteEvaluateWithTransport(jobs[i].cfg, *jobs[i].state, *jobs[i].questions,
+				                                                    transport);
+			} catch (...) {
+				jobs[i].error = std::current_exception();
+				failed.store(true);
+			}
+		}
+	};
+	const size_t workers = std::min<size_t>(jobs.size(), (size_t)limit);
+	vector<std::thread> pool;
+	for (size_t t = 1; t < workers; t++) {
+		try {
+			pool.emplace_back(worker);
+		} catch (...) {
+			break; // out of threads: the workers that did start (and this one) take all the jobs
+		}
+	}
+	worker();
+	for (auto &t : pool) {
+		t.join();
+	}
 }
 
 } // namespace anofox

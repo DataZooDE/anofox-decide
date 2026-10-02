@@ -12,7 +12,7 @@ SELECT * FROM decide_table('The bill is wrong.',
   '[{"id":"refund","kind":"binary","instruction":"A refund is requested."},
     {"id":"mood","kind":"score","instruction":"How frustrated?","levels":["calm","frustrated","angry"]}]', 'stub');
 -- columns: question_id, kind, probability, choice, confidence, model, score, distribution
-SELECT * FROM tickets, LATERAL (SELECT * FROM decide_table(tickets.body, '[...]', 'stub')) dt;
+SELECT * FROM tickets, LATERAL (SELECT * FROM decide_table(tickets.body, '[...]', 'stub')) dt;  -- fine for a few rows; see "Scoring many rows"
 SELECT decide_brier_score(p, y) FROM labeled;  -- + decide_ece / decide_accuracy(p, y[, threshold])
 SELECT * FROM decide_models();
 ```
@@ -109,6 +109,30 @@ SET anofox_decide_allow_remote=true;
 SELECT decide_register_model('strands-decider', 'strands');   -- default endpoint http://127.0.0.1:8000
 SELECT decide_choice('Help! My payouts have been failing.', 'Which team?', ['billing','sales','retail'], model := 'strands-decider');
 ```
+
+## Scoring many rows
+
+A remote call takes one text plus any number of questions, so the cost is **one request per row** whatever the SQL looks like. What you control is how many run at the same time.
+
+| You write | Requests | Notes |
+|---|---|---|
+| `decide_probability` / `decide_choice` / `decide_score` / `decide_decision` / `decide_many` over a table | one per distinct row, **up to 8 at a time** | The fast path. A chunk of rows is evaluated together: identical rows are sent once, connections are reused, and a `429` makes the query back off |
+| `decide_table(text, questions)` with constant arguments | one request for all questions | One document, many questions |
+| `LATERAL decide_table(t.text, ...)` over a table | one per row, **one after another** | DuckDB gives the function one row per call in a lateral join, so it cannot be concurrent (measured: with 8 DuckDB threads the peak is still 1 request in flight). Fine for a few rows |
+
+Measured on the real Liquid D1 service (`tests/fixtures/support_tickets.csv`, 8 tickets): 176.7 s with `SET anofox_decide_max_concurrency = 1`, 23.1 s with the default, same answers (D1 itself varies slightly from call to call).
+
+```sql
+-- many rows, several questions each: one scalar call per question, or one decide_many per row
+SELECT id,
+       decide_probability(body, 'A refund is requested.', model := 'd1:free')  AS refund,
+       decide_choice(body, 'Which team owns this?', ['billing','defect','other'], model := 'd1:free') AS team
+FROM tickets;
+
+SET anofox_decide_max_concurrency = 4;   -- 0 = automatic (default): 8 hosted, 1 for the local strands server; 1 = one at a time
+```
+
+Lower the limit if your provider rate limits you; the query already halves its window after a `429`, honours `Retry-After`, and stops starting new requests after the first error (the error of the first failing row is reported). Two identical `(text, question)` pairs in one chunk cost one request; nothing is shared across chunks or queries, because a service need not answer the same question the same way twice. Local models (`laya`, `julia-1`) run one after another.
 
 ## Local models
 

@@ -116,3 +116,13 @@ python3 tools/eval/run_eval.py --tickets /tmp/eval/tickets.csv --out /tmp/eval/o
 
 `run_eval.py --analyse-only` recomputes the report from existing `results_*.csv` files (copy results from
 several runs into one directory first).
+
+## Run time and concurrency (2 Oct 2026)
+
+The remote latency noted above (1 to 34 s per call) made sequential runs slow. Scalar `decide_*` calls now send a
+chunk's requests concurrently (`anofox_decide_max_concurrency`, default 8 for hosted providers): 8 real D1 calls took
+176.7 s one after another and 23.1 s together. `tools/eval/run_eval.py` does not benefit yet: it scores through
+`LATERAL decide_table`, which DuckDB runs one row at a time (see "Scoring many rows" in the README). Moving it to the
+scalar functions (or to a future scalar that returns the question rows) would cut the remote runs by about the
+concurrency factor.
+

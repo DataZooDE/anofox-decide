@@ -147,6 +147,19 @@ DecideModelEntry DecideResolveModel(ClientContext &context, const string &functi
                                     bool from_setting);
 // Validated per-call question limit: anofox_decide_max_questions, default 100.
 idx_t DecideMaxQuestions(ClientContext &context);
+// One request of a chunk of rows: a model, a text and the questions to ask about it.
+struct DecideBatchRequest {
+	DecideModelEntry entry;
+	string state;
+	vector<DecideQuestion> questions;
+};
+// Evaluates the requests of one chunk of rows and returns one answer list per request, in input order.
+// Identical requests (same model, text and questions) are sent once and shared. Remote requests run
+// concurrently (anofox_decide_max_concurrency, connections reused, backing off on a 429); local and
+// stub requests run one after another. If a request fails, the error of the first failing request in
+// input order is thrown, and requests after it are not started.
+vector<vector<DecideAnswer>> DecideEvaluateBatch(ClientContext &context, const vector<DecideBatchRequest> &requests,
+                                                 const char *function);
 // Rejects entries with an unknown provider (names decide_models() as the fix).
 void RequireKnownProvider(const DecideModelEntry &entry);
 // One entry point for scoring questions against state: remote providers go over HTTP,
