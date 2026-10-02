@@ -41,6 +41,26 @@ SELECT (decide_many('The bill is wrong and this is urgent.', '[{"id":"refund","k
 ----
 1
 
+# Ordinal score: the expected level lies inside the rubric, and a furious message
+# rates higher than a grateful one (directional, so it survives model drift).
+query I
+SELECT (s BETWEEN 0.0 AND 2.0)::INTEGER FROM (
+  SELECT decide_score('Help! My payouts have been failing for 3 days!', 'How frustrated is the writer?', ['calm','frustrated','angry'], model := 'jev-latest') AS s
+)
+----
+1
+
+query I
+SELECT decide_score('This is the third time and I am furious, nobody answers!', 'How frustrated is the writer?', ['calm','frustrated','angry'], model := 'jev-latest')
+     > decide_score('Thanks a lot, everything works great now.', 'How frustrated is the writer?', ['calm','frustrated','angry'], model := 'jev-latest')
+----
+true
+
+query I
+SELECT (decide_many('Help!', '[{"id":"f","kind":"score","instruction":"How frustrated is the writer?","levels":["calm","frustrated","angry"]}]', model := 'jev-latest') LIKE '%"kind":"score"%')::INTEGER
+----
+1
+
 # Realistic labelled tickets (test/fixtures/support_tickets.csv): the remote
 # model must actually discriminate, not merely return in-range numbers.
 query I

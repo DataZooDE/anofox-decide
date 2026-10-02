@@ -237,7 +237,15 @@ vector<DecideAnswer> DecideEvaluate(ClientContext &context, const DecideModelEnt
 		a.kind = q.kind;
 		a.model = entry.id;
 		a.probability = 0.5;
-		if (q.kind == "choice" && !q.options.empty()) {
+		if (q.kind == "score" && !q.options.empty()) {
+			// Deterministic stub: uniform over the levels, so the expected level is the midpoint.
+			const double n = (double)q.options.size();
+			for (auto &level : q.options) {
+				a.distribution.emplace_back(level, 1.0 / n);
+			}
+			a.probability = 1.0 / n;
+			a.expected = (n - 1.0) / 2.0;
+		} else if (q.kind == "choice" && !q.options.empty()) {
 			a.choice = q.options[0];
 			for (auto &o : q.options) {
 				a.distribution.emplace_back(o, o == q.options[0] ? 1.0 : 0.0);

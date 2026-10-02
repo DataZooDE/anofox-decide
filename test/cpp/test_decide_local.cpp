@@ -33,6 +33,15 @@ DecideQuestion NoulQ() {
 	return q;
 }
 
+DecideQuestion ScoreQ(const char *instruction, vector<string> levels) {
+	DecideQuestion q;
+	q.id = "score";
+	q.kind = "score";
+	q.instruction = instruction;
+	q.options = std::move(levels);
+	return q;
+}
+
 } // namespace
 
 TEST_CASE("local session runs the tiny fixture graph", "[anofox_decide][local]") {
@@ -165,6 +174,16 @@ TEST_CASE("local end-to-end over real Julia-1", "[anofox_decide][local]") {
 	auto choice = DecideLocalScore(*con.context, entry, "My invoice charges twice the agreed amount.", {dept});
 	REQUIRE(choice[0].choice == "other");
 	REQUIRE(std::fabs(choice[0].probability - 0.893489) < 1e-4);
+
+	// Score: expected level index recorded from upstream julia.inference.TransformerEngine.predict
+	// (julia/typed.py: the rubric descriptions are the labels, score = sum(i * p_i)).
+	auto frustrated = ScoreQ("How frustrated is the writer?", {"calm", "frustrated", "angry"});
+	auto s1 = DecideLocalScore(*con.context, entry, "Help! My payouts have been failing for 3 days!", {frustrated});
+	REQUIRE(std::fabs(s1[0].expected - 1.0014810) < 1e-4);
+	REQUIRE(s1[0].distribution.size() == 3);
+	auto s2 = DecideLocalScore(*con.context, entry, "I was charged twice, please refund the extra 49 EUR.",
+	                           {ScoreQ("How urgent is this?", {"can wait", "this week", "today"})});
+	REQUIRE(std::fabs(s2[0].expected - 1.0220395) < 1e-4);
 }
 
 TEST_CASE("local end-to-end over real Laya multilingual", "[anofox_decide][local]") {
@@ -209,6 +228,17 @@ TEST_CASE("local end-to-end over real Laya multilingual", "[anofox_decide][local
 	// Mixed batch: 2-marker noul next to a 3-marker choice keeps per-row
 	// distributions sized to their own options.
 	REQUIRE(b[1].distribution.size() == 3);
+
+	// Score: expected levels recorded from upstream RLAgent.system_one (rendered "level <i>: <text>"
+	// options, 4-decimal rounding upstream).
+	auto frustrated = ScoreQ("How frustrated is the writer?", {"calm", "frustrated", "angry"});
+	auto s1 = DecideLocalScore(*con.context, entry, "Help! My payouts have been failing for 3 days!", {frustrated});
+	REQUIRE(std::fabs(s1[0].expected - 1.0581) < 2e-4);
+	auto s2 = DecideLocalScore(*con.context, entry, "Thanks, everything works now!", {frustrated});
+	REQUIRE(std::fabs(s2[0].expected - 0.5510) < 2e-4);
+	auto s3 = DecideLocalScore(*con.context, entry, "I was charged twice, please refund the extra 49 EUR.",
+	                           {ScoreQ("How urgent is this?", {"can wait", "this week", "today"})});
+	REQUIRE(std::fabs(s3[0].expected - 1.8222) < 2e-4);
 }
 
 TEST_CASE("local end-to-end over real Laya typed-decisions", "[anofox_decide][local]") {
@@ -252,4 +282,11 @@ TEST_CASE("local end-to-end over real Laya typed-decisions", "[anofox_decide][lo
 	                          {refund, team});
 	REQUIRE(std::fabs(b[0].probability - 0.1038) < 2e-4);
 	REQUIRE(b[1].choice == "other");
+
+	// Score, with the score:3-5 calibration temperature (upstream RLAgent.system_one).
+	auto frustrated = ScoreQ("How frustrated is the writer?", {"calm", "frustrated", "angry"});
+	auto s1 = DecideLocalScore(*con.context, entry, "Help! My payouts have been failing for 3 days!", {frustrated});
+	REQUIRE(std::fabs(s1[0].expected - 1.4665) < 2e-4);
+	auto s2 = DecideLocalScore(*con.context, entry, "Thanks, everything works now!", {frustrated});
+	REQUIRE(std::fabs(s2[0].expected - 0.1438) < 2e-4);
 }

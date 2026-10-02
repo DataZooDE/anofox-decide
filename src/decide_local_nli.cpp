@@ -369,9 +369,22 @@ vector<DecideAnswer> DecideLocalScore(ClientContext &context, const DecideModelE
 		} else if (q.kind == "choice") {
 			options = q.options;
 			qtype = 0;
+		} else if (q.kind == "score") {
+			// Ordered rubric (2..10 levels, validated upstream of the provider). julia-1 scores the level
+			// descriptions as given (julia/typed.py); laya renders them "level <i>: <text>" with a 0-based
+			// index (rl_common.py render_options).
+			DecideValidateScoreLevels("decide", q.id, q.options);
+			if (laya) {
+				for (size_t i = 0; i < q.options.size(); i++) {
+					options.push_back("level " + std::to_string(i) + ": " + q.options[i]);
+				}
+			} else {
+				options = q.options;
+			}
+			qtype = 1;
 		} else {
 			throw InvalidInputException("decide: local question '%s' has unsupported kind '%s' "
-			                            "(supported: 'noul', 'choice')",
+			                            "(supported: 'noul', 'choice', 'score')",
 			                            q.id, q.kind);
 		}
 		rows.push_back({DecideCollateRow(tok, state, q.instruction, options, qtype, max_length, head_length, laya), &q});
@@ -416,7 +429,7 @@ vector<DecideAnswer> DecideLocalScore(ClientContext &context, const DecideModelE
 		// falling back to the per-type temperature. julia-1: raw softmax.
 		double temp = 1.0;
 		if (laya) {
-			int qt = q->kind == "noul" ? 2 : 0;
+			int qt = q->kind == "noul" ? 2 : (q->kind == "score" ? 1 : 0);
 			auto bucket = laya_cfg->temperature_by_options.find(LayaTempBucket(qt, row_scores.size()));
 			temp = bucket != laya_cfg->temperature_by_options.end() ? bucket->second : laya_cfg->temperature[qt];
 			if (!(temp > 0.0)) {
@@ -437,14 +450,21 @@ vector<DecideAnswer> DecideLocalScore(ClientContext &context, const DecideModelE
 			a.probability = probs.size() > 1 ? probs[1] / tot : 0.0;
 		} else {
 			size_t best = 0;
+			double expected = 0.0;
 			for (size_t i = 0; i < probs.size(); i++) {
 				if (probs[i] > probs[best]) {
 					best = i;
 				}
 				a.distribution.emplace_back(q->options[i], probs[i] / tot);
+				expected += (double)i * probs[i] / tot;
 			}
-			a.choice = q->options[best];
 			a.probability = probs[best] / tot;
+			if (q->kind == "score") {
+				// Expected level index over the rubric; the argmax level is not exposed as a choice.
+				a.expected = expected;
+			} else {
+				a.choice = q->options[best];
+			}
 		}
 		out.push_back(std::move(a));
 	}

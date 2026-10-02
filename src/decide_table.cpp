@@ -128,6 +128,13 @@ void DecideTableColumns(vector<LogicalType> &return_types, vector<string> &names
 	return_types.emplace_back(LogicalType::DOUBLE);
 	names.emplace_back("model");
 	return_types.emplace_back(LogicalType::VARCHAR);
+	// Appended (nullable) so existing SELECT * column order is unchanged: the
+	// expected level index of a score question, and the per-option / per-level
+	// probabilities of choice and score questions.
+	names.emplace_back("score");
+	return_types.emplace_back(LogicalType::DOUBLE);
+	names.emplace_back("distribution");
+	return_types.emplace_back(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::DOUBLE));
 }
 
 string TableBindModel(ClientContext &context, TableFunctionBindInput &input) {
@@ -196,7 +203,7 @@ unique_ptr<LocalTableFunctionState> DecideTableInitLocal(ExecutionContext &conte
 
 void DecideTableEmitRow(DataChunk &output, idx_t out_idx, const DecideAnswer &a, const string &fallback_model) {
 	output.SetValue(0, out_idx, Value(a.id));
-	output.SetValue(1, out_idx, Value(a.kind == "noul" ? "binary" : "choice"));
+	output.SetValue(1, out_idx, Value(a.kind == "noul" ? "binary" : (a.kind == "score" ? "score" : "choice")));
 	output.SetValue(2, out_idx, Value::DOUBLE(a.probability));
 	if (a.kind == "choice" && !a.choice.empty()) {
 		output.SetValue(3, out_idx, Value(a.choice));
@@ -209,6 +216,22 @@ void DecideTableEmitRow(DataChunk &output, idx_t out_idx, const DecideAnswer &a,
 		output.SetValue(4, out_idx, Value(LogicalType::DOUBLE));
 	}
 	output.SetValue(5, out_idx, Value(a.model.empty() ? fallback_model : a.model));
+	if (a.kind == "score" && std::isfinite(a.expected)) {
+		output.SetValue(6, out_idx, Value::DOUBLE(a.expected));
+	} else {
+		output.SetValue(6, out_idx, Value(LogicalType::DOUBLE));
+	}
+	if (!a.distribution.empty()) {
+		vector<Value> keys;
+		vector<Value> values;
+		for (auto &kv : a.distribution) {
+			keys.emplace_back(Value(kv.first));
+			values.emplace_back(Value::DOUBLE(kv.second));
+		}
+		output.SetValue(7, out_idx, Value::MAP(LogicalType::VARCHAR, LogicalType::DOUBLE, std::move(keys), std::move(values)));
+	} else {
+		output.SetValue(7, out_idx, Value(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::DOUBLE)));
+	}
 }
 
 void DecideTableScan(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
@@ -321,7 +344,7 @@ void RegisterDecideTableFunctions(ExtensionLoader &loader) {
 		RegisterTableFunctionSetWithAlias(
 		    loader, std::move(set), "decide_table",
 		    DecideDocs("Score several questions against one state and return one row per answer (question id, "
-		               "kind, probability, choice, confidence, distribution, model). `questions` is a JSON array of "
+		               "kind, probability, choice, confidence, model, plus score and distribution). `questions` is a JSON array of "
 		               "{id, kind: 'binary'|'choice', instruction[, options]} objects. Works in LATERAL over a table "
 		               "of states (per-row scoring; one provider round trip per row for remote models).",
 		               "evaluate",

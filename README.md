@@ -6,9 +6,12 @@ DuckDB extension evaluating natural-language predicates and runtime-defined answ
 LOAD anofox_decide;
 SELECT decide_probability('The customer requests a refund.', 'A refund is requested.', model := 'stub');
 SELECT decide_choice('Primary issue?', ['billing','defect','other'], model := 'stub');
+SELECT decide_score('Help! My payouts failed for 3 days!', 'How frustrated is the writer?', ['calm','frustrated','angry'], model := 'stub');  -- expected level, 0-based
 SELECT decide_decision('The customer requests a refund.', 'A refund is requested.', 0.7, model := 'stub');
 SELECT * FROM decide_table('The bill is wrong.',
-  '[{"id":"refund","kind":"binary","instruction":"A refund is requested."}]', 'stub');
+  '[{"id":"refund","kind":"binary","instruction":"A refund is requested."},
+    {"id":"mood","kind":"score","instruction":"How frustrated?","levels":["calm","frustrated","angry"]}]', 'stub');
+-- columns: question_id, kind, probability, choice, confidence, model, score, distribution
 SELECT * FROM tickets, LATERAL (SELECT * FROM decide_table(tickets.body, '[...]', 'stub')) dt;
 SELECT decide_brier_score(p, y) FROM labeled;  -- + decide_ece / decide_accuracy(p, y[, threshold])
 SELECT * FROM decide_models();
@@ -18,7 +21,7 @@ SELECT * FROM decide_models();
 
 Remote models send `state` to the provider's API, so they sit behind an
 explicit opt-in. Providers are profiles over the same System One wire format
-(`noul` / `choice`); each has its own endpoint, path and key variable, so
+(`noul` / `choice` / `score`); each has its own endpoint, path and key variable, so
 several can be used side by side in one session with no `SET` in between:
 
 | Provider | Service | Default endpoint | Key env var |
@@ -152,15 +155,19 @@ metrics and CI are working. What you can use today:
 
 | Provider | Models | Questions | Runs where |
 |---|---|---|---|
-| `stub` | deterministic placeholder (0.5 / first option) | `binary`, `choice` | in-process, for tests and demos |
-| `typesafe` (remote) | TypeSafe Jev (`jev-latest`) | `binary`, `choice` | hosted API; opt-in via `anofox_decide_allow_remote` |
-| `liquid` (remote) | Liquid AI D1 (`d1:free`) | `binary`, `choice` | hosted API; same opt-in |
-| `systemone` (remote) | any TypeSafe-compatible server, e.g. [Kev](https://github.com/jaredpalmer/kev) | `binary`, `choice` | your endpoint (loopback `http://` or `https://`) |
-| `strands` (remote) | [strands-decider](https://github.com/strands-labs/strands-decider) 2B | `binary`, `choice` | local server on loopback, no key |
-| `local` (ONNX Runtime) | Julia-1, Laya multilingual, Laya typed-decisions (profiles `julia-1`, `laya`) | `binary`, `choice` | in-process on CPU, fully offline after setup |
+| `stub` | deterministic placeholder (0.5 / first option) | `binary`, `choice`, `score` | in-process, for tests and demos |
+| `typesafe` (remote) | TypeSafe Jev (`jev-latest`) | `binary`, `choice`, `score` | hosted API; opt-in via `anofox_decide_allow_remote` |
+| `liquid` (remote) | Liquid AI D1 (`d1:free`) | `binary`, `choice`, `score` | hosted API; same opt-in |
+| `systemone` (remote) | any TypeSafe-compatible server, e.g. [Kev](https://github.com/jaredpalmer/kev) | `binary`, `choice`, `score` | your endpoint (loopback `http://` or `https://`) |
+| `strands` (remote) | [strands-decider](https://github.com/strands-labs/strands-decider) 2B | `binary`, `choice`, `score` | local server on loopback, no key |
+| `local` (ONNX Runtime) | Julia-1, Laya multilingual, Laya typed-decisions (profiles `julia-1`, `laya`) | `binary`, `choice`, `score` | in-process on CPU, fully offline after setup |
 
-Not supported yet: `score` (ordinal) questions, GPU execution, and the
-Von model (needs order-invariant attention in the export).
+Question kinds: `binary` (yes/no, `decide_probability` / `decide_decision`), `choice` (one of N,
+`decide_choice`) and `score` (ordinal: an ordered rubric of 2 to 10 level descriptions, lowest first;
+`decide_score` returns the expected 0-based level, and `decide_many` / `decide_table` also return the
+per-level probabilities). `score` is verified for parity with each model's upstream implementation and
+against the live services; unlike refund and routing it has not been scored for accuracy on labelled data.
+Not supported yet: GPU execution and the Von model (needs order-invariant attention in the export).
 
 Which model to pick: Jev was the most accurate in our 200-ticket evaluation. Among models that run
 in-process, Laya multilingual matched it on refund detection and Laya typed-decisions routes best

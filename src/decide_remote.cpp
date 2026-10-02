@@ -186,6 +186,32 @@ bool DecideHostIsLoopback(const string &host) {
 
 //--- Pure JSON mapping -------------------------------------------------------
 
+void DecideValidateScoreLevels(const string &func_name, const string &id, const vector<string> &levels) {
+	if (levels.size() < DECIDE_MIN_SCORE_LEVELS || levels.size() > DECIDE_MAX_SCORE_LEVELS) {
+		throw InvalidInputException("%s: score question '%s' needs %d to %d levels (an ordered rubric), got %d",
+		                            func_name, id, (int)DECIDE_MIN_SCORE_LEVELS, (int)DECIDE_MAX_SCORE_LEVELS,
+		                            (int)levels.size());
+	}
+	std::set<string> seen;
+	for (auto &level : levels) {
+		if (level.empty()) {
+			throw InvalidInputException("%s: score question '%s' has an empty level description", func_name, id);
+		}
+		if (!seen.insert(level).second) {
+			throw InvalidInputException("%s: score question '%s' repeats the level '%s' (levels must be unique)",
+			                            func_name, id, level);
+		}
+	}
+}
+
+// Tolerance for "probabilities sum to 1": a few services (Jev) round each
+// probability to 2 decimals, so n values can be off by up to 0.005 each. A
+// 0.01 deviation was observed on real 3-level answers; a wrong shape is still
+// rejected (the tolerance is far below any real mismatch).
+static double ProbSumTolerance(size_t n) {
+	return 1e-3 + 0.005 * (double)n;
+}
+
 string DecideBuildRequestJson(const string &state, const string &model, const vector<DecideQuestion> &questions,
                               bool criteria_names) {
 	if (questions.empty()) {
@@ -209,9 +235,9 @@ string DecideBuildRequestJson(const string &state, const string &model, const ve
 			                            "(ids must be unique within one request)",
 			                            q.id);
 		}
-		if (q.kind != "noul" && q.kind != "choice") {
+		if (q.kind != "noul" && q.kind != "choice" && q.kind != "score") {
 			throw InvalidInputException("decide: question '%s' has unsupported kind '%s' "
-			                            "(supported: 'noul', 'choice')",
+			                            "(supported: 'noul', 'choice', 'score')",
 			                            q.id, q.kind);
 		}
 		if (q.instruction.empty()) {
@@ -235,6 +261,14 @@ string DecideBuildRequestJson(const string &state, const string &model, const ve
 				} else {
 					yyjson_mut_obj_add_null(mdoc.doc, crit, opt.c_str());
 				}
+			}
+			yyjson_mut_obj_add_val(mdoc.doc, qobj, "criteria", crit);
+		} else if (q.kind == "score") {
+			DecideValidateScoreLevels("decide", q.id, q.options);
+			// Ordered rubric: a JSON array, ascending (index 0 is the low end).
+			auto crit = yyjson_mut_arr(mdoc.doc);
+			for (auto &level : q.options) {
+				yyjson_mut_arr_add_strcpy(mdoc.doc, crit, level.c_str());
 			}
 			yyjson_mut_obj_add_val(mdoc.doc, qobj, "criteria", crit);
 		}
@@ -296,6 +330,77 @@ vector<DecideAnswer> DecideParseResponseJson(const string &body, const vector<De
 				                            q.id);
 			}
 			ans.probability = yyjson_get_num(p);
+		} else if (q.kind == "score") {
+			DecideValidateScoreLevels("decide", q.id, q.options);
+			const size_t n = q.options.size();
+			auto probs_v = yyjson_obj_get(a, "probabilities");
+			if (!probs_v || !yyjson_is_obj(probs_v)) {
+				throw InvalidInputException("decide: remote answer for '%s' has no 'probabilities' map", q.id);
+			}
+			// Level probabilities are keyed by index ("0".."n-1"); every level must be present.
+			vector<double> p(n, -1.0);
+			yyjson_obj_iter iter;
+			yyjson_obj_iter_init(probs_v, &iter);
+			yyjson_val *key;
+			while ((key = yyjson_obj_iter_next(&iter))) {
+				auto val = yyjson_obj_iter_get_val(key);
+				string level(yyjson_get_str(key), yyjson_get_len(key));
+				size_t idx = n;
+				for (size_t i = 0; i < n; i++) {
+					if (level == std::to_string(i)) {
+						idx = i;
+					}
+				}
+				if (idx == n) {
+					throw InvalidInputException("decide: remote answer for '%s' names level '%s', which is not "
+					                            "one of the %d requested levels (expected keys \"0\"..\"%d\")",
+					                            q.id, level, (int)n, (int)n - 1);
+				}
+				if (!IsFiniteNum(val) || yyjson_get_num(val) < 0.0 || yyjson_get_num(val) > 1.0) {
+					throw InvalidInputException("decide: remote answer for '%s' has an invalid probability "
+					                            "for level '%s' (expected finite in [0,1])",
+					                            q.id, level);
+				}
+				p[idx] = yyjson_get_num(val);
+			}
+			double sum = 0.0;
+			double derived = 0.0;
+			size_t top = 0;
+			for (size_t i = 0; i < n; i++) {
+				if (p[i] < 0.0) {
+					throw InvalidInputException("decide: remote answer for '%s' has no probability for level '%d'",
+					                            q.id, (int)i);
+				}
+				sum += p[i];
+				derived += (double)i * p[i];
+				if (p[i] > p[top]) {
+					top = i;
+				}
+				ans.distribution.emplace_back(q.options[i], p[i]);
+			}
+			if (std::fabs(sum - 1.0) > ProbSumTolerance(n)) {
+				throw InvalidInputException("decide: remote answer for '%s' has level probabilities summing to "
+				                            "%f, expected 1.0",
+				                            q.id, sum);
+			}
+			ans.probability = p[top];
+			// Prefer the server's expected level; derive it from the distribution when it is absent.
+			auto score_v = yyjson_obj_get(a, "score");
+			if (score_v && yyjson_is_num(score_v)) {
+				double server = yyjson_get_num(score_v);
+				if (!std::isfinite(server) || server < -1e-6 || server > (double)(n - 1) + 1e-6) {
+					throw InvalidInputException("decide: remote answer for '%s' has an expected level of %f "
+					                            "outside [0,%d]",
+					                            q.id, server, (int)n - 1);
+				}
+				ans.expected = server;
+			} else {
+				ans.expected = derived;
+			}
+			auto conf_v = yyjson_obj_get(a, "confidence");
+			if (conf_v && yyjson_is_num(conf_v)) {
+				ans.confidence = yyjson_get_num(conf_v);
+			}
 		} else {
 			auto top_v = yyjson_obj_get(a, "choice");
 			if (!top_v || !yyjson_is_str(top_v)) {
@@ -326,7 +431,7 @@ vector<DecideAnswer> DecideParseResponseJson(const string &body, const vector<De
 				ans.distribution.emplace_back(opt, yyjson_get_num(val));
 				sum += yyjson_get_num(val);
 			}
-			if (std::fabs(sum - 1.0) > 1e-3) {
+			if (std::fabs(sum - 1.0) > ProbSumTolerance(ans.distribution.size())) {
 				throw InvalidInputException("decide: remote answer for '%s' has probabilities summing to %f, "
 				                            "expected 1.0",
 				                            q.id, sum);
@@ -358,7 +463,7 @@ vector<DecideQuestion> DecideParseManyQuestions(const string &json_arg, idx_t ma
 	YyjsonDoc doc(yyjson_read(json_arg.c_str(), json_arg.size(), 0));
 	if (!doc.doc) {
 		throw InvalidInputException(func_name + ": questions argument is not valid JSON "
-		                            "(expected [{\"id\":...,\"kind\":\"binary\"|\"choice\",\"instruction\":...}])");
+		                            "(expected [{\"id\":...,\"kind\":\"binary\"|\"choice\"|\"score\",\"instruction\":...}])");
 	}
 	auto root = yyjson_doc_get_root(doc.doc);
 	if (!root || !yyjson_is_arr(root)) {
@@ -381,7 +486,7 @@ vector<DecideQuestion> DecideParseManyQuestions(const string &json_arg, idx_t ma
 			throw InvalidInputException(func_name + ": question %d needs a non-empty string 'id'", (int)idx);
 		}
 		if (!kind_v || !yyjson_is_str(kind_v)) {
-			throw InvalidInputException(func_name + ": question '%s' needs a string 'kind' ('binary' or 'choice')",
+			throw InvalidInputException(func_name + ": question '%s' needs a string 'kind' ('binary', 'choice' or 'score')",
 			                            ValStr(id_v).c_str());
 		}
 		if (!instr_v || !yyjson_is_str(instr_v) || yyjson_get_len(instr_v) == 0) {
@@ -410,9 +515,27 @@ vector<DecideQuestion> DecideParseManyQuestions(const string &json_arg, idx_t ma
 				}
 				q.options.emplace_back(ValStr(opt));
 			}
+		} else if (kind == "score") {
+			q.kind = "score";
+			auto levels_v = yyjson_obj_get(entry, "levels");
+			if (!levels_v || !yyjson_is_arr(levels_v) || yyjson_arr_size(levels_v) == 0) {
+				throw InvalidInputException(func_name + ": score question '%s' needs a non-empty 'levels' array "
+				                            "(ordered rubric descriptions, lowest first)",
+				                            q.id);
+			}
+			yyjson_val *level;
+			yyjson_arr_iter liter;
+			yyjson_arr_iter_init(levels_v, &liter);
+			while ((level = yyjson_arr_iter_next(&liter))) {
+				if (!level || !yyjson_is_str(level)) {
+					throw InvalidInputException(func_name + ": levels of question '%s' must be strings", q.id);
+				}
+				q.options.emplace_back(ValStr(level));
+			}
+			DecideValidateScoreLevels(func_name, q.id, q.options);
 		} else {
 			throw InvalidInputException(func_name + ": question '%s' has unsupported kind '%s' "
-			                            "(supported: 'binary', 'choice')",
+			                            "(supported: 'binary', 'choice', 'score')",
 			                            q.id, kind);
 		}
 		if (!seen.insert(q.id).second) {
@@ -444,11 +567,19 @@ string DecideBuildManyResultJson(const string &model, const vector<DecideQuestio
 	for (size_t i = 0; i < questions.size() && i < answers.size(); i++) {
 		auto robj = yyjson_mut_obj(mdoc.doc);
 		yyjson_mut_obj_add_strcpy(mdoc.doc, robj, "id", answers[i].id.c_str());
-		const char *shown_kind = answers[i].kind == "noul" ? "binary" : "choice";
+		const char *shown_kind =
+		    answers[i].kind == "noul" ? "binary" : (answers[i].kind == "score" ? "score" : "choice");
 		yyjson_mut_obj_add_str(mdoc.doc, robj, "kind", shown_kind);
 		yyjson_mut_obj_add_real(mdoc.doc, robj, "probability", answers[i].probability);
 		if (answers[i].kind == "choice") {
 			yyjson_mut_obj_add_strcpy(mdoc.doc, robj, "choice", answers[i].choice.c_str());
+			auto probs = yyjson_mut_obj(mdoc.doc);
+			for (auto &kv : answers[i].distribution) {
+				yyjson_mut_obj_add_real(mdoc.doc, probs, kv.first.c_str(), kv.second);
+			}
+			yyjson_mut_obj_add_val(mdoc.doc, robj, "probabilities", probs);
+		} else if (answers[i].kind == "score") {
+			yyjson_mut_obj_add_real(mdoc.doc, robj, "score", answers[i].expected);
 			auto probs = yyjson_mut_obj(mdoc.doc);
 			for (auto &kv : answers[i].distribution) {
 				yyjson_mut_obj_add_real(mdoc.doc, probs, kv.first.c_str(), kv.second);

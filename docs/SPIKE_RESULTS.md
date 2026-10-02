@@ -37,3 +37,9 @@ Hosted System One-compatible API (`POST https://api.liquid.ai/decisions/v1/syste
 model `d1:free`, Bearer key from `LIQUID_API_KEY`, no open weights). Wire format
 verified identical to TypeSafe's (see docs/REVIEW_FOLLOWUP.md); integrated as the
 `liquid` remote provider profile.
+
+## Ordinal `score` wire format (2 Oct 2026)
+
+Verified live (Jev `jev-1.13.0`, Liquid `d1:free`, strands-decider): request question
+`{"type":"score","instructions":...,"criteria":["low", ..., "high"]}` (ascending array of 2 to 10 strings);
+answer `{"type":"score","score":<expected index>,"legend":{"0":...},"probabilities":{"0":p0,...},"confidence":c}`.

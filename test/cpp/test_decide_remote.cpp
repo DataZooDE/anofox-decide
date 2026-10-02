@@ -532,3 +532,169 @@ TEST_CASE("strands profile: loopback default, no key needed, no Authorization he
 		REQUIRE(answers[0].choice == "billing");
 	}
 }
+
+// --- score questions ---------------------------------------------------------
+
+namespace {
+
+DecideQuestion ScoreQ(const char *id = "frustration") {
+	DecideQuestion q;
+	q.id = id;
+	q.kind = "score";
+	q.instruction = "How frustrated is the writer?";
+	q.options = {"calm", "frustrated", "angry"};
+	return q;
+}
+
+} // namespace
+
+TEST_CASE("score request: ordered criteria array, validated rubric", "[anofox_decide][remote]") {
+	auto body = DecideBuildRequestJson("Help!", "m", {ScoreQ()});
+	REQUIRE_THAT(body, Contains("\"type\":\"score\""));
+	REQUIRE_THAT(body, Contains("\"criteria\":[\"calm\",\"frustrated\",\"angry\"]"));
+	// Mixed batch keeps each question's own shape.
+	auto mixed = DecideBuildRequestJson("Help!", "m", {NoulQ(), ChoiceQ(), ScoreQ()});
+	REQUIRE_THAT(mixed, Contains("\"billing\":null"));
+	REQUIRE_THAT(mixed, Contains("[\"calm\",\"frustrated\",\"angry\"]"));
+
+	SECTION("rubric limits") {
+		auto one = ScoreQ();
+		one.options = {"only"};
+		REQUIRE_THROWS_WITH(DecideBuildRequestJson("s", "m", {one}), Contains("needs 2 to 10 levels"));
+		auto eleven = ScoreQ();
+		eleven.options.clear();
+		for (int i = 0; i < 11; i++) {
+			eleven.options.push_back("level" + std::to_string(i));
+		}
+		REQUIRE_THROWS_WITH(DecideBuildRequestJson("s", "m", {eleven}), Contains("got 11"));
+		auto dup = ScoreQ();
+		dup.options = {"a", "a"};
+		REQUIRE_THROWS_WITH(DecideBuildRequestJson("s", "m", {dup}), Contains("repeats the level 'a'"));
+		auto empty = ScoreQ();
+		empty.options = {"a", ""};
+		REQUIRE_THROWS_WITH(DecideBuildRequestJson("s", "m", {empty}), Contains("empty level description"));
+	}
+}
+
+TEST_CASE("score response parsing", "[anofox_decide][remote]") {
+	const auto questions = vector<DecideQuestion> {ScoreQ()};
+	SECTION("a well-formed answer (shape from strands-decider / Kev)") {
+		auto answers = DecideParseResponseJson(
+		    R"({"model":"m","answers":{"frustration":{"type":"score","score":1.1,"legend":{"0":"calm","1":"frustrated","2":"angry"},"probabilities":{"0":0.163,"1":0.573,"2":0.264},"confidence":0.518}}})",
+		    questions);
+		REQUIRE(answers.size() == 1);
+		REQUIRE(answers[0].kind == "score");
+		REQUIRE(answers[0].expected == Approx(1.1));
+		REQUIRE(answers[0].probability == Approx(0.573));
+		REQUIRE(answers[0].confidence == Approx(0.518));
+		REQUIRE(answers[0].choice.empty());
+		// The distribution is keyed by the requested level descriptions, in rubric order.
+		REQUIRE(answers[0].distribution.size() == 3);
+		REQUIRE(answers[0].distribution[0].first == "calm");
+		REQUIRE(answers[0].distribution[2].first == "angry");
+		REQUIRE(answers[0].distribution[1].second == Approx(0.573));
+	}
+	SECTION("a missing score is derived from the distribution") {
+		auto answers = DecideParseResponseJson(
+		    R"({"answers":{"frustration":{"type":"score","probabilities":{"0":0.25,"1":0.5,"2":0.25}}}})", questions);
+		REQUIRE(answers[0].expected == Approx(1.0));
+		REQUIRE(std::isnan(answers[0].confidence));
+	}
+	SECTION("malformed answers are rejected with actionable errors") {
+		REQUIRE_THROWS_WITH(DecideParseResponseJson(R"({"answers":{"frustration":{"type":"choice"}}})", questions),
+		                    Contains("has type 'choice', expected 'score'"));
+		REQUIRE_THROWS_WITH(DecideParseResponseJson(R"({"answers":{"frustration":{"type":"score","score":1.0}}})", questions),
+		                    Contains("no 'probabilities' map"));
+		// Not summing to 1.
+		REQUIRE_THROWS_WITH(
+		    DecideParseResponseJson(
+		        R"({"answers":{"frustration":{"type":"score","probabilities":{"0":0.2,"1":0.2,"2":0.2}}}})", questions),
+		    Contains("summing to"));
+		// A level that was never requested.
+		REQUIRE_THROWS_WITH(
+		    DecideParseResponseJson(
+		        R"({"answers":{"frustration":{"type":"score","probabilities":{"0":0.5,"1":0.25,"3":0.25}}}})", questions),
+		    Contains("not one of the 3 requested levels"));
+		// A requested level is missing.
+		REQUIRE_THROWS_WITH(
+		    DecideParseResponseJson(
+		        R"({"answers":{"frustration":{"type":"score","probabilities":{"0":0.5,"1":0.5}}}})", questions),
+		    Contains("no probability for level '2'"));
+		// Out-of-range probability and out-of-range expected level.
+		REQUIRE_THROWS_WITH(
+		    DecideParseResponseJson(
+		        R"({"answers":{"frustration":{"type":"score","probabilities":{"0":1.5,"1":0.0,"2":0.0}}}})", questions),
+		    Contains("invalid probability"));
+		REQUIRE_THROWS_WITH(
+		    DecideParseResponseJson(
+		        R"({"answers":{"frustration":{"type":"score","score":2.5,"probabilities":{"0":0.0,"1":0.0,"2":1.0}}}})",
+		        questions),
+		    Contains("outside [0,2]"));
+	}
+	SECTION("a mixed batch parses each kind independently (no choice fall-through for score)") {
+		auto mixed = vector<DecideQuestion> {NoulQ(), ScoreQ()};
+		auto answers = DecideParseResponseJson(
+		    R"({"answers":{"refund":{"type":"noul","noul":0.9},"frustration":{"type":"score","score":0.2,"probabilities":{"0":0.8,"1":0.2,"2":0.0}}}})",
+		    mixed);
+		REQUIRE(answers[0].probability == Approx(0.9));
+		REQUIRE(answers[1].kind == "score");
+		REQUIRE(answers[1].expected == Approx(0.2));
+	}
+}
+
+TEST_CASE("decide_many / decide_table JSON accepts and renders score questions", "[anofox_decide][remote]") {
+	auto parsed = DecideParseManyQuestions(
+	    R"([{"id":"u","kind":"binary","instruction":"urgent?"},{"id":"f","kind":"score","instruction":"frustrated?","levels":["calm","angry"]}])",
+	    100);
+	REQUIRE(parsed.size() == 2);
+	REQUIRE(parsed[0].kind == "noul");
+	REQUIRE(parsed[1].kind == "score");
+	REQUIRE(parsed[1].options == vector<string> {"calm", "angry"});
+
+	REQUIRE_THROWS_WITH(DecideParseManyQuestions(R"([{"id":"f","kind":"score","instruction":"x"}])", 100),
+	                    Contains("needs a non-empty 'levels' array"));
+	REQUIRE_THROWS_WITH(DecideParseManyQuestions(R"([{"id":"f","kind":"score","instruction":"x","levels":["one"]}])", 100),
+	                    Contains("needs 2 to 10 levels"));
+	REQUIRE_THROWS_WITH(DecideParseManyQuestions(R"([{"id":"f","kind":"score","instruction":"x","levels":["a",1]}])", 100),
+	                    Contains("must be strings"));
+	REQUIRE_THROWS_WITH(DecideParseManyQuestions(R"([{"id":"f","kind":"essay","instruction":"x"}])", 100),
+	                    Contains("'binary', 'choice', 'score'"));
+
+	DecideAnswer a;
+	a.id = "f";
+	a.kind = "score";
+	a.probability = 0.6;
+	a.expected = 0.4;
+	a.distribution = {{"calm", 0.6}, {"angry", 0.4}};
+	DecideAnswer u;
+	u.id = "u";
+	u.kind = "noul";
+	u.probability = 0.9;
+	auto json = DecideBuildManyResultJson("m", parsed, {u, a});
+	REQUIRE_THAT(json, Contains("\"kind\":\"binary\""));
+	REQUIRE_THAT(json, Contains("\"kind\":\"score\""));
+	REQUIRE_THAT(json, Contains("\"score\":0.4"));
+	REQUIRE_THAT(json, Contains("\"probabilities\":{\"calm\":0.6,\"angry\":0.4}"));
+}
+
+TEST_CASE("probability sums tolerate 2-decimal rounding but not a wrong shape", "[anofox_decide][remote]") {
+	// Observed from the live Jev API: rounded level probabilities summing to 0.99.
+	auto rounded_score = DecideParseResponseJson(
+	    R"({"answers":{"frustration":{"type":"score","score":1.0,"probabilities":{"0":0.33,"1":0.33,"2":0.33}}}})",
+	    {ScoreQ()});
+	REQUIRE(rounded_score[0].expected == Approx(1.0));
+	auto rounded_choice = DecideParseResponseJson(
+	    R"({"answers":{"dept":{"type":"choice","choice":"billing","probabilities":{"billing":0.33,"defect":0.33,"other":0.33}}}})",
+	    {ChoiceQ()});
+	REQUIRE(rounded_choice[0].choice == "billing");
+	// A real mismatch is still rejected for both kinds.
+	REQUIRE_THROWS_WITH(
+	    DecideParseResponseJson(
+	        R"({"answers":{"frustration":{"type":"score","probabilities":{"0":0.2,"1":0.2,"2":0.2}}}})", {ScoreQ()}),
+	    Contains("summing to"));
+	REQUIRE_THROWS_WITH(
+	    DecideParseResponseJson(
+	        R"({"answers":{"dept":{"type":"choice","choice":"billing","probabilities":{"billing":0.5,"defect":0.1,"other":0.1}}}})",
+	        {ChoiceQ()}),
+	    Contains("summing to"));
+}

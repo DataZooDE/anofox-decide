@@ -74,7 +74,7 @@ void RegisterTelemetryOptions(ExtensionLoader &loader) {
 
 static void LoadInternal(ExtensionLoader &loader) {
 	loader.SetDescription("Evaluate natural-language predicates and runtime-defined answer sets against text or "
-	                      "structured state: decide_probability / decide_choice / decide_many over a remote "
+	                      "structured state: decide_probability / decide_choice / decide_score / decide_many over a remote "
 	                      "decision service or a local NLI model.");
 
 	// Register telemetry options first so they exist before any event is emitted.
