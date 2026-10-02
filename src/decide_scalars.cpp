@@ -179,7 +179,7 @@ void DecideScoreFun(DataChunk &args, ExpressionState &state, Vector &result) {
 
 // decide_decision(state, question, threshold[, model]) -> BOOLEAN (nullable).
 //
-// BRD section 4: a binary result is a probability plus a nullable decision
+// A binary result is a probability plus a nullable decision
 // derived from an EXPLICIT threshold — the 3-arg threshold has no default and
 // a probability is never silently converted to a boolean. NULL state,
 // question, or threshold returns NULL. Non-finite provider scores are
@@ -441,7 +441,7 @@ void DecideUnregisterModelFun(DataChunk &args, ExpressionState &state, Vector &r
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 }
 
-// SPECIAL null handling: the BRD NULL contract (NULL state/question ->
+// SPECIAL null handling: the NULL contract (NULL state/question ->
 // NULL, actionable errors for empty/duplicate/invalid inputs) is implemented
 // in the function bodies above and verified by the contract tests — DuckDB's
 // default NULL-in/NULL-out would bypass them (e.g. a NULL register id would
@@ -481,12 +481,12 @@ void RegisterDecideScalars(ExtensionLoader &loader) {
 		RegisterScalarFunctionSetWithAlias(
 		    loader, std::move(set), "decide_probability",
 		    DecideDocs("Probability (0 to 1) that the statement `question` holds for `state`, scored by the named "
-		               "model (default: the anofox_decide_model setting, 'stub' when unset). NULL state or question "
-		               "returns NULL; unknown models, remote calls without opt-in and missing API keys raise "
-		               "errors that name the fixing call.",
+		               "model (`model :=`, or the anofox_decide_model setting; with neither the call fails and says how "
+		               "to choose one). NULL state or question returns NULL; unknown models, remote calls without "
+		               "opt-in and missing API keys raise errors that name the fixing call.",
 		               "evaluate",
 		               {{{"state", "question"}, {V, V},
-		                 "SELECT decide_probability('The customer requests a refund.', 'A refund is requested.');"},
+		                 "-- uses the session default model: SET anofox_decide_model = '<id>';\nSELECT decide_probability('The customer requests a refund.', 'A refund is requested.');"},
 		                {{"state", "question", "model"}, {V, V, V},
 		                 "SELECT decide_probability(body, 'A refund is requested.', model := 'jev-latest') FROM tickets;"}}));
 	}
@@ -504,11 +504,11 @@ void RegisterDecideScalars(ExtensionLoader &loader) {
 		    loader, std::move(set), "decide_choice",
 		    DecideDocs(desc, "evaluate",
 		               {{{"state", "question", "options"}, {V, V, options_type},
-		                 "SELECT decide_choice('Invoice charged twice', 'Primary issue?', ['billing','defect','other']);"},
+		                 "-- uses the session default model: SET anofox_decide_model = '<id>';\nSELECT decide_choice('Invoice charged twice', 'Primary issue?', ['billing','defect','other']);"},
 		                {{"state", "question", "options", "model"}, {V, V, options_type, V},
 		                 "SELECT decide_choice(body, 'Which team owns this?', ['billing','defect','other'], model := 'jev-latest') FROM tickets;"},
 		                {{"state", "question", "options"}, {V, V, null_options},
-		                 "SELECT decide_choice('Invoice charged twice', 'Primary issue?', ['billing','defect']);"},
+		                 "-- uses the session default model: SET anofox_decide_model = '<id>';\nSELECT decide_choice('Invoice charged twice', 'Primary issue?', ['billing','defect']);"},
 		                {{"state", "question", "options", "model"}, {V, V, null_options, V},
 		                 "SELECT decide_choice('Invoice charged twice', 'Primary issue?', ['billing','defect'], model := 'stub');"}}));
 	}
@@ -524,7 +524,8 @@ void RegisterDecideScalars(ExtensionLoader &loader) {
 		    "Per-level probabilities and confidence are available through decide_many and decide_table. "
 		    "NULL state, question or levels returns NULL; empty, repeated, NULL or out-of-range levels raise an "
 		    "actionable error.";
-		const string ex1 = "SELECT decide_score('Help! My payouts failed for 3 days!', 'How frustrated is the writer?', "
+		const string ex1 = "-- uses the session default model: SET anofox_decide_model = '<id>';\n"
+		                   "SELECT decide_score('Help! My payouts failed for 3 days!', 'How frustrated is the writer?', "
 		                   "['calm','frustrated','angry']);";
 		const string ex2 = "SELECT decide_score(body, 'How urgent is this?', ['can wait','this week','today'], "
 		                   "model := 'jev-latest') FROM tickets;";
@@ -547,7 +548,7 @@ void RegisterDecideScalars(ExtensionLoader &loader) {
 		               "thresholds raise an error instead of clamping.",
 		               "evaluate",
 		               {{{"state", "question", "threshold"}, {V, V, D},
-		                 "SELECT decide_decision('The customer requests a refund.', 'A refund is requested.', 0.7);"},
+		                 "-- uses the session default model: SET anofox_decide_model = '<id>';\nSELECT decide_decision('The customer requests a refund.', 'A refund is requested.', 0.7);"},
 		                {{"state", "question", "threshold", "model"}, {V, V, D, V},
 		                 "SELECT decide_decision(body, 'A refund is requested.', 0.7, model := 'jev-latest') FROM tickets;"}}));
 	}
@@ -559,12 +560,13 @@ void RegisterDecideScalars(ExtensionLoader &loader) {
 		    loader, std::move(set), "decide_many",
 		    DecideDocs("Evaluate several questions against one `state` in a single provider call. `questions` is a "
 		               "JSON array of {id, kind: 'binary'|'choice'|'score', instruction[, options | levels]} objects; returns a "
-		               "JSON array with one answer (probability; choice plus distribution; or score plus per-level "
-		               "probabilities) per question, in order. "
-		               "Remote providers receive one request for the whole batch.",
+		               "JSON object {model, results: [...]} with one answer per question, in order: id, kind and "
+		               "probability; a choice adds `choice` and the per-option `probabilities`; a score adds `score` "
+		               "(the expected 0-based level) and the per-level `probabilities`. Remote providers receive one "
+		               "request for the whole batch.",
 		               "evaluate",
 		               {{{"state", "questions"}, {V, V},
-		                 "SELECT decide_many('The bill is wrong.', '[{\"id\":\"refund\",\"kind\":\"binary\",\"instruction\":\"A refund is requested.\"}]');"},
+		                 "-- uses the session default model: SET anofox_decide_model = '<id>';\nSELECT decide_many('The bill is wrong.', '[{\"id\":\"refund\",\"kind\":\"binary\",\"instruction\":\"A refund is requested.\"}]');"},
 		                {{"state", "questions", "model"}, {V, V, V},
 		                 "SELECT decide_many(body, '[{\"id\":\"refund\",\"kind\":\"binary\",\"instruction\":\"A refund is requested.\"}]', model := 'jev-latest') FROM tickets;"}}));
 	}

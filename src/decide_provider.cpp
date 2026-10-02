@@ -354,7 +354,7 @@ DecideModelEntry DecideResolveModel(ClientContext &context, const string &functi
 		    "default with SET anofox_decide_model = '" + example + "'. Registered now: " +
 		        DescribeRegisteredModels(entries) + ". To add a real model first: SELECT decide_register_model('" +
 		        example + "', 'typesafe'); (hosted API) or see "
-		        "https://github.com/DataZooDE/anofox-decide#remote-providers and #local-models. "
+		        "https://github.com/DataZooDE/anofox-decide#models-and-providers and #local-models. "
 		        "For tests only: model := 'stub' returns constants."));
 	}
 	DecideModelEntry entry;

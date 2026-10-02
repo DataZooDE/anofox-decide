@@ -1,7 +1,8 @@
-# Review follow-up decisions (DRAFT)
+# Design decisions and model investigations
 
-Records the owner's answers to the agent-crew review open questions
-(`.crew/runs/20260929_060825_review_review-the-uncommitted-anofox-decide-roa/result.md`).
+The decisions taken during development (threat model, provider contracts, model investigations) and why,
+kept as a record for contributors. Question numbers (Q1, Q2, ...) and finding codes (F1, F4, ...) refer to
+the review rounds these decisions came out of.
 
 ## Q1 — Deployment threat model (SETTLED)
 

@@ -1,0 +1,9 @@
+id,text,refund,team
+1,"I was charged twice for my March invoice, please refund the extra 49 EUR.",true,billing
+2,The app crashes every time I open the export dialog on version 3.2.,false,defect
+3,"Thanks for the quick help yesterday, everything works now!",false,other
+4,"I want my money back, this product does not do what was advertised.",true,billing
+5,"Login button does nothing on Safari, error 500 in the console.",false,defect
+6,Our invoice shows the wrong VAT rate; please issue a corrected one.,false,billing
+7,Do you have an office in Munich? We would like to visit.,false,other
+8,Cancel my subscription and reimburse the unused months.,true,billing

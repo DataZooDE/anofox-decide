@@ -1,14 +1,14 @@
-# AnoFox Decide — calibration and performance report (BRD §6, Next scope)
+# AnoFox Decide — calibration and performance report
 
 Date: 29 Sept 2026. Machine: 32× AMD Ryzen 9 3950X, 125 GB RAM.
-Build: release, DuckDB v1.5.5, `CMAKE_PREFIX_PATH` at tabfm's ORT tree.
+Build: release, DuckDB v1.5.5, `CMAKE_PREFIX_PATH` at a prebuilt ONNX Runtime tree.
 Method: single-user `EXPLAIN ANALYZE`, median of 5 runs unless noted.
 Telemetry disabled (`DATAZOO_DISABLE_TELEMETRY=1`).
 
-> Remote (TypeSafe) numbers are intentionally absent: this sandbox has no
-> outbound HTTPS, so no latency/accuracy claim is made for `jev-latest`.
-> Use `make test-live` (needs `TYPESAFE_API_KEY`) plus the SQL recipes below
-> on a networked machine to fill that column in.
+> This report covers the local, in-process measurements. Hosted-model accuracy is in
+> [EVALUATION.md](EVALUATION.md), and request concurrency and latency are in the README section
+> "Scoring many rows". To measure your own provider, use `make test-live` (needs the provider's key)
+> plus the SQL recipes below.
 
 ## 1. Calibration: SQL recipe + measured values
 

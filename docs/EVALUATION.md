@@ -85,7 +85,7 @@ the extension.
 - **Kev-0.8B and Julia-1 are not competitive** on this task. Julia-1 answers "refund" for almost everything
   (AUROC below 0.5); its local port reproduces the upstream Python implementation exactly (see
   REVIEW_FOLLOWUP.md), so this is the model, not the port.
-- The earlier 8-ticket comparison in the README ranked D1 first (8/8, 8/8). That sample was too small and
+- An earlier 8-ticket check ranked D1 first (8/8, 8/8). That sample was too small and
   too easy; on 200 tickets D1's refund result is clearly worse than Jev's and Laya multilingual's.
 
 ## Caveats
@@ -107,7 +107,7 @@ the extension.
 
 ```bash
 python3 tools/eval/make_sample.py --out /tmp/eval            # downloads Bitext, writes /tmp/eval/tickets.csv
-# local models need exported graphs (see README); hosted need LIQUID_API_KEY / TYPESAFE_API_KEY
+# local models need exported graphs (see tools/export_julia/README.md); hosted need LIQUID_API_KEY / TYPESAFE_API_KEY
 export JULIA_ONNX=... JULIA_WEIGHTS_DIR=... LAYA_ML_ONNX=... LAYA_ML_DIR=... LAYA_TD_ONNX=... LAYA_TD_DIR=...
 python3 tools/eval/run_eval.py --tickets /tmp/eval/tickets.csv --out /tmp/eval/out --models d1,jev,laya-ml,laya-td,julia
 python3 tools/eval/run_eval.py --tickets /tmp/eval/tickets.csv --out /tmp/eval/out --models kev       # needs a running Kev server

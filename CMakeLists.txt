@@ -103,6 +103,7 @@ set(DECIDE_CPP_TEST_SOURCES
     test/cpp/test_decide_remote.cpp
     test/cpp/test_decide_remote_http.cpp
     test/cpp/test_decide_concurrency.cpp
+    test/cpp/test_decide_docs.cpp
     test/cpp/test_decide_tokenizer.cpp
     test/cpp/test_decide_local.cpp
 )
