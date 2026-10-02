@@ -1269,6 +1269,12 @@ vector<DecideAnswer> DecideRemoteEvaluateWithTransport(const DecideRemoteConfig 
 	for (int attempt = 0; attempt < max_attempts; attempt++) {
 		last = transport(cfg.host, cfg.port, cfg.ssl, cfg.path, headers, body, cfg.timeout_ms);
 		attempts_run++;
+		// Only a connect timeout is reported as "timeout" (a slow answer is "read"). On this machine a
+		// connect can only time out when nothing is listening: Windows does not refuse a closed
+		// loopback port at once but lets the SYN time out, so report both the same way.
+		if (!last.transport_ok && last.error_kind == "timeout" && DecideHostIsLoopback(cfg.host)) {
+			last.error_kind = "connection";
+		}
 		if (last.transport_ok && last.status == 200) {
 			return DecideParseResponseJson(last.body, questions, cfg.function, Who(cfg),
 			                               cfg.registered_id.empty() ? cfg.model : cfg.registered_id);

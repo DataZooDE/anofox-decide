@@ -734,3 +734,36 @@ TEST_CASE("endpoint validation explains each mistake and the fix", "[anofox_deci
 	REQUIRE_THAT(cleartext, Contains("refusing cleartext http:// to the non-loopback host 'api.liquid.ai'"));
 	REQUIRE_THAT(cleartext, Contains("use https://api.liquid.ai"));
 }
+
+TEST_CASE("a connect timeout on loopback is reported as nothing listening and not retried", "[anofox_decide][remote]") {
+	// Windows lets the SYN to a closed loopback port time out instead of refusing it.
+	DecideRemoteConfig cfg;
+	cfg.host = "127.0.0.1";
+	cfg.port = 8000;
+	cfg.ssl = false;
+	cfg.allow_remote = true;
+	cfg.max_retries = 3;
+	cfg.display = "strands-decider";
+	cfg.function = "decide_probability";
+	int calls = 0;
+	auto transport = [&](const string &, int, bool, const string &, const DecideHeaderList &, const string &, int) {
+		calls++;
+		DecideHttpResponse r;
+		r.transport_error = "Connection timed out";
+		r.error_kind = "timeout";
+		return r;
+	};
+	DecideQuestion q;
+	q.id = "q";
+	q.kind = "noul";
+	q.instruction = "x";
+	try {
+		DecideRemoteEvaluateWithTransport(cfg, "s", {q}, transport);
+		FAIL("expected an error");
+	} catch (const std::exception &e) {
+		auto msg = DecideCleanExceptionMessage(e);
+		REQUIRE_THAT(msg, Contains("nothing is listening on 127.0.0.1:8000"));
+		REQUIRE_THAT(msg, !Contains("did not answer"));
+	}
+	REQUIRE(calls == 1);
+}
