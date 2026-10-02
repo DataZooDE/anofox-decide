@@ -1,7 +1,7 @@
 {
 	"name": "anofox-decide",
-	"version-string": "0.1.0",
-	"description": "DuckDB extension evaluating natural-language predicates and answer sets (TypeSafe remote + local NLI)",
+	"version-string": "2026.10.02",
+	"description": "DuckDB extension for natural-language decisions: yes/no probabilities, choices and ordinal scores from hosted, local-server and in-process ONNX decision models",
 	"dependencies": [
 		"openssl"
 	],

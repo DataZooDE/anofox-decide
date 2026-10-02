@@ -8,6 +8,7 @@
 --   SET anofox_decide_allow_remote = true;
 --   SELECT decide_register_model('d1:free', 'liquid');
 --   SET anofox_decide_model = 'd1:free';
+-- Run from the repository root (the data path is relative to it).
 -- offline: yes (with the stub)
 
 LOAD anofox_decide;

@@ -18,18 +18,18 @@
 
 Candidates considered (research 28 Sept 2026): Supersonic Labs Julia 1, Laya, Kev, NanoJev.
 
-- **Julia-1** (SupersonicLabs, Apache 2.0, 144.3M params, mmBERT-small encoder + decision head, 2–20 answers, CPU-runnable, [HuggingFace](https://huggingface.co/SupersonicLabs/Julia-1)). First local target: open license, CPU story matches DuckDB embedding, small enough to ship like tabfm's weight-free fixture + download flow.
+- **Julia-1** (SupersonicLabs, Apache 2.0, 144.3M params, mmBERT-small encoder + decision head, 2–20 answers, CPU-runnable, [HuggingFace](https://huggingface.co/SupersonicLabs/Julia-1)). First local target: open license, CPU story matches DuckDB embedding, small enough to test with a weight-free fixture.
 - **Laya** (ConvAI Innovations, open reply to Jev, typed-decision checkpoints). Second local target after Julia-1 packaging is proven.
 - **Kev / NanoJev** (community Jev replicas, e.g. NanoJev serves `POST /api/evaluate`). Compatible via the same provider contract; pin exact checkpoint revisions at implementation time.
 
-Decision: local provider loads an ONNX-exported open decision model via ONNX Runtime (tabfm `cmake/ort.cmake` pattern: prebuilt archive for debug, vcpkg static ORT for release single-file). Registry accepts model IDs `julia-1`, `laya`, `kev`, `nanojev` plus explicit revision pins.
+Decision: local provider loads an ONNX-exported open decision model via ONNX Runtime (prebuilt archive for debug, vcpkg static ORT for the release single-file build). Registry accepts model IDs `julia-1`, `laya`, `kev`, `nanojev` plus explicit revision pins.
 
 ## Verified wire facts (28 Sept 2026, from API docs + offline hermetic tests)
 
 - Request: `{"state", "model", "questions": {id: {"type": "noul", "instructions", ...} | {"type": "choice", "instructions", "criteria": {opt: null, ...}}}}` — choice options travel as a **criteria map**, not an array (max 255).
 - Response: `{"model": "<versioned-id>", "answers": {id: {"type": "noul", "noul": p} | {"type": "choice", "choice", "probabilities", "confidence"}}, "usage": {...}}`.
 - Errors: 401 (key) / 422 (validation) never retried; 429 / 529 / 5xx retried with bounded backoff honoring Retry-After.
-- **Offline env finding (at the time; live tests have since passed against both services):** this machine had no outbound HTTPS (dead proxy, no DNS) — live E2E is committed as `test/sql/decide_remote_live.test` + `make test-live` but stays RED-blocked on network. Hermetic coverage (request/response mapping, retry counts, 401-no-retry, key redaction, auth header) is green in Catch2 `[remote]`.
+- **Offline env finding (at the time; live tests have since passed against both services):** this machine had no outbound HTTPS (dead proxy, no DNS) — live E2E is committed as `test/sql/decide_remote_live.test` + `make test-live` but stayed blocked on network at the time. Hermetic coverage (request/response mapping, retry counts, 401-no-retry, key redaction, auth header) is green in Catch2 `[remote]`.
 
 ## Consequences for the build
 

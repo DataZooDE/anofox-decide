@@ -5,6 +5,7 @@
 --   export LIQUID_API_KEY=...        # Liquid AI D1
 --   export TYPESAFE_API_KEY=...      # TypeSafe Jev
 --   duckdb -unsigned < examples/04_compare_models.sql
+-- Run from the repository root (the data path is relative to it).
 -- offline: no (calls hosted models)
 
 LOAD anofox_decide;
@@ -12,7 +13,7 @@ SET anofox_decide_allow_remote = true;
 
 SELECT decide_register_model('jev-latest', 'typesafe');
 SELECT decide_register_model('d1:free', 'liquid');
--- A local server, keyless (see "Remote providers" in the README):
+-- A local server, keyless (see "Models and providers" in the README):
 --   SELECT decide_register_model('strands-decider', 'strands');
 
 CREATE OR REPLACE TABLE tickets AS SELECT * FROM read_csv('examples/data/support_tickets.csv');

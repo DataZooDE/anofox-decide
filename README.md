@@ -40,15 +40,32 @@ models, opt in.
 
 | You have | Do this |
 |---|---|
-| Nothing yet | Use the built-in `stub` to try the SQL: `model := 'stub'`. It returns constants (0.5, the first option) so it can never pass for a real answer. |
+| Nothing yet | Use the built-in `stub` to try the SQL: `model := 'stub'`. It returns constants (0.5, the first option, the middle level) so it can never pass for a real answer. |
 | A Liquid AI key ([D1](https://docs.liquid.ai/lfm/models/decision-models)) | `export LIQUID_API_KEY=...`, then register `d1:free` (below). |
 | A TypeSafe key (Jev) | `export TYPESAFE_API_KEY=...`, then `decide_register_model('jev-latest', 'typesafe')`. |
-| A machine that can run a 2B model | Run [strands-decider](https://github.com/strands-labs/strands-decider) locally, no key: [Remote providers](#models-and-providers). |
+| A machine that can run a 2B model | Run [strands-decider](https://github.com/strands-labs/strands-decider) locally, no key: [Models and providers](#models-and-providers). |
 | An exported ONNX model | Run it inside DuckDB, offline: [Local models](#local-models). |
 
+On a fresh install the doctor says what is missing and the fix for each item:
+
+```
+┌───────────────────┬────────┬───────────────────────────────────────────────────────────────────────────┐
+│       item        │ status │                                  detail                                   │
+├───────────────────┼────────┼───────────────────────────────────────────────────────────────────────────┤
+│ default model     │ warn   │ no default model is set, so every call must name one with model := '<id>' │
+│ registered models │ warn   │ only the built-in test model 'stub' is registered (it returns constants)  │
+│ remote calls      │ ok     │ no remote models registered                                               │
+│ telemetry         │ ok     │ anonymous usage telemetry is off                                          │
+└───────────────────┴────────┴───────────────────────────────────────────────────────────────────────────┘
+```
+
+(plus a `fix` column with the statement to run for each warning; telemetry reads "on" unless you opted out).
+`SELECT model, ready, hint FROM decide_models();` lists every registered model, whether it can be called
+now, and why not.
+
 A hosted model sends the text you score to the provider, so it sits behind an explicit opt-in that is off
-by default. Register it once per session, then name it per call (`model := 'd1:free'`) or make it the
-default:
+by default. Register it once per database instance (registrations and settings are not stored: repeat them
+in each new process), then name it per call (`model := 'd1:free'`) or make it the default:
 
 ```sql
 SET anofox_decide_allow_remote = true;                 -- explicit opt-in: the text goes to the provider
@@ -61,11 +78,21 @@ returns a constant.
 
 ### 3. Decide
 
-A few support tickets (`examples/data/support_tickets.csv`), scored for three questions at once. This is
-real output from Liquid D1:
+Eight support tickets with known answers, scored for three questions at once. This is real output from
+Liquid D1, so it needs the model from step 2 (`SET anofox_decide_model = 'd1:free'`); on the `stub` you get
+the same columns filled with constants.
 
 ```sql
-CREATE TABLE tickets AS SELECT * FROM read_csv('examples/data/support_tickets.csv');  -- id, text, refund, team
+CREATE TABLE tickets AS SELECT * FROM (VALUES
+  (1, 'I was charged twice for my March invoice, please refund the extra 49 EUR.', true,  'billing'),
+  (2, 'The app crashes every time I open the export dialog on version 3.2.',       false, 'defect'),
+  (3, 'Thanks for the quick help yesterday, everything works now!',                false, 'other'),
+  (4, 'I want my money back, this product does not do what was advertised.',       true,  'billing'),
+  (5, 'Login button does nothing on Safari, error 500 in the console.',            false, 'defect'),
+  (6, 'Our invoice shows the wrong VAT rate; please issue a corrected one.',       false, 'billing'),
+  (7, 'Do you have an office in Munich? We would like to visit.',                  false, 'other'),
+  (8, 'Cancel my subscription and reimburse the unused months.',                   true,  'billing')
+) t(id, text, refund, team);                                  -- refund and team are the known answers
 
 CREATE TABLE scored AS
 SELECT id, text, refund,
@@ -96,14 +123,15 @@ Probabilities become actions with a threshold *you* pick, and the same table say
 ```sql
 SELECT id FROM scored WHERE p_refund >= 0.7;                       -- escalate to the refunds team
 
-SELECT decide_accuracy(p_refund, refund)    AS accuracy,           -- 1.0
-       decide_brier_score(p_refund, refund) AS brier,              -- 0.015  (lower is better)
+SELECT decide_accuracy(p_refund, refund)    AS accuracy,           -- 1.0     (with D1)
+       decide_brier_score(p_refund, refund) AS brier,              -- 0.015   (lower is better)
        decide_ece(p_refund, refund)         AS calibration_error   -- 0.067
 FROM scored;
 ```
 
 The complete, runnable version is [`examples/02_support_triage.sql`](examples/02_support_triage.sql); it
 starts on the `stub` so it runs offline, and the lines marked `REAL MODEL` switch it to a real one. The
+example files read their data from the repository (`examples/data/`), so run them from a clone of it; the
 other examples are listed in [`examples/`](examples/README.md).
 
 ---
@@ -306,9 +334,9 @@ Measured on 200 labelled tickets from the public Bitext customer-support dataset
 |---|---|---|---|---|
 | TypeSafe Jev (`typesafe`) | hosted API | 93.0% | 0.984 | 92.0% |
 | Laya multilingual | local, in-process | 92.0% | 0.970 | 62.0% |
-| Liquid D1 (`liquid`) | hosted API | 77.0% | 0.970 | 91.0% |
 | Laya typed-decisions | local, in-process | 88.5% | 0.978 | 76.0% |
 | strands-decider 2B (`strands`) | local server | 81.0% | 0.918 | 65.0% |
+| Liquid D1 (`liquid`) | hosted API | 77.0% | 0.970 | 91.0% |
 | Kev-0.8B (`systemone`) | local server | 70.5% | 0.850 | 44.0% |
 | Julia-1 | local, in-process | 29.5% | 0.407 | 37.5% |
 
@@ -317,7 +345,7 @@ strands-decider is conservative on refund (recall 48% at the 0.5 cut-off) and a 
 routes as well as Jev, but at the 0.5 cut-off over-predicts refunds (its ranking is fine, AUROC 0.970);
 Laya multilingual matches Jev on refund and is the best in-process model, with typed-decisions the best
 in-process router. This is English, template-generated data: a smoke test of relative strength, not a
-benchmark of your tickets, so evaluate on your own (`tools/eval` reproduces this run). Each local ONNX model
+benchmark of your tickets, so evaluate on your own (how to reproduce this run: [docs/EVALUATION.md](docs/EVALUATION.md#reproduce)). Each local ONNX model
 reproduces its upstream Python reference to within 5e-5 in probability on a small check set; the hosted
 models are called as-is.
 
@@ -354,8 +382,9 @@ longer than the model's limit is cut off (8192 tokens for `julia-1`, adjustable 
 
 ## Settings
 
-All settings are session-scoped (`SET name = value;`) and validated: a bad value fails with the allowed
-range, the default and an example.
+Settings apply to the whole database instance (`SET name = value;` affects every connection to it, and is
+gone when the process ends) and are validated: a bad value fails with the allowed range, the default and an
+example.
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -381,7 +410,7 @@ on Linux (amd64, arm64), macOS (arm64) and Windows (amd64) against DuckDB 1.5.5.
 
 | Provider | Models | Questions | Runs where |
 |---|---|---|---|
-| `stub` | deterministic placeholder (0.5 / first option) | `binary`, `choice`, `score` | in-process, for tests and demos |
+| `stub` | deterministic placeholder (0.5 / first option / middle level) | `binary`, `choice`, `score` | in-process, for tests and demos |
 | `typesafe` | TypeSafe Jev (`jev-latest`) | `binary`, `choice`, `score` | hosted API; opt-in via `anofox_decide_allow_remote` |
 | `liquid` | Liquid AI D1 (`d1:free`) | `binary`, `choice`, `score` | hosted API; same opt-in |
 | `systemone` | any System One compatible server, e.g. Kev | `binary`, `choice`, `score` | your endpoint (`https://`, or `http://` on loopback) |
@@ -459,10 +488,19 @@ or `DATAZOO_NO_BANNER=1`.
 ## License
 
 - **This extension's code:** MIT.
-- **Models:** the extension ships **no model weights and no graphs**. Hosted models (TypeSafe Jev, Liquid
-  AI D1) are used under their providers' terms and receive the text you score. strands-decider, Kev,
-  Julia-1 (SupersonicLabs) and Laya (convaiinnovations) are Apache 2.0 at the time of writing; check the
-  license of any checkpoint you export or serve yourself.
+- **Models:** the extension ships **no model weights and no graphs**, and never redistributes any. Check a
+  model's license before you build on it, especially one you export or serve yourself:
+
+| Model | Provider | License / terms | Where it runs |
+|---|---|---|---|
+| Jev | TypeSafe | the provider's API terms | hosted; receives the text you score |
+| D1 | Liquid AI | the provider's API terms | hosted; receives the text you score |
+| strands-decider | Strands Labs | Apache 2.0 | your machine, as a local server |
+| Kev | Jared Palmer | Apache 2.0 | your machine, as a local server |
+| Julia-1 | SupersonicLabs | Apache 2.0 | your machine, in-process |
+| Laya | ConvAI Innovations | Apache 2.0 | your machine, in-process |
+
+Licenses are as published by each project at the time of writing.
 
 ## Telemetry
 
@@ -487,12 +525,22 @@ Clone with submodules (`git clone --recurse-submodules`; they include the shared
 `datazoo-banner` libraries), then:
 
 ```bash
-make release                          # release build; ONNX Runtime built via vcpkg (the first build is slow)
-make release DECIDE_ORT_VCPKG=0 CMAKE_PREFIX_PATH=<ort-install>   # faster local build against an existing ONNX Runtime
+# vcpkg is required: vcpkg.json depends on openssl, and ONNX Runtime is built from the vcpkg overlay port.
+git clone https://github.com/microsoft/vcpkg && ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+export VCPKG_TOOLCHAIN_PATH=$PWD/vcpkg/scripts/buildsystems/vcpkg.cmake
+
+GEN=ninja make release                # release build; ONNX Runtime built via vcpkg (the first build is slow)
+GEN=ninja make release DECIDE_ORT_VCPKG=0 CMAKE_PREFIX_PATH=<ort-install>   # faster local build against an existing ONNX Runtime
 make test_release                     # offline suite: SQL tests + Catch2 (no network, no weights)
 make test-live                        # live TypeSafe + Liquid D1 tests; SKIP without TYPESAFE_API_KEY / LIQUID_API_KEY
 ./build/release/test/unittest test/sql/decide_contract.test       # a single file
 ```
+
+Without `VCPKG_TOOLCHAIN_PATH` the configure step stops with a cascade of CMake errors in which only the
+first line is the real cause (`Could not find toolchain file: .../vcpkg_installed//share/vcpkg/...`); the
+"no build program" and "compiler not set" lines after it are consequences, reported even when Ninja and the
+compilers are installed. You need CMake (3.19 or newer to build the bundled C++ unit tests), a C++17
+toolchain, and vcpkg.
 
 A locally built extension is unsigned: start DuckDB with `duckdb -unsigned` and
 `LOAD '/path/to/anofox_decide.duckdb_extension';`, or use the `duckdb` binary from `build/release`, which

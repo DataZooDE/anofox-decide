@@ -1,6 +1,7 @@
 -- examples/03_scoring_many_rows.sql
 -- Scoring a whole table with a hosted model: how many requests run at once, and what the shapes cost.
 -- Written against the stub so the file runs offline; the settings are what matter.
+-- Run from the repository root (the data path is relative to it).
 -- offline: yes (with the stub)
 
 LOAD anofox_decide;
