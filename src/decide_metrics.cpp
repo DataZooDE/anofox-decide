@@ -20,6 +20,7 @@
 
 #include "anofox_decide_banner.hpp"
 #include "anofox_function_alias.hpp"
+#include "decide_errors.hpp"
 #include "decide_function_docs.hpp"
 #include "decide_registration.hpp"
 #include "telemetry.hpp"
@@ -94,9 +95,12 @@ bool ValidPair(const char *func, const LogicalType &label_type, UnifiedVectorFor
 	}
 	double p = UnifiedVectorFormat::GetData<double>(prob_data)[pidx];
 	if (!std::isfinite(p) || p < 0.0 || p > 1.0) {
-		throw InvalidInputException("%s: probability must be a finite number in [0, 1] "
-		                            "(score labels with decide_probability over a registered model)",
-		                            func);
+		throw InvalidInputException(DecideMsg(
+		    func,
+		    "probability must be between 0 and 1, got " +
+		        (std::isnan(p) ? string("NaN") : (std::isinf(p) ? string("infinity") : std::to_string(p))),
+		    "the first argument must be a column of probabilities, not percents or logits (percent: p / 100.0; "
+		    "NaN: NULLIF(p, 'NaN'::DOUBLE))"));
 	}
 	int y;
 	switch (label_type.id()) {
@@ -106,9 +110,10 @@ bool ValidPair(const char *func, const LogicalType &label_type, UnifiedVectorFor
 	case LogicalTypeId::INTEGER: {
 		int32_t iv = UnifiedVectorFormat::GetData<int32_t>(label_data)[lidx];
 		if (iv != 0 && iv != 1) {
-			throw InvalidInputException("%s: integer labels must be 0 or 1 "
-			                            "(cast boolean outcomes, or clean the label column)",
-			                            func);
+			throw InvalidInputException(DecideMsg(
+			    func, "integer labels must be 0 or 1, got " + std::to_string(iv),
+			    string("use BOOLEAN outcomes or 0/1 integers, e.g. ") + func + "(p, y = 1) or " + func +
+			        "(p, (y > 0)::INTEGER)"));
 		}
 		y = iv;
 		break;
@@ -116,15 +121,17 @@ bool ValidPair(const char *func, const LogicalType &label_type, UnifiedVectorFor
 	case LogicalTypeId::BIGINT: {
 		int64_t iv = UnifiedVectorFormat::GetData<int64_t>(label_data)[lidx];
 		if (iv != 0 && iv != 1) {
-			throw InvalidInputException("%s: integer labels must be 0 or 1 "
-			                            "(cast boolean outcomes, or clean the label column)",
-			                            func);
+			throw InvalidInputException(DecideMsg(
+			    func, "integer labels must be 0 or 1, got " + std::to_string(iv),
+			    string("use BOOLEAN outcomes or 0/1 integers, e.g. ") + func + "(p, y = 1) or " + func +
+			        "(p, (y > 0)::INTEGER)"));
 		}
 		y = (int)iv;
 		break;
 	}
 	default:
-		throw InvalidInputException("%s: label must be BOOLEAN or an integer 0/1 column", func);
+		throw InvalidInputException(DecideMsg(func, "the label must be BOOLEAN or an integer 0/1 column",
+		                                      string("cast it, e.g. ") + func + "(p, (y = 'yes')) for text labels"));
 	}
 	prob_out = p;
 	label_out = y;

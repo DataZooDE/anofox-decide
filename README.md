@@ -17,6 +17,23 @@ SELECT decide_brier_score(p, y) FROM labeled;  -- + decide_ece / decide_accuracy
 SELECT * FROM decide_models();
 ```
 
+## First run
+
+There is no implicit model: a call that names no model (and with no `SET anofox_decide_model`) fails with
+instructions instead of quietly returning a constant, so a test model can never pass for a real answer. The
+fastest way to see where you stand:
+
+```sql
+SELECT * FROM decide_doctor();   -- ok / warn / fail per check, with the fix for each problem
+SELECT model, ready, hint FROM decide_models();   -- what is registered, whether it can be called, and why not
+```
+
+Typical first steps: register a model (see [Remote providers](#remote-providers) or
+[Local models](#local-models)), then name it per call (`model := 'jev-latest'`) or set it once
+(`SET anofox_decide_model = 'jev-latest'`). `model := 'stub'` is a built-in test model that returns constants
+(probability 0.5, the first option) for trying the SQL surface. `decide_unregister_model('id')` removes a model
+so it can be registered again with different settings.
+
 ## Remote providers
 
 Remote models send `state` to the provider's API, so they sit behind an
@@ -204,6 +221,30 @@ CI environments are auto-detected and telemetry is disabled there. The full
 list of what is collected is in [TELEMETRY.md](TELEMETRY.md). The load banner
 (once a day, terminal only, never in CI or pipes) is silenced with
 `SET datazoo_banner = false` or `DATAZOO_NO_BANNER=1`.
+
+## Troubleshooting
+
+Every error follows one shape, `<function>: <what went wrong>. Fix: <what to run>`, and echoes the value that
+caused it. Run `SELECT * FROM decide_doctor();` first when something does not work.
+
+| You see | It means | Do this |
+|---|---|---|
+| `no model selected` | the call names no model and no default is set | `decide_probability(..., model := '<id>')` or `SET anofox_decide_model = '<id>'`; register one first with `decide_register_model` |
+| `model '<id>' is not registered (given by ...)` | the id is a typo, or never registered, or removed | the message lists the registered ids and a close match; `SELECT * FROM decide_models()` |
+| `remote evaluation is disabled` | remote models send your text to an endpoint and are off by default | `SET anofox_decide_allow_remote = true;` |
+| `no API key for the ... provider` | no secret, setting or env var supplies a key | export the provider's variable (`LIQUID_API_KEY`, `TYPESAFE_API_KEY`) or `CREATE SECRET (TYPE anofox_decide, API_KEY '...', SCOPE '<host>')` |
+| `the graph file '...' does not exist` | the path is wrong; relative paths resolve against the DuckDB working directory | pass the full path of the exported `.onnx`; see [Local models](#local-models) |
+| `provider '<x>' takes no file paths` | a remote provider was given a path argument | remote providers take an options `MAP`: `decide_register_model('m', 'typesafe', MAP {'endpoint': 'https://host'})` |
+| `model '<id>' is already registered` | ids are unique per database instance | `decide_unregister_model('<id>')`, then register again |
+| `<setting>: must be between A and B, got X` | a setting is out of range | the message shows the default and an example `SET` |
+| `threshold must be between 0 and 1, got 70` | thresholds are fractions, not percents | use `0.7` for 70% |
+| `probability must be between 0 and 1` (metrics) | the first argument is not a probability | pass probabilities, not percents or logits (`p / 100.0`); NaN: `NULLIF(p, 'NaN'::DOUBLE)` |
+| `No function matches ... explicit type casts` | DuckDB's own message for argument types | cast the arguments (`x::VARCHAR`, `y = 1`); `decide_choice` options must be a list of strings `['a','b']` |
+
+NULL rules: a NULL state, question, option list or threshold gives a NULL result (no model is resolved and
+nothing is sent); a NULL `model` argument falls back to the session default. Local models print many
+`Schema error: ... already registered` lines on stderr the first time one loads; they come from the bundled
+ONNX Runtime and are harmless.
 
 ## Build & test
 

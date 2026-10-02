@@ -7,6 +7,7 @@
 #include "httplib.hpp"
 #include "yyjson.hpp"
 
+#include "decide_errors.hpp"
 #include "decide_remote.hpp"
 
 #include "duckdb/main/client_context.hpp"
@@ -127,6 +128,14 @@ const DecideRemoteProfile *DecideFindRemoteProfile(const string &provider) {
 	return nullptr;
 }
 
+vector<string> DecideRemoteProviderNames() {
+	vector<string> out;
+	for (auto &p : kRemoteProfiles) {
+		out.push_back(p.name);
+	}
+	return out;
+}
+
 string DecideRemoteProviderList() {
 	string out;
 	for (auto &p : kRemoteProfiles) {
@@ -187,19 +196,26 @@ bool DecideHostIsLoopback(const string &host) {
 //--- Pure JSON mapping -------------------------------------------------------
 
 void DecideValidateScoreLevels(const string &func_name, const string &id, const vector<string> &levels) {
+	// The single-question scalars use the internal id "q": do not leak it into the message.
+	const string subject = id == "q" ? string("the score levels") : "score question '" + id + "'";
+	static const char *example = "an ordered rubric, lowest first, e.g. ['poor','ok','great']";
 	if (levels.size() < DECIDE_MIN_SCORE_LEVELS || levels.size() > DECIDE_MAX_SCORE_LEVELS) {
-		throw InvalidInputException("%s: score question '%s' needs %d to %d levels (an ordered rubric), got %d",
-		                            func_name, id, (int)DECIDE_MIN_SCORE_LEVELS, (int)DECIDE_MAX_SCORE_LEVELS,
-		                            (int)levels.size());
+		throw InvalidInputException(DecideMsg(
+		    func_name, subject + " need" + (id == "q" ? "" : "s") + " " + std::to_string(DECIDE_MIN_SCORE_LEVELS) +
+		                   " to " + std::to_string(DECIDE_MAX_SCORE_LEVELS) + " level descriptions, got " +
+		                   std::to_string(levels.size()),
+		    string("pass ") + example));
 	}
 	std::set<string> seen;
-	for (auto &level : levels) {
-		if (level.empty()) {
-			throw InvalidInputException("%s: score question '%s' has an empty level description", func_name, id);
+	for (size_t i = 0; i < levels.size(); i++) {
+		if (levels[i].empty()) {
+			throw InvalidInputException(DecideMsg(func_name, subject + " has an empty description for level " +
+			                                                     std::to_string(i + 1),
+			                                      string("give every level a description: ") + example));
 		}
-		if (!seen.insert(level).second) {
-			throw InvalidInputException("%s: score question '%s' repeats the level '%s' (levels must be unique)",
-			                            func_name, id, level);
+		if (!seen.insert(levels[i]).second) {
+			throw InvalidInputException(DecideMsg(func_name, subject + " repeats the level '" + levels[i] + "'",
+			                                      "levels must be distinct descriptions, ordered lowest first"));
 		}
 	}
 }
@@ -761,6 +777,7 @@ DecideRemoteConfig DecideResolveConfig(ClientContext &context, const DecideRemot
 		if (reader.TryGetSecretKey("api_key", secret_key) && !secret_key.IsNull() &&
 		    !secret_key.ToString().empty()) {
 			cfg.api_key = secret_key.ToString();
+			cfg.key_source = "a stored secret (scope '" + cfg.host + "')";
 		}
 	}
 	if (cfg.api_key.empty() && target.provider == "typesafe") {
@@ -771,6 +788,7 @@ DecideRemoteConfig DecideResolveConfig(ClientContext &context, const DecideRemot
 		if (context.TryGetCurrentSetting("anofox_decide_api_key", key_v) && !key_v.IsNull() &&
 		    !key_v.ToString().empty()) {
 			cfg.api_key = key_v.ToString();
+			cfg.key_source = "the anofox_decide_api_key setting";
 		}
 	}
 	if (cfg.api_key.empty() && !target.key_env.empty()) {
@@ -779,6 +797,7 @@ DecideRemoteConfig DecideResolveConfig(ClientContext &context, const DecideRemot
 		const char *env = std::getenv(target.key_env.c_str());
 		if (env && *env) {
 			cfg.api_key = env;
+			cfg.key_source = "env var " + target.key_env;
 		}
 	}
 	if (cfg.api_key.empty() && *profile->env_key && DecideProfileTakesEnvKey(*profile, cfg.host)) {
@@ -789,6 +808,7 @@ DecideRemoteConfig DecideResolveConfig(ClientContext &context, const DecideRemot
 		const char *env = std::getenv(profile->env_key);
 		if (env && *env) {
 			cfg.api_key = env;
+			cfg.key_source = string("env var ") + profile->env_key;
 		}
 	}
 	if (cfg.api_key.empty() && !profile->requires_key) {

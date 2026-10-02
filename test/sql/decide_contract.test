@@ -30,13 +30,13 @@ SELECT decide_probability(NULL, 'A refund is requested.', model := 'stub') IS NU
 statement error
 SELECT decide_choice('The bill is wrong.', 'Primary issue?', [], model := 'stub')
 ----
-<REGEX>:.*non-empty option list.*
+<REGEX>:.*decide_choice: the options list is empty.*Fix: list the answers.*
 
 # NULL options are actionable errors, not silent NULLs.
 statement error
 SELECT decide_choice('The bill is wrong.', 'Primary issue?', [NULL, 'billing'], model := 'stub')
 ----
-<REGEX>:.*must not contain NULL.*
+<REGEX>:.*decide_choice: the options list contains NULL.*
 
 # Non-text option lists are rejected at bind time (standard DuckDB
 # no-match error suggesting an explicit cast); empty/NULL cases above get

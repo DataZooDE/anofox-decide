@@ -1,5 +1,7 @@
 #include "anofox_decide_banner.hpp"
+#include "decide_guard.hpp"
 #include "anofox_function_alias.hpp"
+#include "decide_errors.hpp"
 #include "decide_function_docs.hpp"
 #include "decide_registration.hpp"
 #include "telemetry.hpp"
@@ -30,23 +32,34 @@ struct DecideModelCache {
 	bool have = false;
 };
 
-DecideModelEntry RowEntry(DecideModelCache &cache, DataChunk &args, bool has_model_arg, idx_t model_idx, idx_t row,
-                          const string &def) {
+DecideModelEntry RowEntry(ClientContext &context, const char *function, DecideModelCache &cache, DataChunk &args,
+                          bool has_model_arg, idx_t model_idx, idx_t row, const string &def) {
 	string model = def;
+	bool from_setting = true;
 	if (has_model_arg) {
 		auto model_v = args.data[model_idx].GetValue(row);
 		if (!model_v.IsNull()) {
 			model = model_v.ToString();
+			from_setting = false;
 		}
 	}
 	if (cache.have && model == cache.last_model) {
 		return cache.last_entry;
 	}
-	auto entry = cache.registry->Lookup(model);
+	auto entry = DecideResolveModel(context, function, model, from_setting);
 	cache.last_model = model;
 	cache.last_entry = entry;
 	cache.have = true;
 	return entry;
+}
+
+// An empty question gives the model nothing to decide on.
+static void RequireQuestion(const char *function, const Value &question) {
+	if (question.ToString().empty()) {
+		throw InvalidInputException(DecideMsg(function, "the question is an empty string",
+		                                      string("pass the statement or question to decide, e.g. ") + function +
+		                                          "(state, 'A refund is requested.', model := '<id>')"));
+	}
 }
 
 // Single binary question through the shared evaluator (F6): P(question
@@ -82,7 +95,8 @@ void DecideProbabilityFun(DataChunk &args, ExpressionState &state, Vector &resul
 			result.SetValue(i, Value(LogicalType::DOUBLE));
 			continue;
 		}
-		auto entry = RowEntry(cache, args, has_model, 2, i, def);
+		RequireQuestion("decide_probability", question_v);
+		auto entry = RowEntry(context, "decide_probability", cache, args, has_model, 2, i, def);
 		double p = ScoreBinary(context, entry, state_v.ToString(), question_v.ToString());
 		result.SetValue(i, Value::DOUBLE(p));
 	}
@@ -113,16 +127,21 @@ void DecideScoreFun(DataChunk &args, ExpressionState &state, Vector &result) {
 		q.instruction = question_v.ToString();
 		for (auto &level : levels) {
 			if (level.IsNull()) {
-				throw InvalidInputException("decide_score levels must not contain NULL (give every level a "
-				                            "description, lowest first)");
+				throw InvalidInputException(DecideMsg("decide_score", "the levels list contains NULL",
+				                                      "give every level a description, lowest first, e.g. "
+				                                      "['low','medium','high']"));
 			}
 			q.options.push_back(level.ToString());
 		}
 		DecideValidateScoreLevels("decide_score", q.id, q.options);
-		auto entry = RowEntry(cache, args, has_model, 3, i, def);
+		RequireQuestion("decide_score", question_v);
+		auto entry = RowEntry(context, "decide_score", cache, args, has_model, 3, i, def);
 		auto answers = DecideEvaluate(context, entry, state_v.ToString(), {q});
 		if (!std::isfinite(answers[0].expected)) {
-			throw InvalidInputException("decide_score: model '%s' returned a non-finite score", entry.id);
+			throw InvalidInputException(DecideMsg(
+			    "decide_score", "model '" + entry.id + "' returned an invalid score (NaN or infinity)",
+			    "this is a problem on the model side: retry, or use another model (SELECT * FROM decide_doctor() "
+			    "checks the setup)"));
 		}
 		result.SetValue(i, Value::DOUBLE(answers[0].expected));
 	}
@@ -154,12 +173,14 @@ void DecideDecisionFun(DataChunk &args, ExpressionState &state, Vector &result) 
 			continue;
 		}
 		double threshold = RequireDecisionThreshold(threshold_v);
-		auto entry = RowEntry(cache, args, has_model, 3, i, def);
+		RequireQuestion("decide_decision", question_v);
+		auto entry = RowEntry(context, "decide_decision", cache, args, has_model, 3, i, def);
 		double p = ScoreBinary(context, entry, state_v.ToString(), question_v.ToString());
 		if (!std::isfinite(p)) {
-			throw InvalidInputException("decide_decision: model '%s' returned a non-finite probability "
-			                            "(decide_probability must be finite before thresholding)",
-			                            entry.id);
+			throw InvalidInputException(DecideMsg(
+			    "decide_decision", "model '" + entry.id + "' returned an invalid probability (NaN or infinity)",
+			    "this is a problem on the model side: retry, or use another model (SELECT * FROM decide_doctor() "
+			    "checks the setup)"));
 		}
 		result.SetValue(i, Value::BOOLEAN(p >= threshold));
 	}
@@ -191,16 +212,19 @@ void DecideChoiceFun(DataChunk &args, ExpressionState &state, Vector &result) {
 		}
 		auto options = ListValue::GetChildren(options_v);
 		if (options.empty()) {
-			throw InvalidInputException("decide_choice requires a non-empty option list with at least one option "
-			                            "(SET anofox_decide_max_questions controls batch limits, not option count)");
+			throw InvalidInputException(DecideMsg(
+			    "decide_choice", "the options list is empty",
+			    "list the answers to choose from, e.g. decide_choice(state, 'Which team?', "
+			    "['billing','defect','other'])"));
 		}
 		for (auto &o : options) {
 			if (o.IsNull()) {
-				throw InvalidInputException(
-				    "decide_choice options must not contain NULL (remove the NULL option or replace it with 'other')");
+				throw InvalidInputException(DecideMsg("decide_choice", "the options list contains NULL",
+				                                      "remove the NULL option or replace it with 'other'"));
 			}
 		}
-		auto entry = RowEntry(cache, args, has_model, 3, i, def);
+		RequireQuestion("decide_choice", question_v);
+		auto entry = RowEntry(context, "decide_choice", cache, args, has_model, 3, i, def);
 		DecideQuestion q;
 		q.id = "q";
 		q.kind = "choice";
@@ -233,7 +257,7 @@ void DecideManyFun(DataChunk &args, ExpressionState &state, Vector &result) {
 			result.SetValue(i, Value(LogicalType::VARCHAR));
 			continue;
 		}
-		auto entry = RowEntry(cache, args, has_model, 2, i, def);
+		auto entry = RowEntry(context, "decide_many", cache, args, has_model, 2, i, def);
 		auto questions = DecideParseManyQuestions(questions_v.ToString(), max_questions);
 		auto answers = DecideEvaluate(context, entry, state_v.ToString(), questions);
 		result.SetValue(i, Value(DecideBuildManyResultJson(answers[0].model.empty() ? entry.id : answers[0].model,
@@ -251,8 +275,9 @@ void DecideRegisterModelFun(DataChunk &args, ExpressionState &state, Vector &res
 	for (idx_t i = 0; i < count; i++) {
 		auto id_v = args.data[0].GetValue(i);
 		if (id_v.IsNull()) {
-			throw InvalidInputException("decide_register_model: id cannot be NULL "
-			                            "(pass a text id, e.g. SELECT decide_register_model('my-model', 'stub'))");
+			throw InvalidInputException(DecideMsg("decide_register_model", "the model id is NULL",
+			                                      "pass a text id, e.g. SELECT decide_register_model('my-model', "
+			                                      "'typesafe');"));
 		}
 		string provider = "stub";
 		string graph_path;
@@ -263,12 +288,16 @@ void DecideRegisterModelFun(DataChunk &args, ExpressionState &state, Vector &res
 			auto provider_v = args.data[1].GetValue(i);
 			auto map_v = args.data[2].GetValue(i);
 			if (provider_v.IsNull() || map_v.IsNull()) {
-				throw InvalidInputException("decide_register_model: provider and options cannot be NULL");
+				throw InvalidInputException(DecideMsg("decide_register_model", "the provider or the options MAP is NULL",
+				                                      "pass both, e.g. SELECT decide_register_model('m', 'liquid', "
+				                                      "MAP {'model': 'd1:free'});"));
 			}
 			for (auto &entry : MapValue::GetChildren(map_v)) {
 				auto &kv = StructValue::GetChildren(entry);
 				if (kv[0].IsNull() || kv[1].IsNull()) {
-					throw InvalidInputException("decide_register_model: option keys and values cannot be NULL");
+					throw InvalidInputException(DecideMsg("decide_register_model", "an option key or value is NULL",
+					                                      "every MAP entry needs a text key and value, e.g. "
+					                                      "MAP {'endpoint': 'https://host'}"));
 				}
 				auto key = kv[0].ToString();
 				auto value = kv[1].ToString();
@@ -283,9 +312,15 @@ void DecideRegisterModelFun(DataChunk &args, ExpressionState &state, Vector &res
 				} else if (key == "criteria") {
 					options.criteria = value;
 				} else {
-					throw InvalidInputException("decide_register_model: unknown option '%s' "
-					                            "(supported: endpoint, path, model, key_env, criteria)",
-					                            key);
+					string what = "unknown option '" + key + "'";
+					const string close = DecideDidYouMean(key, {"endpoint", "path", "model", "key_env", "criteria"});
+					if (!close.empty()) {
+						what += ". Did you mean '" + close + "'?";
+					}
+					throw InvalidInputException(DecideMsg(
+					    "decide_register_model", what,
+					    "supported options: endpoint, path, model, key_env, criteria, e.g. MAP {'endpoint': "
+					    "'https://host', 'model': 'my-model'} (API keys go in CREATE SECRET or an env var, not here)"));
 				}
 			}
 			DecideRegistry::Get(context)->RegisterModel(context, id_v.ToString(), provider_v.ToString(), "", "", "",
@@ -297,7 +332,10 @@ void DecideRegisterModelFun(DataChunk &args, ExpressionState &state, Vector &res
 		for (idx_t a = 1; a < args.ColumnCount() && a <= 4; a++) {
 			auto v = args.data[a].GetValue(i);
 			if (v.IsNull()) {
-				throw InvalidInputException("decide_register_model: %s cannot be NULL", names[a - 1]);
+				throw InvalidInputException(DecideMsg(
+				    "decide_register_model", string("the ") + names[a - 1] + " argument is NULL",
+				    "omit the argument, or pass a text value, e.g. SELECT decide_register_model('m', 'local', "
+				    "'/models/julia1.onnx', '/models/tokenizer/tokenizer.json');"));
 			}
 			if (a == 1) {
 				provider = v.ToString();
@@ -330,6 +368,37 @@ DECIDE_SCALAR_TELEMETRY_BIND(DecideScoreBind, "decide_score")
 DECIDE_SCALAR_TELEMETRY_BIND(DecideDecisionBind, "decide_decision")
 DECIDE_SCALAR_TELEMETRY_BIND(DecideManyBind, "decide_many")
 DECIDE_SCALAR_TELEMETRY_BIND(DecideRegisterModelBind, "decide_register_model")
+DECIDE_SCALAR_TELEMETRY_BIND(DecideUnregisterModelBind, "decide_unregister_model")
+
+// decide_unregister_model(id) -> BOOLEAN: remove a registered model (the built-in stub stays).
+void DecideUnregisterModelFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	ClientContext &context = state.GetContext();
+	auto registry = DecideRegistry::Get(context);
+	for (idx_t i = 0; i < args.size(); i++) {
+		auto id_v = args.data[0].GetValue(i);
+		if (id_v.IsNull()) {
+			throw InvalidInputException(DecideMsg("decide_unregister_model", "the model id is NULL",
+			                                      "pass the id to remove, e.g. SELECT decide_unregister_model('my-model');"));
+		}
+		const string id = id_v.ToString();
+		if (id == "stub") {
+			throw InvalidInputException(DecideMsg("decide_unregister_model",
+			                                      "the built-in 'stub' test model cannot be removed",
+			                                      "remove one of your own models; SELECT * FROM decide_models() lists them"));
+		}
+		if (!registry->Unregister(id)) {
+			string what = "model '" + id + "' is not registered";
+			const string close = DecideDidYouMean(id, registry->Ids());
+			if (!close.empty()) {
+				what += ". Did you mean '" + close + "'?";
+			}
+			throw InvalidInputException(DecideMsg("decide_unregister_model", what,
+			                                      "SELECT * FROM decide_models() lists the registered models"));
+		}
+		result.SetValue(i, Value::BOOLEAN(true));
+	}
+	result.SetVectorType(VectorType::FLAT_VECTOR);
+}
 
 // SPECIAL null handling: the BRD NULL contract (NULL state/question ->
 // NULL, actionable errors for empty/duplicate/invalid inputs) is implemented
@@ -345,11 +414,11 @@ ScalarFunction DecideScalar(string name, vector<LogicalType> args, LogicalType r
 
 } // namespace
 
-// DATAZOO_GUARD appends the issue-link hint to errors thrown from a function.
+// DECIDE_GUARD appends the issue-link hint to unexpected errors only (see decide_guard.hpp).
 // The argument-type list goes last so its commas fold into __VA_ARGS__.
 #define DECIDE_SCALAR(NAME, RET, FUN, BIND, ...)                                                                \
-	DecideScalar(NAME, vector<LogicalType> __VA_ARGS__, RET, DATAZOO_GUARD(ANOFOX_DECIDE_BANNER, FUN),          \
-	             DATAZOO_GUARD(ANOFOX_DECIDE_BANNER, BIND))
+	DecideScalar(NAME, vector<LogicalType> __VA_ARGS__, RET, DECIDE_GUARD(FUN),          \
+	             DECIDE_GUARD(BIND))
 
 void RegisterDecideScalars(ExtensionLoader &loader) {
 	const auto V = LogicalType::VARCHAR;
@@ -457,6 +526,17 @@ void RegisterDecideScalars(ExtensionLoader &loader) {
 		                 "SELECT decide_many('The bill is wrong.', '[{\"id\":\"refund\",\"kind\":\"binary\",\"instruction\":\"A refund is requested.\"}]');"},
 		                {{"state", "questions", "model"}, {V, V, V},
 		                 "SELECT decide_many(body, '[{\"id\":\"refund\",\"kind\":\"binary\",\"instruction\":\"A refund is requested.\"}]', model := 'jev-latest') FROM tickets;"}}));
+	}
+	{
+		ScalarFunctionSet set("anofox_decide_unregister_model");
+		set.AddFunction(DECIDE_SCALAR("anofox_decide_unregister_model", B, DecideUnregisterModelFun,
+		                              DecideUnregisterModelBind, {V}));
+		RegisterScalarFunctionSetWithAlias(
+		    loader, std::move(set), "decide_unregister_model",
+		    DecideDocs("Remove a registered model by id and return true, e.g. to re-register it with different "
+		               "settings. The built-in 'stub' test model cannot be removed. An unknown id raises an error "
+		               "that suggests a close match.",
+		               "models", {{{"id"}, {V}, "SELECT decide_unregister_model('my-model');"}}));
 	}
 	{
 		ScalarFunctionSet set("anofox_decide_register_model");

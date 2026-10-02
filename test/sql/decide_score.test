@@ -9,6 +9,10 @@ require anofox_decide
 statement ok
 LOAD anofox_decide
 
+# The stub is never an implicit default; tests choose it explicitly.
+statement ok
+SET anofox_decide_model = 'stub'
+
 # Stub: uniform over the levels, expected level = midpoint of the 0-based index.
 query I
 SELECT decide_score('Help! My payouts have been failing.', 'How frustrated is the writer?', ['calm','frustrated','angry'])
@@ -41,17 +45,17 @@ NULL	NULL	NULL
 statement error
 SELECT decide_score('x', 'y', ['only'])
 ----
-<REGEX>:.*decide_score.*needs 2 to 10 levels.*got 1.*
+<REGEX>:.*decide_score: the score levels need 2 to 10 level descriptions, got 1.*Fix: pass an ordered rubric.*
 
 statement error
 SELECT decide_score('x', 'y', ['a','b','c','d','e','f','g','h','i','j','k'])
 ----
-<REGEX>:.*needs 2 to 10 levels.*got 11.*
+<REGEX>:.*need 2 to 10 level descriptions, got 11.*
 
 statement error
 SELECT decide_score('x', 'y', [])
 ----
-<REGEX>:.*needs 2 to 10 levels.*got 0.*
+<REGEX>:.*need 2 to 10 level descriptions, got 0.*
 
 statement error
 SELECT decide_score('x', 'y', ['a','a'])
@@ -61,17 +65,17 @@ SELECT decide_score('x', 'y', ['a','a'])
 statement error
 SELECT decide_score('x', 'y', ['a',''])
 ----
-<REGEX>:.*empty level description.*
+<REGEX>:.*empty description for level 2.*
 
 statement error
 SELECT decide_score('x', 'y', ['a',NULL])
 ----
-<REGEX>:.*levels must not contain NULL.*
+<REGEX>:.*decide_score: the levels list contains NULL.*
 
 statement error
 SELECT decide_score('x', 'y', ['a','b'], 'no-such-model')
 ----
-<REGEX>:.*unknown model.*
+<REGEX>:.*model 'no-such-model' is not registered.*
 
 # Row-wise over a table, with the per-row model argument.
 query II
@@ -94,7 +98,7 @@ SELECT decide_many('Help!', '[{"id":"f","kind":"score","instruction":"How frustr
 statement error
 SELECT decide_many('Help!', '[{"id":"f","kind":"score","instruction":"How frustrated?","levels":["only"]}]')
 ----
-<REGEX>:.*needs 2 to 10 levels.*
+<REGEX>:.*needs 2 to 10 level descriptions.*
 
 statement error
 SELECT decide_many('Help!', '[{"id":"f","kind":"essay","instruction":"x"}]')

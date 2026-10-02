@@ -97,8 +97,15 @@ public:
 	                   const string &profile = "", const DecideRegisterOptions &options = DecideRegisterOptions());
 	//! Ordered snapshot for decide_models().
 	vector<DecideModelEntry> List();
-	//! Validated lookup for the scalar surface. Throws unknown-model error.
+	//! Validated lookup. Throws the unknown-model error (prefer DecideResolveModel, which
+	//! names the calling function and where the id came from).
 	DecideModelEntry Lookup(const string &id);
+	//! Non-throwing lookup.
+	bool TryLookup(const string &id, DecideModelEntry &out);
+	//! Remove a registered model; false when the id is not registered. The built-in stub stays.
+	bool Unregister(const string &id);
+	//! Registered ids in registry order (for messages).
+	vector<string> Ids();
 
 private:
 	void EnsureBuiltin();
@@ -118,8 +125,26 @@ DecideResult DecideStubScore(const std::string &state, const std::string &questi
 struct DecideQuestion;
 struct DecideAnswer;
 
-// Validated model default: anofox_decide_model setting, falling back to "stub".
+// The anofox_decide_model setting, or "" when it is unset. There is deliberately no fallback to
+// the built-in stub: a silent 0.5 from a test model must never pass for a real answer.
 string DecideDefaultModel(ClientContext &context);
+// Readiness of one registered model, shared by decide_models() and decide_doctor() so they cannot
+// disagree: ready=false carries what is wrong in `detail` and the exact next step in `fix`.
+struct DecideModelStatus {
+	bool ready = false;
+	string detail;
+	string fix;
+};
+DecideModelStatus DecideDescribeModel(ClientContext &context, const DecideModelEntry &entry);
+// Endpoint a remote model would call ("https://api.liquid.ai/decisions/v1/systemone"), from the
+// model's own options and its provider profile (not the legacy session setting); "" for non-remote.
+string DecideRemoteEndpointOf(const DecideModelEntry &entry);
+
+// Resolve a model id for `function`. An empty id from the setting raises the "no model selected"
+// guidance (how to choose and register one); an unregistered id raises an error that names the
+// source (the model argument or the setting), lists the registered ids and suggests a close match.
+DecideModelEntry DecideResolveModel(ClientContext &context, const string &function, const string &model,
+                                    bool from_setting);
 // Validated per-call question limit: anofox_decide_max_questions, default 100.
 idx_t DecideMaxQuestions(ClientContext &context);
 // Rejects entries with an unknown provider (names decide_models() as the fix).
@@ -141,7 +166,8 @@ double RequireThresholdValue(const Value &threshold, const char *func);
 // exactly as for read_csv. Check opens and closes (fail fast at
 // registration); Read returns the whole file. Policy denials propagate as
 // PermissionException; anything else becomes an actionable decide error.
-void DecideCheckLocalFile(ClientContext &context, const string &path, const char *role);
+// `role` is "graph", "tokenizer" or "laya config"; `hint` (optional) is appended to the guidance.
+void DecideCheckLocalFile(ClientContext &context, const string &path, const char *role, const string &hint = "");
 string DecideReadLocalFile(ClientContext &context, const string &path, const char *role);
 
 } // namespace anofox

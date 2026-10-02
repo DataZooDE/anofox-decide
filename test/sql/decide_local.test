@@ -15,7 +15,7 @@ LOAD anofox_decide
 statement error
 SELECT decide_register_model('nolocal', 'local')
 ----
-<REGEX>:.*graph path.*
+<REGEX>:.*local models need the path of an ONNX graph file.*
 
 query I
 SELECT decide_register_model('tiny-local', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json')

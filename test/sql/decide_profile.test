@@ -25,7 +25,7 @@ SELECT decide_register_model('prof-julia', 'local', 'test/fixtures/julia1_tiny.o
 statement error
 SELECT decide_register_model('prof-laya', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json', 'laya')
 ----
-<REGEX>:.*cannot open laya config file.*
+<REGEX>:.*the Laya config file '.*rl_agent_config.json' does not exist.*profile 'laya' needs rl_agent_config.json next to the graph.*
 
 # Unknown profile names the supported ones.
 statement error
@@ -37,10 +37,10 @@ SELECT decide_register_model('prof-bad', 'local', 'test/fixtures/julia1_tiny.onn
 statement error
 SELECT decide_register_model('prof-remote', 'typesafe', '', '', 'laya')
 ----
-<REGEX>:.*profile only applies to local models.*
+<REGEX>:.*profile 'laya' only applies to provider 'local', but the provider is 'typesafe'.*
 
 # NULL profile is an actionable error like the other arguments.
 statement error
 SELECT decide_register_model('prof-null', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json', NULL)
 ----
-<REGEX>:.*profile cannot be NULL.*
+<REGEX>:.*the profile argument is NULL.*

@@ -72,7 +72,7 @@ TEST_CASE("local session runs the tiny fixture graph", "[anofox_decide][local]")
 
 	SECTION("missing graph is actionable") {
 		REQUIRE_THROWS_WITH(DecideLocalSession::Open(*con.context, "test/fixtures/nope.onnx"),
-		                    Contains("cannot open graph file"));
+		                    Contains("the graph file 'test/fixtures/nope.onnx' does not exist"));
 	}
 	SECTION("empty batch refused") {
 		DecideLocalBatch empty;

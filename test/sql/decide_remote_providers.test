@@ -30,7 +30,7 @@ typesafe	remote
 statement error
 SELECT decide_register_model('kev-noendpoint', 'systemone')
 ----
-<REGEX>:.*needs an endpoint.*
+<REGEX>:.*provider 'systemone' needs the address of your server.*
 
 query I
 SELECT decide_register_model('kev-latest', 'systemone', MAP {'endpoint': 'http://127.0.0.1:8009', 'key_env': 'KEV_TEST_KEY'})
@@ -52,7 +52,7 @@ SELECT decide_register_model('bad-http', 'liquid', MAP {'endpoint': 'http://api.
 statement error
 SELECT decide_register_model('bad-path', 'liquid', MAP {'path': 'no-leading-slash'})
 ----
-<REGEX>:.*path must start with '/'.*
+<REGEX>:.*option 'path' must start with '/'.*
 
 statement error
 SELECT decide_register_model('bad-opt', 'liquid', MAP {'colour': 'blue'})
@@ -63,7 +63,7 @@ SELECT decide_register_model('bad-opt', 'liquid', MAP {'colour': 'blue'})
 statement error
 SELECT decide_register_model('opt-local', 'stub', MAP {'endpoint': 'https://x.example'})
 ----
-<REGEX>:.*only apply to remote providers.*
+<REGEX>:.*only applies to remote providers.*
 
 # Unknown providers list the supported ones, including the new remote ones.
 statement error
@@ -125,12 +125,12 @@ SELECT decide_register_model('jev-names', 'typesafe', MAP {'criteria': 'name'})
 statement error
 SELECT decide_register_model('bad-criteria', 'strands', MAP {'criteria': 'maybe'})
 ----
-<REGEX>:.*criteria must be 'null' or 'name'.*
+<REGEX>:.*option 'criteria' must be 'null' or 'name', got 'maybe'.*
 
 statement error
 SELECT decide_register_model('stub-criteria', 'stub', MAP {'criteria': 'name'})
 ----
-<REGEX>:.*only apply to remote providers.*
+<REGEX>:.*only applies to remote providers.*
 
 # A keyless provider needs no secret: the call reaches the allow_remote gate
 # (SET above) and then the network layer, instead of failing on a missing key.

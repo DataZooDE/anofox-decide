@@ -1,0 +1,281 @@
+# name: test/sql/decide_errors.test
+# description: Error guidance: no implicit stub model, descriptive unknown-model messages
+#              (source, registered ids, did-you-mean), no "Unexpected? Please report it"
+#              footer on user mistakes. Message convention:
+#              <function>: <what went wrong>. Fix: <copy-pasteable SQL>.
+# group: [anofox_decide]
+
+require anofox_decide
+
+statement ok
+LOAD anofox_decide
+
+# --- No model selected: every function explains how to choose one -------------
+
+statement error
+SELECT decide_probability('a', 'b')
+----
+<REGEX>:.*decide_probability: no model selected.*model := 'jev-latest'.*SET anofox_decide_model.*Registered now: 'stub' \(built-in test model: returns constants\).*decide_register_model.*
+
+statement error
+SELECT decide_choice('a', 'b', ['x','y'])
+----
+<REGEX>:.*decide_choice: no model selected.*
+
+statement error
+SELECT decide_score('a', 'b', ['x','y'])
+----
+<REGEX>:.*decide_score: no model selected.*
+
+statement error
+SELECT decide_decision('a', 'b', 0.5)
+----
+<REGEX>:.*decide_decision: no model selected.*
+
+statement error
+SELECT decide_many('a', '[{"id":"q","kind":"binary","instruction":"y"}]')
+----
+<REGEX>:.*decide_many: no model selected.*
+
+statement error
+SELECT * FROM decide_table('a', '[{"id":"q","kind":"binary","instruction":"y"}]')
+----
+<REGEX>:.*decide_table: no model selected.*
+
+# Resolution is lazy: NULL inputs need no model and return NULL.
+query I
+SELECT decide_probability(NULL, 'b')
+----
+NULL
+
+# A registered model is offered as the example once one exists.
+query I
+SELECT decide_register_model('my-local', 'stub')
+----
+1
+
+statement error
+SELECT decide_probability('a', 'b')
+----
+<REGEX>:.*model := 'my-local'.*Registered now: 'my-local' \(stub\).*
+
+# --- Choosing a model works three ways -----------------------------------------
+
+query I
+SELECT decide_probability('a', 'b', 'stub')
+----
+0.5
+
+query I
+SELECT decide_probability('a', 'b', model := 'stub')
+----
+0.5
+
+statement ok
+SET anofox_decide_model = 'stub'
+
+query I
+SELECT decide_probability('a', 'b')
+----
+0.5
+
+# --- Unknown model: source, registered ids, did-you-mean -----------------------
+
+statement error
+SELECT decide_probability('a', 'b', model := 'STUB')
+----
+<REGEX>:.*decide_probability: model 'STUB' is not registered \(given by the model argument\)\. Did you mean 'stub'\?.*Fix: use 'stub', or register it first.*Registered now:.*
+
+statement error
+SELECT decide_probability('a', 'b', model := 'my-locl')
+----
+<REGEX>:.*Did you mean 'my-local'\?.*
+
+statement ok
+SET anofox_decide_model = 'nope'
+
+statement error
+SELECT decide_probability('a', 'b')
+----
+<REGEX>:.*model 'nope' is not registered \(given by the anofox_decide_model setting\).*SET anofox_decide_model = '<id>'.*
+
+statement ok
+SET anofox_decide_model = 'stub'
+
+# An empty model argument is its own message.
+statement error
+SELECT decide_probability('a', 'b', model := '')
+----
+<REGEX>:.*the model argument is an empty string.*
+
+# decide_table: the model passed twice is ambiguous.
+statement error
+SELECT * FROM decide_table('a', '[{"id":"q","kind":"binary","instruction":"y"}]', 'stub', model := 'stub')
+----
+<REGEX>:.*decide_table: the model was given twice.*model := 'jev-latest'.*
+
+# --- The report-a-bug footer is for unexpected errors only ----------------------
+
+statement error
+SELECT decide_probability('a', 'b', model := 'nope')
+----
+<!REGEX>:.*Unexpected\? Please report it.*
+
+statement error
+SELECT decide_choice('a', 'b', ['only-one']) = 1 OR decide_score('a', 'b', ['x'])
+----
+<!REGEX>:.*Unexpected\? Please report it.*
+
+# --- Registration rules ------------------------------------------------------------
+
+statement error
+SELECT decide_register_model('x', 'typesafe', 'https://api.typesafe.ai')
+----
+<REGEX>:.*decide_register_model: provider 'typesafe' takes no file paths \(got 'https://api.typesafe.ai' as a path argument\).*MAP \{'endpoint'.*
+
+statement error
+SELECT decide_register_model('x', 'STUB')
+----
+<REGEX>:.*provider 'STUB' is not supported\. Did you mean 'stub'\?.*lower-case.*
+
+statement error
+SELECT decide_register_model('x', 'laya')
+----
+<REGEX>:.*'laya' is a local model profile, not a provider.*
+
+statement error
+SELECT decide_register_model('x', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json', 'laia')
+----
+<REGEX>:.*profile 'laia' is not supported\. Did you mean 'laya'\?.*argument order.*
+
+statement error
+SELECT decide_register_model('my-local', 'stub')
+----
+<REGEX>:.*model 'my-local' is already registered.*decide_unregister_model\('my-local'\).*
+
+statement error
+SELECT decide_register_model('x', 'liquid', MAP {'endpont': 'https://x'})
+----
+<REGEX>:.*unknown option 'endpont'\. Did you mean 'endpoint'\?.*
+
+# --- Unregister ---------------------------------------------------------------------
+
+query I
+SELECT decide_unregister_model('my-local')
+----
+1
+
+statement error
+SELECT decide_unregister_model('my-local')
+----
+<REGEX>:.*decide_unregister_model: model 'my-local' is not registered.*
+
+statement error
+SELECT decide_unregister_model('stub')
+----
+<REGEX>:.*the built-in 'stub' test model cannot be removed.*
+
+# After removing it, the id can be registered again.
+query I
+SELECT decide_register_model('my-local', 'stub')
+----
+1
+
+# --- Files: clear messages, role-correct hints ---------------------------------------
+
+statement error
+SELECT decide_register_model('f', 'local', '/no/such/graph.onnx', '/no/such/tok.json')
+----
+<REGEX>:.*decide_register_model: the graph file '/no/such/graph.onnx' does not exist\. Fix: pass the full path of the exported \.onnx file.*
+
+statement error
+SELECT decide_register_model('f', 'local', 'test/fixtures/julia1_tiny.onnx', '/no/such/tok.json')
+----
+<REGEX>:.*the tokenizer file '/no/such/tok.json' does not exist\. Fix: pass the tokenizer\.json that shipped with the model as the 4th argument.*
+
+statement error
+SELECT decide_register_model('f', 'local', 'test/fixtures/julia1_tiny.onnx')
+----
+<REGEX>:.*No tokenizer was given, so the default 'test/fixtures/tokenizer/tokenizer.json' next to the graph was tried\..*
+
+# A raw DuckDB IO JSON blob never reaches the user.
+statement error
+SELECT decide_register_model('f', 'local', '/no/such/graph.onnx', '/no/such/tok.json')
+----
+<!REGEX>:.*exception_type.*
+
+statement error
+SELECT decide_register_model('f', 'local', 'org/model-name', '/no/such/tok.json')
+----
+<REGEX>:.*looks like a Hugging Face model id.*
+
+# --- Settings: range, default and example ---------------------------------------------
+
+statement error
+SET anofox_decide_max_questions = 5000
+----
+<REGEX>:.*anofox_decide_max_questions: must be between 1 and 1000, got 5000 \(default 100\)\. Fix: SET anofox_decide_max_questions = 200;.*
+
+statement error
+SET anofox_decide_timeout_ms = 0
+----
+<REGEX>:.*anofox_decide_timeout_ms: must be a positive number of milliseconds, got 0 \(default 30000\)\..*
+
+statement error
+SET anofox_decide_allow_remote = NULL
+----
+<REGEX>:.*anofox_decide_allow_remote: the setting cannot be NULL.*
+
+statement error
+SET anofox_decide_max_length = 100
+----
+<REGEX>:.*anofox_decide_max_length: must be larger than anofox_decide_head_length \+ 4.*lower the head first.*
+
+statement error
+SET anofox_decide_endpoint = 'api.typesafe.ai'
+----
+<REGEX>:.*anofox_decide_endpoint: must start with https:// or http://, got 'api.typesafe.ai'.*per-model endpoint.*
+
+# --- Secrets ------------------------------------------------------------------------------
+
+statement error
+CREATE SECRET (TYPE anofox_decide)
+----
+<REGEX>:.*an anofox_decide secret needs an API_KEY.*getenv\('LIQUID_API_KEY'\).*
+
+# --- Thresholds, metrics, empty questions ----------------------------------------------------
+
+statement error
+SELECT decide_decision('a', 'b', 70)
+----
+<REGEX>:.*decide_decision: threshold must be between 0 and 1, got 70\. Fix: thresholds are fractions, not percents: use 0\.7 for 70%.*
+
+statement error
+SELECT decide_decision('a', 'b', 'NaN'::DOUBLE)
+----
+<REGEX>:.*threshold must be between 0 and 1, got NaN.*
+
+statement error
+SELECT decide_brier_score(p, y) FROM (VALUES (1.5, true)) v(p, y)
+----
+<REGEX>:.*decide_brier_score: probability must be between 0 and 1, got 1\.5.*percents or logits.*
+
+statement error
+SELECT decide_accuracy(p, y) FROM (VALUES (0.5, 2)) v(p, y)
+----
+<REGEX>:.*decide_accuracy: integer labels must be 0 or 1, got 2\. Fix: use BOOLEAN outcomes or 0/1 integers.*
+
+statement error
+SELECT decide_probability('a', '')
+----
+<REGEX>:.*decide_probability: the question is an empty string\. Fix: pass the statement or question to decide.*
+
+statement error
+SELECT decide_choice('a', 'b', [])
+----
+<REGEX>:.*decide_choice: the options list is empty\. Fix: list the answers to choose from.*
+
+statement error
+SELECT decide_score('a', 'b', ['x', 'x'])
+----
+<REGEX>:.*decide_score: the score levels repeats the level 'x'.*|.*decide_score: the score levels .*repeats the level 'x'.*

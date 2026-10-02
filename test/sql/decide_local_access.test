@@ -27,7 +27,7 @@ SELECT (decide_probability('The bill is wrong.', 'A refund is requested.', model
 statement error
 SELECT decide_register_model('acc-missing', 'local', 'no/such/model.onnx', 'no/such/tokenizer.json')
 ----
-<REGEX>:.*decide_register_model.*cannot open.*
+<REGEX>:.*decide_register_model: the graph file 'no/such/model.onnx' does not exist.*
 
 # Registered while open, never scored: used for the load-time check below.
 query I

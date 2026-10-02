@@ -1,5 +1,7 @@
 #include "anofox_decide_banner.hpp"
+#include "decide_guard.hpp"
 #include "anofox_function_alias.hpp"
+#include "decide_errors.hpp"
 #include "decide_function_docs.hpp"
 #include "decide_registration.hpp"
 #include "telemetry.hpp"
@@ -24,6 +26,8 @@ struct DecideModelsData : public TableFunctionData {
 
 struct DecideModelsGlobalState : public GlobalTableFunctionState {
 	vector<DecideModelEntry> rows;
+	vector<DecideModelStatus> status;
+	string default_model;
 	idx_t offset = 0;
 };
 
@@ -40,6 +44,19 @@ unique_ptr<FunctionData> DecideModelsBind(ClientContext &context, TableFunctionB
 	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("path");
 	return_types.emplace_back(LogicalType::VARCHAR);
+	// Appended after the original four so existing SELECT * column order is unchanged.
+	names.emplace_back("is_default");
+	return_types.emplace_back(LogicalType::BOOLEAN);
+	names.emplace_back("ready");
+	return_types.emplace_back(LogicalType::BOOLEAN);
+	names.emplace_back("hint");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("profile");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("endpoint");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("wire_model");
+	return_types.emplace_back(LogicalType::VARCHAR);
 	return make_uniq<DecideModelsData>();
 }
 
@@ -51,6 +68,10 @@ unique_ptr<GlobalTableFunctionState> DecideModelsInitGlobal(ClientContext &conte
 	// pattern): rows are stable for the scan even if later statements
 	// register more models.
 	gstate->rows = DecideRegistry::Get(context)->List();
+	gstate->default_model = DecideDefaultModel(context);
+	for (auto &row : gstate->rows) {
+		gstate->status.push_back(DecideDescribeModel(context, row));
+	}
 	return gstate;
 }
 
@@ -64,10 +85,140 @@ void DecideModelsScan(ClientContext &context, TableFunctionInput &data, DataChun
 		output.SetValue(1, row_count, Value(row.provider));
 		output.SetValue(2, row_count, Value(row.mode));
 		output.SetValue(3, row_count, Value(row.graph_path));
+		auto &status = gstate.status[gstate.offset];
+		output.SetValue(4, row_count, Value::BOOLEAN(!gstate.default_model.empty() && row.id == gstate.default_model));
+		output.SetValue(5, row_count, Value::BOOLEAN(status.ready));
+		output.SetValue(6, row_count,
+		                Value(status.fix.empty() ? status.detail : status.detail + ". Fix: " + status.fix));
+		output.SetValue(7, row_count, row.provider == "local" ? Value(row.profile) : Value(LogicalType::VARCHAR));
+		auto endpoint = DecideRemoteEndpointOf(row);
+		output.SetValue(8, row_count, endpoint.empty() ? Value(LogicalType::VARCHAR) : Value(endpoint));
+		output.SetValue(9, row_count,
+		                endpoint.empty() ? Value(LogicalType::VARCHAR)
+		                                 : Value(row.wire_model.empty() ? row.id : row.wire_model));
 		gstate.offset++;
 		row_count++;
 	}
 	output.SetCardinality(row_count);
+}
+
+//===----------------------------------------------------------------------===//
+// decide_doctor() — one place to see whether the setup is ready, with the fix per problem.
+//===----------------------------------------------------------------------===//
+
+struct DecideDoctorRow {
+	string item;
+	string status; // ok | warn | fail
+	string detail;
+	string fix;
+};
+
+struct DecideDoctorData : public TableFunctionData {};
+
+struct DecideDoctorGlobalState : public GlobalTableFunctionState {
+	vector<DecideDoctorRow> rows;
+	idx_t offset = 0;
+};
+
+unique_ptr<FunctionData> DecideDoctorBind(ClientContext &context, TableFunctionBindInput &input,
+                                          vector<LogicalType> &return_types, vector<string> &names) {
+	(void)context;
+	(void)input;
+	PostHogTelemetry::Instance().RecordFunctionCall("decide_doctor");
+	for (auto n : {"item", "status", "detail", "fix"}) {
+		names.emplace_back(n);
+		return_types.emplace_back(LogicalType::VARCHAR);
+	}
+	return make_uniq<DecideDoctorData>();
+}
+
+unique_ptr<GlobalTableFunctionState> DecideDoctorInitGlobal(ClientContext &context, TableFunctionInitInput &input) {
+	(void)input;
+	auto gstate = make_uniq<DecideDoctorGlobalState>();
+	auto &rows = gstate->rows;
+	auto registry = DecideRegistry::Get(context);
+	auto entries = registry->List();
+
+	// 1. Default model.
+	const string def = DecideDefaultModel(context);
+	DecideModelEntry def_entry;
+	if (def.empty()) {
+		rows.push_back({"default model", "warn",
+		                "no default model is set, so every call must name one with model := '<id>'",
+		                "SET anofox_decide_model = '<id>';  (ids: SELECT model FROM decide_models())"});
+	} else if (!registry->TryLookup(def, def_entry)) {
+		rows.push_back({"default model", "fail", "anofox_decide_model is '" + def + "' but no such model is registered",
+		                "register it (SELECT decide_register_model('" + def + "', ...)) or SET anofox_decide_model to "
+		                "a registered id"});
+	} else {
+		rows.push_back({"default model", "ok", "'" + def + "' (" + def_entry.provider + ")", ""});
+	}
+
+	// 2. Registered models.
+	size_t real_models = 0;
+	bool any_remote = false;
+	for (auto &e : entries) {
+		real_models += e.provider != "stub";
+		any_remote = any_remote || e.mode == "remote";
+	}
+	if (real_models == 0) {
+		rows.push_back({"registered models", "warn",
+		                "only the built-in test model 'stub' is registered (it returns constants)",
+		                "SELECT decide_register_model('jev-latest', 'typesafe'); for a hosted model, or register a "
+		                "local one (see https://github.com/DataZooDE/anofox-decide#local-models)"});
+	} else {
+		rows.push_back({"registered models", "ok", std::to_string(real_models) + " real model(s) registered", ""});
+	}
+
+	// 3. Remote opt-in.
+	Value allow_v;
+	bool allow = false;
+	if (context.TryGetCurrentSetting("anofox_decide_allow_remote", allow_v) && !allow_v.IsNull()) {
+		allow = BooleanValue::Get(allow_v.DefaultCastAs(LogicalType::BOOLEAN));
+	}
+	if (!any_remote) {
+		rows.push_back({"remote calls", "ok", "no remote models registered", ""});
+	} else if (allow) {
+		rows.push_back({"remote calls", "ok", "anofox_decide_allow_remote is on (text is sent to the model endpoints)", ""});
+	} else {
+		rows.push_back({"remote calls", "warn", "anofox_decide_allow_remote is off: remote models cannot be called",
+		                "SET anofox_decide_allow_remote = true;"});
+	}
+
+	// 4. One row per real model, from the same readiness check as decide_models().
+	for (auto &e : entries) {
+		if (e.provider == "stub") {
+			continue;
+		}
+		auto status = DecideDescribeModel(context, e);
+		rows.push_back({"model '" + e.id + "'", status.ready ? "ok" : "fail", status.detail, status.fix});
+	}
+
+	// 5. Telemetry state (informational).
+	Value tel_v;
+	bool tel = false;
+	if (context.TryGetCurrentSetting("anofox_telemetry_enabled", tel_v) && !tel_v.IsNull()) {
+		tel = BooleanValue::Get(tel_v.DefaultCastAs(LogicalType::BOOLEAN));
+	}
+	rows.push_back({"telemetry", "ok",
+	                string("anonymous usage telemetry is ") + (tel ? "on (function names only; see TELEMETRY.md)" : "off"),
+	                tel ? "SET anofox_telemetry_enabled = false;  (or export DATAZOO_DISABLE_TELEMETRY=1)" : ""});
+	return gstate;
+}
+
+void DecideDoctorScan(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
+	(void)context;
+	auto &gstate = data.global_state->Cast<DecideDoctorGlobalState>();
+	idx_t count = 0;
+	while (gstate.offset < gstate.rows.size() && count < STANDARD_VECTOR_SIZE) {
+		auto &row = gstate.rows[gstate.offset++];
+		output.SetValue(0, count, Value(row.item));
+		output.SetValue(1, count, Value(row.status));
+		output.SetValue(2, count, Value(row.detail));
+		output.SetValue(3, count, row.fix.empty() ? Value(LogicalType::VARCHAR) : Value(row.fix));
+		count++;
+	}
+	output.SetCardinality(count);
 }
 
 //===----------------------------------------------------------------------===//
@@ -91,6 +242,7 @@ struct DecideTableData : public TableFunctionData {
 	string state;
 	vector<DecideQuestion> questions;
 	string model;
+	bool model_from_setting = true;
 	bool empty = false;
 	// Per-row (lateral) path: inputs arrive per outer row instead.
 	bool per_row = false;
@@ -137,13 +289,26 @@ void DecideTableColumns(vector<LogicalType> &return_types, vector<string> &names
 	return_types.emplace_back(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::DOUBLE));
 }
 
-string TableBindModel(ClientContext &context, TableFunctionBindInput &input) {
+// Model id for a constant-argument call and whether it came from the setting (for error text).
+// Passing the model twice (3rd argument and model :=) is ambiguous and rejected.
+string TableBindModel(ClientContext &context, TableFunctionBindInput &input, bool &from_setting) {
 	auto nit = input.named_parameters.find("model");
-	if (nit != input.named_parameters.end() && !nit->second.IsNull()) {
+	const bool has_named = nit != input.named_parameters.end() && !nit->second.IsNull();
+	const bool has_positional = input.inputs.size() > 2 && !input.inputs[2].IsNull();
+	if (has_named && has_positional) {
+		throw BinderException(DecideMsg("decide_table", "the model was given twice (as the 3rd argument and as "
+		                                                "model :=)",
+		                                "pass it once, e.g. decide_table(state, questions, model := 'jev-latest')"));
+	}
+	from_setting = false;
+	if (has_named) {
 		return nit->second.ToString();
 	}
-	auto model_v = input.inputs.size() > 2 ? input.inputs[2] : Value(LogicalType::VARCHAR);
-	return model_v.IsNull() ? DecideDefaultModel(context) : model_v.ToString();
+	if (has_positional) {
+		return input.inputs[2].ToString();
+	}
+	from_setting = true;
+	return DecideDefaultModel(context);
 }
 
 unique_ptr<FunctionData> DecideTableBind(ClientContext &context, TableFunctionBindInput &input,
@@ -177,7 +342,7 @@ unique_ptr<FunctionData> DecideTableBind(ClientContext &context, TableFunctionBi
 	// Fail fast at bind: bad question JSON is a binder-time error, same as
 	// decide_many raising before any provider I/O.
 	data->questions = DecideParseManyQuestions(questions_v.ToString(), DecideMaxQuestions(context), "decide_table");
-	data->model = TableBindModel(context, input);
+	data->model = TableBindModel(context, input, data->model_from_setting);
 	return data;
 }
 
@@ -187,7 +352,7 @@ unique_ptr<GlobalTableFunctionState> DecideTableInitGlobal(ClientContext &contex
 	if (bind.empty || bind.per_row) {
 		return gstate;
 	}
-	auto entry = DecideRegistry::Get(context)->Lookup(bind.model);
+	auto entry = DecideResolveModel(context, "decide_table", bind.model, bind.model_from_setting);
 	gstate->model = entry.id;
 	gstate->answers = DecideEvaluate(context, entry, bind.state, bind.questions);
 	return gstate;
@@ -278,14 +443,16 @@ OperatorResultType DecideTableInOut(ExecutionContext &context, TableFunctionInpu
 			auto questions =
 			    DecideParseManyQuestions(questions_v.ToString(), max_questions, "decide_table");
 			string model = def;
+			bool from_setting = true;
 			if (bind.has_model_arg) {
 				auto model_v = input.GetValue(2, lstate.input_row);
 				if (!model_v.IsNull()) {
 					model = model_v.ToString();
+					from_setting = false;
 				}
 			}
 			if (!lstate.have_entry || model != lstate.last_model) {
-				lstate.last_entry = DecideRegistry::Get(client)->Lookup(model);
+				lstate.last_entry = DecideResolveModel(client, "decide_table", model, from_setting);
 				lstate.last_model = model;
 				lstate.have_entry = true;
 			}
@@ -316,10 +483,21 @@ OperatorResultType DecideTableInOut(ExecutionContext &context, TableFunctionInpu
 
 void RegisterDecideTableFunctions(ExtensionLoader &loader) {
 	const auto V = LogicalType::VARCHAR;
+	{
+		TableFunction func("anofox_decide_doctor", {}, DECIDE_GUARD(DecideDoctorScan),
+		                   DECIDE_GUARD(DecideDoctorBind), DecideDoctorInitGlobal);
+		RegisterTableFunctionWithAlias(
+		    loader, std::move(func), "decide_doctor",
+		    DecideDocs("Check whether the setup is ready and say how to fix what is not: the default model, the "
+		               "registered models, the remote opt-in, one row per registered model (files readable, API key "
+		               "found and from where, endpoint) and the telemetry state. Columns: item, status "
+		               "(ok / warn / fail), detail, fix. Run it first when a call does not work.",
+		               "models", {{{}, {}, "SELECT * FROM decide_doctor();"}}));
+	}
 	// Primary names are anofox_decide_*; decide_* are aliases (tabfm convention).
 	{
-		TableFunction func("anofox_decide_models", {}, DATAZOO_GUARD(ANOFOX_DECIDE_BANNER, DecideModelsScan),
-		                   DATAZOO_GUARD(ANOFOX_DECIDE_BANNER, DecideModelsBind), DecideModelsInitGlobal);
+		TableFunction func("anofox_decide_models", {}, DECIDE_GUARD(DecideModelsScan),
+		                   DECIDE_GUARD(DecideModelsBind), DecideModelsInitGlobal);
 		RegisterTableFunctionWithAlias(
 		    loader, std::move(func), "decide_models",
 		    DecideDocs("List the models registered on this database instance (model id, provider, mode "
@@ -329,16 +507,16 @@ void RegisterDecideTableFunctions(ExtensionLoader &loader) {
 	}
 	{
 		TableFunctionSet set("anofox_decide_table");
-		TableFunction table_2({V, V}, DATAZOO_GUARD(ANOFOX_DECIDE_BANNER, DecideTableScan),
-		                      DATAZOO_GUARD(ANOFOX_DECIDE_BANNER, DecideTableBind), DecideTableInitGlobal,
+		TableFunction table_2({V, V}, DECIDE_GUARD(DecideTableScan),
+		                      DECIDE_GUARD(DecideTableBind), DecideTableInitGlobal,
 		                      DecideTableInitLocal);
-		table_2.in_out_function = DATAZOO_GUARD(ANOFOX_DECIDE_BANNER, DecideTableInOut);
+		table_2.in_out_function = DECIDE_GUARD(DecideTableInOut);
 		table_2.named_parameters["model"] = V;
 		set.AddFunction(table_2);
-		TableFunction table_3({V, V, V}, DATAZOO_GUARD(ANOFOX_DECIDE_BANNER, DecideTableScan),
-		                      DATAZOO_GUARD(ANOFOX_DECIDE_BANNER, DecideTableBind), DecideTableInitGlobal,
+		TableFunction table_3({V, V, V}, DECIDE_GUARD(DecideTableScan),
+		                      DECIDE_GUARD(DecideTableBind), DecideTableInitGlobal,
 		                      DecideTableInitLocal);
-		table_3.in_out_function = DATAZOO_GUARD(ANOFOX_DECIDE_BANNER, DecideTableInOut);
+		table_3.in_out_function = DECIDE_GUARD(DecideTableInOut);
 		table_3.named_parameters["model"] = V;
 		set.AddFunction(table_3);
 		RegisterTableFunctionSetWithAlias(
