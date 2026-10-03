@@ -576,7 +576,7 @@ example.
 
 ## Status & scope
 
-The extension is calendar-versioned (`2026.10.03` is the third of October 2026) and is built and tested
+The extension is calendar-versioned (`2026.10.04` is the fourth of October 2026) and is built and tested
 on Linux (amd64, arm64), macOS (arm64) and Windows (amd64) against DuckDB 1.5.6. What works today:
 
 | Provider | Models | Questions | Runs where |
