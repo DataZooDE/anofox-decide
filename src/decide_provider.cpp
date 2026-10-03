@@ -3,6 +3,7 @@
 #include "decide_registration.hpp"
 #include "decide_remote.hpp"
 #include "decide_local_nli.hpp"
+#include "decide_local_validate.hpp"
 
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/common/exception.hpp"
@@ -272,11 +273,6 @@ void DecideRegistry::RegisterModel(ClientContext &context, const string &id, con
 			tokenizer_hint = "No tokenizer was given, so the default '" + entry.tokenizer_path +
 			                 "' next to the graph was tried.";
 		}
-		// Fail fast (F4 decision): open both files through DuckDB's
-		// filesystem now — missing paths and policy denials surface here,
-		// not at first scoring.
-		DecideCheckLocalFile(context, entry.graph_path, "graph");
-		DecideCheckLocalFile(context, entry.tokenizer_path, "tokenizer", tokenizer_hint);
 		if (!profile.empty()) {
 			entry.profile = profile;
 		}
@@ -285,8 +281,11 @@ void DecideRegistry::RegisterModel(ClientContext &context, const string &id, con
 			auto slash = graph_path.find_last_of("/\\");
 			string dir = (slash == string::npos) ? "." : graph_path.substr(0, slash);
 			entry.config_path = dir + "/rl_agent_config.json";
-			DecideCheckLocalFile(context, entry.config_path, "laya config");
 		}
+		// Fail fast (F4 decision): missing paths, policy denials and files that are not what they claim to be
+		// (a weights file as graph, a Unigram tokenizer, a Laya config without its keys) surface here, not at
+		// first scoring.
+		DecideValidateLocalFiles(context, entry, fn, tokenizer_hint, !profile.empty());
 	}
 	models[id] = entry;
 }
@@ -472,16 +471,17 @@ DecideModelStatus DecideDescribeModel(ClientContext &context, const DecideModelE
 	}
 	if (entry.provider == "local") {
 		try {
-			DecideCheckLocalFile(context, entry.graph_path, "graph");
-			DecideCheckLocalFile(context, entry.tokenizer_path, "tokenizer");
-			if (!entry.config_path.empty()) {
-				DecideCheckLocalFile(context, entry.config_path, "laya config");
-			}
+			// The same validation as registration, so decide_models() and decide_doctor() never say "ready"
+			// for files that registration would reject.
+			DecideValidateLocalFiles(context, entry, "decide_doctor");
 			status.ready = true;
-			status.detail = "ready: files are readable; the graph loads on the first call (seconds for large models)";
+			status.detail = "ready: the graph is not a weights file or text, the tokenizer and config parse; the graph "
+			                "loads on the first call (seconds for large models)";
 		} catch (const std::exception &e) {
 			status.detail = DecideCleanExceptionMessage(e);
-			status.fix = "check the paths (relative paths resolve against the DuckDB working directory)";
+			if (status.detail.find(" Fix: ") == string::npos) {
+				status.fix = "check the paths (relative paths resolve against the DuckDB working directory)";
+			}
 		}
 		return status;
 	}
@@ -496,7 +496,7 @@ static vector<DecideAnswer> DecideEvaluateRaw(ClientContext &context, const Deci
 		return DecideRemoteEvaluate(context, state, questions, TargetOf(entry), function);
 	}
 	if (entry.provider == "local") {
-		return DecideLocalScore(context, entry, state, questions);
+		return DecideLocalScore(context, entry, state, questions, function);
 	}
 	vector<DecideAnswer> out;
 	for (auto &q : questions) {

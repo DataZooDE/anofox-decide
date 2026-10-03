@@ -14,6 +14,23 @@ All notable changes to `anofox_decide` are documented here. The format follows
   a 401 names both causes Cloudflare cannot tell apart (token and account id). Measured on the 200-ticket
   evaluation: `clef` 85.0% refund and 88.0% routing, `clef-flash` 70.0% and 78.5% (see `docs/EVALUATION.md`).
   Images are not supported. `make test-live` runs a live Cloudflare test when both variables are set.
+- `decide_token_count(text[, model])` returns how many tokens a text has for a local model, so you can find the
+  rows that do not fit its window. Hosted and stub models raise an error that says so.
+- `anofox_decide_on_truncate` (`'error'` by default, or `'ignore'`) for local models.
+
+### Changed
+- **Local models no longer cut text silently.** Text, question or options that do not fit the model's window
+  now raise an error that says how many tokens would be ignored and for which question; set
+  `anofox_decide_on_truncate = 'ignore'` for the old behaviour. Laya models take their limits from
+  `rl_agent_config.json` and the message says so. (Before, the cut was silent, and an over-long option was never
+  reported at all.)
+- Local scoring errors use the public vocabulary (`binary`, not `noul`), name the function you called and the
+  question, and no longer mention internal rules.
+- **Registration checks local files deeper than "can be opened".** A weights file, text, JSON, HTML, zip or pickle
+  as the graph, a tokenizer that is not BPE (for example Unigram), and a Laya config without its keys are rejected
+  at `decide_register_model` with a message that names the problem; a `rl_agent_config.json` next to a graph
+  registered without a profile is reported as a probable Laya checkpoint. `decide_models()` and
+  `decide_doctor()` use the same checks, so they no longer say `ready` for files registration would reject.
 
 ## [2026.10.03] - 2026-10-03
 
