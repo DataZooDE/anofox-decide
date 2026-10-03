@@ -14,6 +14,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <mutex>
 #include <sstream>
 #include <thread>
@@ -23,6 +24,23 @@ using namespace duckdb::anofox;
 using Catch::Matchers::Contains;
 
 namespace {
+
+// setenv / unsetenv do not exist on MSVC.
+void SetEnv(const char *name, const char *value) {
+#ifdef _WIN32
+	_putenv_s(name, value);
+#else
+	setenv(name, value, 1);
+#endif
+}
+
+void UnsetEnv(const char *name) {
+#ifdef _WIN32
+	_putenv_s(name, ""); // an empty value removes the variable
+#else
+	unsetenv(name);
+#endif
+}
 
 const char *ACCOUNT = "0123456789abcdef0123456789abcdef";
 
@@ -76,8 +94,8 @@ struct Env {
 	Connection con;
 	Env() : db(nullptr), con(db) {
 		db.LoadStaticExtension<AnofoxDecideExtension>();
-		setenv("DECIDE_TEST_CF_TOKEN", "cf-test-token", 1);
-		unsetenv("CLOUDFLARE_ACCOUNT_ID");
+		SetEnv("DECIDE_TEST_CF_TOKEN", "cf-test-token");
+		UnsetEnv("CLOUDFLARE_ACCOUNT_ID");
 	}
 	// The remote opt-in is checked by DecideRemotePrepare before the config is resolved; tests resolve directly.
 	DecideRemoteConfig Resolve(const DecideRemoteTarget &target, const char *function) {
@@ -231,13 +249,13 @@ TEST_CASE("cloudflare: the account id comes from the option, then the environmen
 	WorkersAiServer server(200, Fixture("success_clef_three.json"));
 	Env env;
 	// from the environment
-	setenv("CLOUDFLARE_ACCOUNT_ID", "fedcba9876543210fedcba9876543210", 1);
+	SetEnv("CLOUDFLARE_ACCOUNT_ID", "fedcba9876543210fedcba9876543210");
 	auto from_env = env.Resolve(env.Target(server, "clef", ""), "decide_probability");
 	REQUIRE_THAT(from_env.path, Contains("/accounts/fedcba9876543210fedcba9876543210/"));
 	// the option wins over the environment
 	auto from_option = env.Resolve(env.Target(server), "decide_probability");
 	REQUIRE_THAT(from_option.path, Contains(string("/accounts/") + ACCOUNT + "/"));
-	unsetenv("CLOUDFLARE_ACCOUNT_ID");
+	UnsetEnv("CLOUDFLARE_ACCOUNT_ID");
 	// missing
 	auto missing = Message([&]() { env.Resolve(env.Target(server, "clef", ""), "decide_probability"); });
 	REQUIRE_THAT(missing, Contains("decide_probability: no Cloudflare account id for model 'clef'"));
