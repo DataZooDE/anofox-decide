@@ -19,11 +19,14 @@ def main(argv: list[str] | None = None) -> int:
     export_p.add_argument("--weights", required=True)
     export_p.add_argument("--out", required=True)
     export_p.add_argument("--opset", type=int, default=17)
+    export_p.add_argument("--weight-free", action="store_true")
+    export_p.add_argument("--arch", default="julia-1")
     args = parser.parse_args(argv)
     if args.cmd == "inspect":
         return inspect_mod.main(["--repo", args.repo, "--out", args.out])
+    extra = (["--weight-free"] if args.weight_free else []) + ["--arch", args.arch]
     return export_mod.main(
-        ["--spec", args.spec, "--weights", args.weights, "--out", args.out, "--opset", str(args.opset)]
+        ["--spec", args.spec, "--weights", args.weights, "--out", args.out, "--opset", str(args.opset)] + extra
     )
 
 
