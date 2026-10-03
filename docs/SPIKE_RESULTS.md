@@ -48,3 +48,27 @@ verified identical to TypeSafe's (see docs/REVIEW_FOLLOWUP.md); integrated as th
 Verified live (Jev `jev-1.13.0`, Liquid `d1:free`, strands-decider): request question
 `{"type":"score","instructions":...,"criteria":["low", ..., "high"]}` (ascending array of 2 to 10 strings);
 answer `{"type":"score","score":<expected index>,"legend":{"0":...},"probabilities":{"0":p0,...},"confidence":c}`.
+
+## Cloudflare Clef (3 Oct 2026)
+
+Hosted on Workers AI: `POST https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/run/@cf/cloudflare/{clef|clef-flash}`,
+`Authorization: Bearer <token>` (token permissions: Workers AI - Read and Edit), body `{"model", "state", "questions"}`.
+Recorded against the real API with a real token (responses sanitised in `test/fixtures/cloudflare/`):
+
+- **Request:** the body our request builder already produces works as is (choice `criteria` map, score `criteria`
+  array). A choice with **`null` criteria values is accepted** as well as one with descriptions. The URL carries the
+  model name and the body's `model` must be exactly `clef` or `clef-flash` (anything else: HTTP 400, code 5006,
+  "'/model' failed test ^\s*(clef|clef-flash)\s*$").
+- **Success is wrapped in the Workers AI envelope:** `{"result": {"model", "answers", "usage"}, "success": true,
+  "errors": [], "messages": []}`. Inside `result` the answers are the System One shape: `noul` (`noul`), `choice`
+  (`choice`, `probabilities`, `confidence`), `score` (`score`, `legend`, `probabilities`, `confidence`). clef-flash answered the
+  three-question example in about 0.3 s.
+- **Errors use `errors[]`, not the System One error bodies:**
+  - bad or missing token: HTTP 401, `{"result":null,"success":false,"errors":[{"code":10000,"message":"Authentication error"}]}`;
+  - a **valid token with the wrong account id gives the same 401 and message**, so the two cannot be told apart and the guidance has to name both;
+  - a wrong model name in the URL: HTTP **400** (not 404), code 7000, "No route for that URI";
+  - validation (65 questions, limit 64): HTTP 422, code 5012, with the details as a JSON string nested inside `message`
+    (`AiError: AiError: {"error":{"type":"invalid_request","message":"Request body failed validation","details":{"fieldErrors":{...}}}} (<request id>)`).
+- **Limits** (documentation, confirmed for the question count): 64 questions per request, 64k-token context, up to 4 images
+  (not supported by `anofox_decide`).
+- Pricing: $0.24 per million input tokens (clef), $0.09 (clef-flash). No rate-limit headers were returned.

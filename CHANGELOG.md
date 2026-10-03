@@ -6,6 +6,15 @@ All notable changes to `anofox_decide` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **Cloudflare Clef** as a hosted provider: `decide_register_model('clef', 'cloudflare')` (or `'clef-flash'`) with
+  `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` (or `MAP {'account_id': '...'}`). The Workers AI response
+  envelope (`{"result": ...}`) and its `errors[]` are understood for every provider; the account id and model go
+  into the URL; a request takes at most 64 questions (the provider's own limit, checked before anything is sent);
+  a 401 names both causes Cloudflare cannot tell apart (token and account id). Measured on the 200-ticket
+  evaluation: `clef` 85.0% refund and 88.0% routing, `clef-flash` 70.0% and 78.5% (see `docs/EVALUATION.md`).
+  Images are not supported. `make test-live` runs a live Cloudflare test when both variables are set.
+
 ## [2026.10.03] - 2026-10-03
 
 First public release.

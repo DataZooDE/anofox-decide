@@ -156,10 +156,10 @@ void DecideRegistry::RegisterModel(ClientContext &context, const string &id, con
 		    "'<tokenizer.json>', 'laya');"));
 	}
 	const bool has_options = !options.endpoint.empty() || !options.path.empty() || !options.wire_model.empty() ||
-	                         !options.key_env.empty() || !options.criteria.empty();
+	                         !options.key_env.empty() || !options.criteria.empty() || !options.account_id.empty();
 	if (has_options && !remote_profile) {
 		throw InvalidInputException(DecideMsg(
-		    fn, "the options MAP (endpoint, path, model, key_env, criteria) only applies to remote providers, but "
+		    fn, "the options MAP (endpoint, path, model, key_env, criteria, account_id) only applies to remote providers, but "
 		        "the provider is '" + provider + "'",
 		    "drop the MAP, or use a remote provider: SELECT decide_register_model('" + id + "', 'typesafe', "
 		    "MAP {'endpoint': 'https://api.typesafe.ai'}); (remote providers: " + DecideRemoteProviderList() + ")"));
@@ -187,6 +187,20 @@ void DecideRegistry::RegisterModel(ClientContext &context, const string &id, con
 			    fn, "option 'criteria' must be 'null' or 'name', got '" + options.criteria + "'",
 			    "use 'name' to send each choice option as its own description (needed by servers such as "
 			    "strands-decider), or 'null' to send none (the default for the other providers)."));
+		}
+		if (!options.account_id.empty()) {
+			if (provider != "cloudflare") {
+				throw InvalidInputException(DecideMsg(
+				    fn, "option 'account_id' only applies to provider 'cloudflare', but the provider is '" + provider + "'",
+				    "drop it, or register a Cloudflare model: SELECT decide_register_model('clef', 'cloudflare', "
+				    "MAP {'account_id': '<32-character account id>'});"));
+			}
+			if (!DecideIsCloudflareAccountId(options.account_id)) {
+				throw InvalidInputException(DecideMsg(
+				    fn, "option 'account_id' must be a 32-character Cloudflare account id, got '" + options.account_id + "'",
+				    "copy it from the Cloudflare dashboard (the id after /accounts/ in its URL), or leave the option out "
+				    "and export CLOUDFLARE_ACCOUNT_ID"));
+			}
 		}
 		if (!options.endpoint.empty()) {
 			DecideValidateEndpoint(options.endpoint, "the model's endpoint");
@@ -245,6 +259,7 @@ void DecideRegistry::RegisterModel(ClientContext &context, const string &id, con
 	entry.key_env = options.key_env;
 	entry.criteria = options.criteria;
 	entry.calibration = calibration;
+	entry.account_id = options.account_id;
 	if (provider == "local") {
 		string tokenizer_hint;
 		if (!tokenizer_path.empty()) {
@@ -412,6 +427,7 @@ static DecideRemoteTarget TargetOf(const DecideModelEntry &entry) {
 	target.wire_model = entry.wire_model.empty() ? entry.id : entry.wire_model;
 	target.key_env = entry.key_env;
 	target.criteria_names = entry.criteria == "name" ? 1 : (entry.criteria == "null" ? 0 : -1);
+	target.account_id = entry.account_id;
 	return target;
 }
 
@@ -421,7 +437,8 @@ string DecideRemoteEndpointOf(const DecideModelEntry &entry) {
 		return "";
 	}
 	const string base = !entry.endpoint.empty() ? entry.endpoint : string(profile->default_endpoint);
-	return base + (entry.path.empty() ? string(profile->path) : entry.path);
+	return base + DecideDisplayPath(entry.path.empty() ? string(profile->path) : entry.path,
+	                                entry.wire_model.empty() ? entry.id : entry.wire_model, entry.account_id);
 }
 
 DecideModelStatus DecideDescribeModel(ClientContext &context, const DecideModelEntry &entry) {

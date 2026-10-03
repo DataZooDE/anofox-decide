@@ -344,7 +344,7 @@ void DecideRegisterModelFun(DataChunk &args, ExpressionState &state, Vector &res
 	const idx_t ncols = args.ColumnCount();
 	const bool has_map = ncols >= 3 && args.data[ncols - 1].GetType().id() == LogicalTypeId::MAP;
 	const idx_t positional_end = has_map ? ncols - 1 : ncols; // columns [1, positional_end) are positional
-	static const char *option_names[] = {"endpoint", "path", "model", "key_env", "criteria", "calibration"};
+	static const char *option_names[] = {"endpoint", "path", "model", "key_env", "criteria", "calibration", "account_id"};
 	for (idx_t i = 0; i < count; i++) {
 		auto id_v = args.data[0].GetValue(i);
 		if (id_v.IsNull()) {
@@ -385,6 +385,8 @@ void DecideRegisterModelFun(DataChunk &args, ExpressionState &state, Vector &res
 					options.criteria = value;
 				} else if (key == "calibration") {
 					options.calibration = value;
+				} else if (key == "account_id") {
+					options.account_id = value;
 				} else {
 					string what = "unknown option '" + key + "'";
 					const string close =
@@ -394,7 +396,7 @@ void DecideRegisterModelFun(DataChunk &args, ExpressionState &state, Vector &res
 					}
 					throw InvalidInputException(DecideMsg(
 					    "decide_register_model", what,
-					    "supported options: endpoint, path, model, key_env, criteria, calibration, e.g. MAP "
+					    "supported options: endpoint, path, model, key_env, criteria, calibration, account_id, e.g. MAP "
 					    "{'endpoint': 'https://host', 'model': 'my-model'} (API keys go in CREATE SECRET or an env "
 					    "var, not here)"));
 				}
@@ -649,10 +651,12 @@ void RegisterDecideScalars(ExtensionLoader &loader) {
 		const string desc =
 		    "Register a model id for this database instance and return true. Providers: 'stub' (deterministic), "
 		    "'local' (ONNX graph and tokenizer paths, optional profile 'julia-1' or 'laya'), and the remote "
-		    "providers 'typesafe', 'liquid', 'systemone' and 'strands' (optional options MAP with endpoint, path, "
-		    "model, key_env, criteria). The options MAP also takes calibration, 'platt:a,b', for any provider: it "
-		    "rescales that model's yes/no probabilities (fit a and b with decide_fit_calibration). Duplicate ids, "
-		    "unsupported providers and unreadable files raise actionable errors.";
+		    "providers 'typesafe', 'liquid', 'cloudflare' (Clef on Workers AI: models 'clef' and 'clef-flash', "
+		    "account id from the account_id option or CLOUDFLARE_ACCOUNT_ID), 'systemone' and 'strands' (optional "
+		    "options MAP with endpoint, path, model, key_env, criteria, account_id). The options MAP also takes "
+		    "calibration, 'platt:a,b', for any provider: it rescales that model's yes/no probabilities (fit a and b "
+		    "with decide_fit_calibration). Duplicate ids, unsupported providers and unreadable files raise "
+		    "actionable errors.";
 		RegisterScalarFunctionSetWithAlias(
 		    loader, std::move(set), "decide_register_model",
 		    DecideDocs(desc, "models",

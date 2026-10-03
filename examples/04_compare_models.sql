@@ -4,6 +4,8 @@
 --
 --   export LIQUID_API_KEY=...        # Liquid AI D1
 --   export TYPESAFE_API_KEY=...      # TypeSafe Jev
+--   export CLOUDFLARE_API_TOKEN=...  # Cloudflare Clef (Workers AI)
+--   export CLOUDFLARE_ACCOUNT_ID=...
 --   duckdb -unsigned < examples/04_compare_models.sql
 -- Run from the repository root (the data path is relative to it).
 -- offline: no (calls hosted models)
@@ -13,6 +15,7 @@ SET anofox_decide_allow_remote = true;
 
 SELECT decide_register_model('jev-latest', 'typesafe');
 SELECT decide_register_model('d1:free', 'liquid');
+SELECT decide_register_model('clef', 'cloudflare');
 -- A local server, keyless (see "Models and providers" in the README):
 --   SELECT decide_register_model('strands-decider', 'strands');
 
@@ -23,7 +26,10 @@ SELECT 'jev-latest' AS model, id, refund,
        decide_probability(text, 'A refund is requested.', model := 'jev-latest') AS p FROM tickets
 UNION ALL
 SELECT 'd1:free', id, refund,
-       decide_probability(text, 'A refund is requested.', model := 'd1:free') FROM tickets;
+       decide_probability(text, 'A refund is requested.', model := 'd1:free') FROM tickets
+UNION ALL
+SELECT 'clef', id, refund,
+       decide_probability(text, 'A refund is requested.', model := 'clef') FROM tickets;
 
 -- Accuracy, calibration and the share of confident answers per model. Judge on YOUR tickets:
 -- a handful of rows says little; use a few hundred labelled ones.

@@ -16,6 +16,7 @@
 
 #include <atomic>
 #include <cctype>
+#include <cstring>
 #include <map>
 #include <thread>
 #include <chrono>
@@ -132,13 +133,18 @@ void SplitEndpoint(const string &endpoint, string &host, int &port, bool &ssl, c
 // endpoint, path and key variable differ. Liquid D1 verified live against
 // POST https://api.liquid.ai/decisions/v1/systemone (model "d1:free").
 const DecideRemoteProfile kRemoteProfiles[] = {
-    {"typesafe", "TypeSafe", "https://api.typesafe.ai", "/v1/systemone", "TYPESAFE_API_KEY", true, false, 8},
-    {"liquid", "Liquid AI", "https://api.liquid.ai", "/decisions/v1/systemone", "LIQUID_API_KEY", true, false, 8},
+    {"typesafe", "TypeSafe", "https://api.typesafe.ai", "/v1/systemone", "TYPESAFE_API_KEY", true, false, 8, 0},
+    {"liquid", "Liquid AI", "https://api.liquid.ai", "/decisions/v1/systemone", "LIQUID_API_KEY", true, false, 8, 0},
+    // Cloudflare Clef on Workers AI: the URL carries the account id and the model ({account_id}, {model} are
+    // filled in by DecideResolveConfig); the success body is wrapped in {"result": ...}; at most 64 questions.
+    {"cloudflare", "Cloudflare Clef", "https://api.cloudflare.com",
+     "/client/v4/accounts/{account_id}/ai/run/@cf/cloudflare/{model}", "CLOUDFLARE_API_TOKEN", true, false, 8, 64},
     // Generic System One-compatible server (e.g. Kev): the model supplies the endpoint.
-    {"systemone", "System One endpoint", "", "/v1/systemone", "", true, false, 8},
+    {"systemone", "System One endpoint", "", "/v1/systemone", "", true, false, 8, 0},
     // strands-decider (`strands-decider serve`): a local, keyless server on loopback whose schema
     // requires string criteria values for choice questions.
-    {"strands", "strands-decider", "http://127.0.0.1:8000", "/v1/systemone", "", false, true, 1}, // one local model server: it serialises anyway
+    {"strands", "strands-decider", "http://127.0.0.1:8000", "/v1/systemone", "", false, true, 1,
+     0}, // one local model server: it serialises anyway
 };
 
 } // namespace
@@ -359,6 +365,18 @@ vector<DecideAnswer> DecideParseResponseJson(const string &body, const vector<De
 	auto root = yyjson_doc_get_root(doc.doc);
 	if (!root || !yyjson_is_obj(root)) {
 		bad("", "answered with a JSON value that is not an object");
+	}
+	// Workers AI (Cloudflare) wraps the System One body: {"result": {"model", "answers", ...}, "success": true,
+	// "errors": [], "messages": []}. Unwrap it; a "success": false at HTTP 200 reports the errors.
+	if (!yyjson_obj_get(root, "answers")) {
+		auto result_v = yyjson_obj_get(root, "result");
+		auto success_v = yyjson_obj_get(root, "success");
+		if (result_v && yyjson_is_obj(result_v) && yyjson_obj_get(result_v, "answers")) {
+			root = result_v;
+		} else if (success_v && yyjson_is_bool(success_v) && !yyjson_get_bool(success_v)) {
+			const string server = DecideExtractServerMessage(body);
+			bad("", "answered HTTP 200 but reported an error" + (server.empty() ? string() : ": \"" + server + "\""));
+		}
 	}
 	string model;
 	auto model_v = yyjson_obj_get(root, "model");
@@ -774,6 +792,82 @@ static void ApplyProxyEnv(ClientT &cli, bool ssl, const string &target_host) {
 
 //--- Config ------------------------------------------------------------------
 
+// A path may carry {model} (the wire model) and {account_id} (Cloudflare: the model's account_id option, else
+// the CLOUDFLARE_ACCOUNT_ID environment variable). Both end up in a URL path, so they are validated.
+static bool IsPlainName(const string &s, size_t min_len, size_t max_len, const char *extra) {
+	if (s.size() < min_len || s.size() > max_len) {
+		return false;
+	}
+	for (unsigned char c : s) {
+		if (!std::isalnum(c) && !std::strchr(extra, c)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static void ReplaceAll(string &s, const string &from, const string &to) {
+	for (size_t at = s.find(from); at != string::npos; at = s.find(from, at + to.size())) {
+		s.replace(at, from.size(), to);
+	}
+}
+
+bool DecideIsCloudflareAccountId(const string &id) {
+	return IsPlainName(id, 32, 32, "");
+}
+
+string DecideDisplayPath(const string &path_template, const string &model, const string &account_id) {
+	string path = path_template;
+	if (!model.empty() && IsPlainName(model, 1, 100, "._-")) {
+		ReplaceAll(path, "{model}", model);
+	}
+	string id = account_id;
+	if (id.empty()) {
+		const char *env = std::getenv("CLOUDFLARE_ACCOUNT_ID");
+		id = (env && *env) ? env : "";
+	}
+	if (DecideIsCloudflareAccountId(id)) {
+		ReplaceAll(path, "{account_id}", id);
+	}
+	return path;
+}
+
+static void ExpandPathTemplate(const DecideRemoteTarget &target, DecideRemoteConfig &cfg, const string &function) {
+	const string reg = target.registered_id.empty() ? target.wire_model : target.registered_id;
+	if (cfg.path.find("{model}") != string::npos) {
+		if (!IsPlainName(cfg.model, 1, 100, "._-")) {
+			throw InvalidInputException(DecideMsg(
+			    function, "the model name '" + cfg.model + "' cannot be used in the URL of " + cfg.display,
+			    "use the provider's model name, e.g. SELECT decide_register_model('clef', '" + cfg.provider + "');"));
+		}
+		ReplaceAll(cfg.path, "{model}", cfg.model);
+	}
+	if (cfg.path.find("{account_id}") != string::npos) {
+		string id = target.account_id;
+		string source = "the account_id option";
+		if (id.empty()) {
+			const char *env = std::getenv("CLOUDFLARE_ACCOUNT_ID");
+			if (env && *env) {
+				id = env;
+				source = "the CLOUDFLARE_ACCOUNT_ID environment variable";
+			}
+		}
+		if (id.empty()) {
+			throw InvalidInputException(DecideMsg(
+			    function, "no Cloudflare account id for model '" + reg + "'",
+			    "export CLOUDFLARE_ACCOUNT_ID=<id> before starting DuckDB (the 32-character id in your Cloudflare "
+			    "dashboard URL), or register the model with MAP {'account_id': '<id>'}"));
+		}
+		if (!DecideIsCloudflareAccountId(id)) {
+			throw InvalidInputException(DecideMsg(
+			    function, "the Cloudflare account id '" + id + "' (from " + source + ") is not a 32-character id",
+			    "copy the account id from the Cloudflare dashboard (Workers AI page or the URL after /accounts/)"));
+		}
+		cfg.account_id = id;
+		ReplaceAll(cfg.path, "{account_id}", id);
+	}
+}
+
 DecideRemoteConfig DecideResolveConfig(ClientContext &context, const DecideRemoteTarget &target,
                                        const string &function) {
 	auto profile = DecideFindRemoteProfile(target.provider);
@@ -789,6 +883,8 @@ DecideRemoteConfig DecideResolveConfig(ClientContext &context, const DecideRemot
 	cfg.display = profile->display;
 	cfg.env_key = profile->env_key;
 	cfg.path = target.path.empty() ? profile->path : target.path;
+	cfg.max_questions = profile->max_questions;
+	ExpandPathTemplate(target, cfg, function);
 	cfg.criteria_names = target.criteria_names < 0 ? profile->criteria_names : target.criteria_names == 1;
 
 	// Endpoint: the model's own endpoint, else (typesafe only, legacy) the
@@ -940,6 +1036,52 @@ bool DecideBodyLooksLikeHtml(const string &body) {
 	       head.rfind("<body", 0) == 0;
 }
 
+// Cloudflare nests the real error in the message text: `AiError: AiError: {"error":{"message":"Request body
+// failed validation","details":{"fieldErrors":{"questions":["Dictionary should have at most 64 items ..."]}}}}
+// (<request id>)`. Strip the prefixes and the request id, and read the nested JSON when there is one.
+static string CleanServiceMessage(string m) {
+	while (m.rfind("AiError: ", 0) == 0) {
+		m = m.substr(9);
+	}
+	// trailing " (<36-character request id>)"
+	if (m.size() > 40 && m.back() == ')' && m[m.size() - 39] == ' ' && m[m.size() - 38] == '(' &&
+	    m[m.size() - 37 + 8] == '-') {
+		m.resize(m.size() - 39);
+	}
+	if (!m.empty() && m[0] == '{') {
+		YyjsonDoc nested(yyjson_read(m.c_str(), m.size(), 0));
+		if (nested.doc) {
+			auto root = yyjson_doc_get_root(nested.doc);
+			auto err = root ? yyjson_obj_get(root, "error") : nullptr;
+			if (err && yyjson_is_obj(err)) {
+				auto msg_v = yyjson_obj_get(err, "message");
+				string out = (msg_v && yyjson_is_str(msg_v)) ? ValStr(msg_v) : string();
+				auto details = yyjson_obj_get(err, "details");
+				auto fields = details ? yyjson_obj_get(details, "fieldErrors") : nullptr;
+				if (fields && yyjson_is_obj(fields)) {
+					size_t shown = 0, idx, max;
+					yyjson_val *key, *val;
+					yyjson_obj_foreach(fields, idx, max, key, val) {
+						if (shown == 3 || !yyjson_is_arr(val) || yyjson_arr_size(val) == 0) {
+							continue;
+						}
+						auto first = yyjson_arr_get_first(val);
+						if (yyjson_is_str(first)) {
+							out += (shown == 0 ? ": " : "; ") + string(yyjson_get_str(key), yyjson_get_len(key)) + ": " +
+							       ValStr(first);
+							shown++;
+						}
+					}
+				}
+				if (!out.empty()) {
+					return out;
+				}
+			}
+		}
+	}
+	return m;
+}
+
 string DecideExtractServerMessage(const string &body, const string &api_key) {
 	if (body.empty() || DecideBodyLooksLikeHtml(body)) {
 		return "";
@@ -1001,6 +1143,29 @@ string DecideExtractServerMessage(const string &body, const string &api_key) {
 				if (shown > 0 && total > shown) {
 					msg += " (+" + std::to_string(total - shown) + " more)";
 				}
+			} else if (yyjson_obj_get(root, "errors") && yyjson_is_arr(yyjson_obj_get(root, "errors")) &&
+			           yyjson_arr_size(yyjson_obj_get(root, "errors")) > 0) {
+				// Cloudflare: {"errors": [{"code": 10000, "message": "Authentication error"}], "success": false}
+				auto errors = yyjson_obj_get(root, "errors");
+				const size_t total = yyjson_arr_size(errors);
+				size_t shown = 0, idx, max;
+				yyjson_val *item;
+				yyjson_arr_foreach(errors, idx, max, item) {
+					if (shown == 3) {
+						break;
+					}
+					const string m = CleanServiceMessage(str_of(yyjson_obj_get(item, "message")));
+					if (m.empty()) {
+						continue;
+					}
+					auto code = yyjson_obj_get(item, "code");
+					msg += (msg.empty() ? "" : "; ") + m +
+					       (code && yyjson_is_int(code) ? " (code " + std::to_string(yyjson_get_sint(code)) + ")" : "");
+					shown++;
+				}
+				if (shown > 0 && total > shown) {
+					msg += " (+" + std::to_string(total - shown) + " more)";
+				}
 			} else {
 				msg = str_of(yyjson_obj_get(root, "message"));
 				if (msg.empty()) {
@@ -1055,7 +1220,23 @@ DecideErrorInfo DecideFormatHttpError(const DecideRemoteConfig &cfg, int status,
 	const string id = cfg.registered_id.empty() ? cfg.model : cfg.registered_id;
 	string what, fix;
 	info.user_error = true;
-	if (status == 401) {
+	const bool cloudflare = cfg.provider == "cloudflare";
+	const bool cloudflare_route =
+	    cloudflare && (status == 400 || status == 404 || status == 422) &&
+	    (server.find("No route for that URI") != string::npos || server.find("/model") != string::npos);
+	if (cloudflare && (status == 401 || status == 403)) {
+		// Cloudflare answers a wrong token and a valid token of another account the same way ("Authentication error").
+		what = who + " rejected the request (HTTP " + std::to_string(status) + ")" + srv;
+		fix = "Cloudflare gives this answer both for a wrong token and for a token that does not belong to account '" +
+		      (cfg.account_id.empty() ? string("<account id>") : cfg.account_id) +
+		      "': check that the token (" + (cfg.key_source.empty() ? string("CLOUDFLARE_API_TOKEN") : cfg.key_source) +
+		      ") has Workers AI - Read and Edit permission for that account and that the account id is right; replace "
+		      "the token with CREATE OR REPLACE SECRET (TYPE anofox_decide, API_KEY '<token>', SCOPE '" + cfg.host + "');";
+	} else if (cloudflare_route) {
+		what = who + " does not know the model '" + cfg.model + "' (HTTP " + std::to_string(status) + ")" + srv;
+		fix = "Cloudflare serves the models 'clef' and 'clef-flash': SELECT decide_register_model('clef', 'cloudflare'); "
+		      "(use MAP {'model': 'clef-flash'} to give the model another id)";
+	} else if (status == 401) {
 		what = who + " rejected the API key (HTTP 401)" + srv;
 		fix = (cfg.key_source.empty() ? string("check the API key") : "the key came from " + cfg.key_source) +
 		      "; use a valid one: CREATE OR REPLACE SECRET (TYPE anofox_decide, API_KEY '<key>', SCOPE '" + cfg.host +
@@ -1311,6 +1492,14 @@ vector<DecideAnswer> DecideRemoteEvaluateWithTransport(const DecideRemoteConfig 
 	if (!cfg.allow_remote) {
 		throw InvalidInputException(GateMessage(cfg.function, cfg.registered_id.empty() ? cfg.model : cfg.registered_id,
 		                                        cfg.display, string(cfg.ssl ? "https://" : "http://") + HostPort(cfg)));
+	}
+	if (cfg.max_questions > 0 && questions.size() > (size_t)cfg.max_questions) {
+		throw InvalidInputException(DecideMsg(
+		    cfg.function,
+		    cfg.display + " accepts at most " + std::to_string(cfg.max_questions) + " questions per request, got " +
+		        std::to_string(questions.size()),
+		    "split the questions across several calls (anofox_decide_max_questions caps one call; this model's own "
+		    "limit is " + std::to_string(cfg.max_questions) + ")"));
 	}
 	string body = DecideBuildRequestJson(state, cfg.model, questions, cfg.criteria_names);
 	// NOTE: no Content-Type here — httplib's Post(path, headers, body,

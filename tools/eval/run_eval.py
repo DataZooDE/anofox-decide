@@ -8,7 +8,8 @@ For every model one DuckDB session scores each ticket with ONE decide_table call
 Results are written to <out>/results_<model>.csv; metrics to <out>/report.md/json.
 
 Models (all optional, pick with --models):
-  d1, jev                      hosted APIs (LIQUID_API_KEY / TYPESAFE_API_KEY; ticket text leaves the machine)
+  d1, jev, clef, clef-flash    hosted APIs (LIQUID_API_KEY / TYPESAFE_API_KEY / CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID;
+                               ticket text leaves the machine)
   laya-ml, laya-td, julia      local ONNX graphs (env: LAYA_ML_DIR/LAYA_ML_ONNX, LAYA_TD_DIR/LAYA_TD_ONNX,
                                JULIA_WEIGHTS_DIR/JULIA_ONNX)
   kev                          a running Kev server (--kev-url, default http://127.0.0.1:8009)
@@ -47,6 +48,10 @@ def models(env, kev_url, strands_url):
 
     return {
         "d1": ("Liquid D1", "SELECT decide_register_model('d1:free', 'liquid');", "d1:free", ["LIQUID_API_KEY"]),
+        "clef": ("Cloudflare Clef", "SELECT decide_register_model('clef', 'cloudflare');", "clef",
+                 ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]),
+        "clef-flash": ("Cloudflare Clef-flash", "SELECT decide_register_model('clef-flash', 'cloudflare');", "clef-flash",
+                       ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]),
         "jev": ("TypeSafe Jev", "SELECT decide_register_model('jev-latest', 'typesafe');", "jev-latest",
                 ["TYPESAFE_API_KEY"]),
         "laya-ml": ("Laya multilingual",
@@ -240,7 +245,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tickets", required=True, help="tickets.csv from make_sample.py")
     ap.add_argument("--out", required=True, help="output directory")
-    ap.add_argument("--models", default="d1,jev,laya-ml,laya-td,julia,kev,strands")
+    ap.add_argument("--models", default="d1,jev,clef,clef-flash,laya-ml,laya-td,julia,kev,strands")
     ap.add_argument("--duckdb", default=str(ROOT / "build/release/duckdb"))
     ap.add_argument("--extension", default=str(ROOT / "build/release/extension/anofox_decide/anofox_decide.duckdb_extension"))
     ap.add_argument("--kev-url", default="http://127.0.0.1:8009")

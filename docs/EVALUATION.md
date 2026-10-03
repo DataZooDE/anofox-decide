@@ -1,6 +1,7 @@
 # Model evaluation on 200 labelled tickets
 
-Run on 1 Oct 2026 with `tools/eval` (commit that added this file). Every model scores the
+Run on 1 Oct 2026 with `tools/eval` (commit that added this file); strands-decider was added on 2 Oct and
+Cloudflare Clef and Clef-flash on 3 Oct 2026 (same tickets, same questions). Every model scores the
 same 200 tickets through the extension, one `decide_table` call per ticket with two questions:
 
 - **refund** (yes/no): "A refund is requested." Ground truth: the ticket's intent is `get_refund`.
@@ -29,8 +30,10 @@ Refund: 60 positive / 140 negative (always-no baseline 70%). Routing mix: billin
 | Laya multilingual | 92.0% [87-95] | 93.8% | 98% | 89% | 0.970 | 0.066 | 0.074 |
 | Liquid D1 | 77.0% [71-82] | 83.6% | 100% | 67% | 0.970 | 0.157 | 0.225 |
 | Laya typed-decisions | 88.5% [83-92] | 82.3% | 67% | 98% | 0.978 | 0.090 | 0.169 |
+| Cloudflare Clef | 85.0% [79-89] | 78.3% | 62% | 95% | 0.951 | 0.110 | 0.105 |
 | Kev-0.8B (server) | 70.5% [64-76] | 76.1% | 90% | 62% | 0.850 | 0.206 | 0.245 |
 | strands-decider 2B (server) | 81.0% [75-86] | 71.7% | 48% | 95% | 0.918 | 0.129 | 0.152 |
+| Cloudflare Clef-flash | 70.0% [63-76] | 61.9% | 42% | 82% | 0.769 | 0.200 | 0.153 |
 | Julia-1 | 29.5% [24-36] | 45.8% | 87% | 5% | 0.407 | 0.633 | 0.637 |
 
 ## Routing (billing / orders / account / other)
@@ -39,6 +42,8 @@ Refund: 60 positive / 140 negative (always-no baseline 70%). Routing mix: billin
 |---|---|---|---|---|---|---|
 | TypeSafe Jev | 92.0% [87-95] | 90.7% | 98% | 95% | 70% | 100% |
 | Liquid D1 | 91.0% [86-94] | 89.5% | 96% | 85% | 88% | 90% |
+| Cloudflare Clef | 88.0% [83-92] | 87.4% | 92% | 78% | 80% | 100% |
+| Cloudflare Clef-flash | 78.5% [72-84] | 82.8% | 69% | 85% | 78% | 100% |
 | Laya typed-decisions | 76.0% [70-81] | 77.4% | 71% | 88% | 78% | 73% |
 | strands-decider 2B (server) | 65.0% [58-71] | 70.7% | 51% | 82% | 62% | 87% |
 | Laya multilingual | 62.0% [55-68] | 64.6% | 57% | 55% | 70% | 77% |
@@ -54,13 +59,16 @@ Refund vs TypeSafe Jev, routing vs TypeSafe Jev; p < 0.05 means the difference i
 | Laya multilingual | 0.832 | 0.000 |
 | Liquid D1 | 0.000 | 0.832 |
 | Laya typed-decisions | 0.163 | 0.000 |
+| Cloudflare Clef | 0.004 | 0.152 |
 | Kev-0.8B (server) | 0.000 | 0.000 |
 | strands-decider 2B (server) | 0.000 | 0.000 |
+| Cloudflare Clef-flash | 0.000 | 0.000 |
 | Julia-1 | 0.000 | 0.000 |
 
 Wall time for the 200 tickets (not comparable across hardware and networks): Julia-1 21 s, Laya multilingual
 48 s, Laya typed-decisions 87 s, Jev 72 s, Kev-0.8B 296 s (CPU), strands-decider 2B 396 s (CPU, no GPU on the
-test machine), Liquid D1 1807 s. D1's free tier showed highly
+test machine), Cloudflare Clef 134 s and Clef-flash 86 s (one `decide_table` call per ticket, so one request at a
+time), Liquid D1 1807 s. D1's free tier showed highly
 variable latency (1 to 34 s per call in plain `curl` tests on the same payloads), so this is the API, not
 the extension.
 
@@ -115,6 +123,16 @@ Reproduce from the results of `run_eval.py`: `python3 tools/eval/crossfit_calibr
   Laya multilingual and Kev-0.8B but clearly worse than Jev and D1 (p < 0.001). It is the only model here that
   ran with a different choice-criteria mode (`criteria: 'name'`, required by its server schema); that is a wire
   detail, not a quality difference.
+- **Cloudflare Clef** (added 3 Oct 2026; hosted on Workers AI) is the third-best router (88%, behind Jev 92% and
+  D1 91%; not significantly different from Jev, p = 0.15) and a solid refund detector (85%, AUROC 0.951), but
+  significantly behind Jev on refund (p = 0.004). Like strands-decider it errs towards "no" at the 0.5 cut-off
+  (recall 62%, specificity 95%).
+- **Cloudflare Clef-flash** (the 9B variant) is much weaker on this sample: 70% refund, no better than always-no
+  (AUROC 0.769, recall 42%), and 78.5% routing; significantly behind Jev on both (p < 0.001). It took a third
+  less time on the sample (86 s against 134 s) and costs about 2.7 times less per token ($0.09 against $0.24 per
+  million input tokens), so there is a trade, but not for refund detection here. Sending the option names as choice descriptions (`criteria: 'name'`)
+  instead of `null` made no difference for either model (routing 87.5% and 78.0% against 88.0% and 78.5%), so
+  the `cloudflare` provider keeps the default.
 - **Kev-0.8B and Julia-1 are not competitive** on this task. Julia-1 answers "refund" for almost everything
   (AUROC below 0.5); its local port reproduces the upstream Python implementation exactly (see
   REVIEW_FOLLOWUP.md), so this is the model, not the port.
@@ -131,8 +149,8 @@ Reproduce from the results of `run_eval.py`: `python3 tools/eval/crossfit_calibr
   the McNemar p-values compare models paired on the same tickets.
 - **Label definitions are ours.** "Refund requested" is the `get_refund` intent and the routing classes are
   our grouping of Bitext categories; a different definition would move the numbers.
-- **Hosted models change over time** (`jev-latest`, `d1:free`); the run is a dated snapshot. Ticket text was
-  sent to Liquid AI and TypeSafe for those runs.
+- **Hosted models change over time** (`jev-latest`, `d1:free`, `clef`, `clef-flash`); the run is a dated snapshot.
+  Ticket text was sent to Liquid AI, TypeSafe and Cloudflare for those runs.
 - **Local models use the extension's own conversion.** Each local model was verified against its upstream
   Python reference on the original 8 tickets; the 200-ticket run did not re-verify that.
 
@@ -140,9 +158,9 @@ Reproduce from the results of `run_eval.py`: `python3 tools/eval/crossfit_calibr
 
 ```bash
 python3 tools/eval/make_sample.py --out /tmp/eval            # downloads Bitext, writes /tmp/eval/tickets.csv
-# local models need exported graphs (see tools/export_julia/README.md); hosted need LIQUID_API_KEY / TYPESAFE_API_KEY
+# local models need exported graphs (see tools/export_julia/README.md); hosted need LIQUID_API_KEY / TYPESAFE_API_KEY / CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID
 export JULIA_ONNX=... JULIA_WEIGHTS_DIR=... LAYA_ML_ONNX=... LAYA_ML_DIR=... LAYA_TD_ONNX=... LAYA_TD_DIR=...
-python3 tools/eval/run_eval.py --tickets /tmp/eval/tickets.csv --out /tmp/eval/out --models d1,jev,laya-ml,laya-td,julia
+python3 tools/eval/run_eval.py --tickets /tmp/eval/tickets.csv --out /tmp/eval/out --models d1,jev,clef,clef-flash,laya-ml,laya-td,julia
 python3 tools/eval/run_eval.py --tickets /tmp/eval/tickets.csv --out /tmp/eval/out --models kev       # needs a running Kev server
 python3 tools/eval/run_eval.py --tickets /tmp/eval/tickets.csv --out /tmp/eval/out --models strands   # needs a running strands-decider server
 ```
