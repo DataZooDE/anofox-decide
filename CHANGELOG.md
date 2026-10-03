@@ -75,7 +75,7 @@ First public release.
 - `score` is verified for parity with each model's upstream implementation and against the live services,
   but has not been scored for accuracy on labelled data.
 - Text longer than a local model's limit is cut off without a warning.
-- Platforms: Linux (amd64, arm64), macOS (arm64) and Windows (amd64) against DuckDB 1.5.5. Not built:
+- Platforms: Linux (amd64, arm64), macOS (arm64) and Windows (amd64) against DuckDB 1.5.6. Not built:
   macOS on Intel (ONNX Runtime ships no archive after v1.23.2), WebAssembly, musl and MinGW.
 
 [Unreleased]: https://github.com/DataZooDE/anofox-decide/compare/v2026.10.03...HEAD
