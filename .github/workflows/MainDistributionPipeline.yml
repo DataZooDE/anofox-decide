@@ -19,8 +19,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The job names below deliberately carry NO DuckDB version. main's branch protection requires
+  # these checks by their exact reported name, so a name like "Build extension binaries (v1.5.6)"
+  # had to be edited in the repository settings on every DuckDB bump (and enforce_admins is on, so
+  # a stale name cannot be bypassed). The version is still visible in `duckdb_version` below and
+  # in the run's logs. Job IDs keep their historical "v1_5_5" spelling on purpose: they never
+  # appear in a check name, and renaming them would only churn `needs:`.
   duckdb-v1_5_5-build:
-    name: Build extension binaries (v1.5.6)
+    name: Build extension binaries
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5-variegata
     with:
       duckdb_version: v1.5.6
@@ -34,7 +40,7 @@ jobs:
       exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;osx_amd64
 
   duckdb-v1_5_5-smoke-test:
-    name: Smoke test (v1.5.6)
+    name: Smoke test
     needs: duckdb-v1_5_5-build
     uses: ./.github/workflows/_extension_smoke_test.yml
     with:
@@ -43,7 +49,7 @@ jobs:
       exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;osx_amd64'
 
   duckdb-v1_5_5-deploy:
-    name: Deploy extension binaries (v1.5.6)
+    name: Deploy extension binaries
     needs: [duckdb-v1_5_5-build, duckdb-v1_5_5-smoke-test]
     # Deploy only ever uploads on main or a v* tag (deploy_latest/deploy_versioned
     # below) -- everything else, including every PR, is a dry run that still pays
