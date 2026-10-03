@@ -8,9 +8,10 @@ require anofox_decide
 statement ok
 LOAD anofox_decide
 
-# Registry lists at least the stub provider so model selection is explicit.
+# Registry lists at least the stub provider so model selection is explicit (the catalog models that are
+# not downloaded yet are listed next to it, with ready = false).
 query I
-SELECT count(*) FROM decide_models()
+SELECT count(*) FROM decide_models() WHERE model = 'stub'
 ----
 1
 

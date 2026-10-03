@@ -14,6 +14,11 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/main/secret/secret.hpp"
 
+#include <openssl/bio.h>
+#include <openssl/err.h>
+#include <openssl/ssl.h>
+#include <openssl/x509_vfy.h>
+
 #include <atomic>
 #include <cctype>
 #include <cstring>
@@ -1512,8 +1517,379 @@ static bool DecideSplitUrl(const string &url, bool &ssl, string &host, int &port
 	return !host.empty() && port > 0 && port <= 65535;
 }
 
+// --- Raw GET for URLs that carry a query string ---------------------------------------------------------------
+// Hugging Face redirects to a signed CDN URL whose query string must reach the server byte for byte and in the
+// original order (the signature policy is matched against it). httplib re-parses every query into a sorted map
+// and re-encodes it, which the CDN answers with HTTP 403, so these hops use a small client over OpenSSL BIOs:
+// same CA roots (system store on Windows, /etc/ssl/cert.pem on macOS, OpenSSL's defaults elsewhere), same
+// proxy environment (CONNECT for https), hostname verification on.
+
+namespace {
+
+struct BioDeleter {
+	void operator()(BIO *b) const {
+		if (b) {
+			BIO_free_all(b);
+		}
+	}
+};
+using BioPtr = std::unique_ptr<BIO, BioDeleter>;
+
+struct SslCtxDeleter {
+	void operator()(SSL_CTX *c) const {
+		if (c) {
+			SSL_CTX_free(c);
+		}
+	}
+};
+
+bool RawWait(BIO *bio, int timeout_ms, bool for_write) {
+	int fd = -1;
+	if (BIO_get_fd(bio, &fd) < 0 || fd < 0) {
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		return true;
+	}
+	fd_set set;
+	FD_ZERO(&set);
+	FD_SET(fd, &set);
+	struct timeval tv;
+	tv.tv_sec = timeout_ms / 1000;
+	tv.tv_usec = (timeout_ms % 1000) * 1000;
+	int r = select(fd + 1, for_write ? nullptr : &set, for_write ? &set : nullptr, nullptr, &tv);
+	return r > 0;
+}
+
+// Reads some bytes; returns >0 bytes, 0 on orderly close, -1 on error or timeout.
+int RawRead(BIO *bio, char *buf, int len, int timeout_ms) {
+	while (true) {
+		int n = BIO_read(bio, buf, len);
+		if (n > 0) {
+			return n;
+		}
+		if (!BIO_should_retry(bio)) {
+			return n == 0 ? 0 : -1;
+		}
+		if (!RawWait(bio, timeout_ms, BIO_should_write(bio))) {
+			return -1;
+		}
+	}
+}
+
+bool RawWriteAll(BIO *bio, const string &data, int timeout_ms) {
+	size_t done = 0;
+	while (done < data.size()) {
+		int n = BIO_write(bio, data.data() + done, (int)(data.size() - done));
+		if (n > 0) {
+			done += (size_t)n;
+			continue;
+		}
+		if (!BIO_should_retry(bio) || !RawWait(bio, timeout_ms, true)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+string LowerCopy(string s) {
+	for (auto &c : s) {
+		c = (char)std::tolower((unsigned char)c);
+	}
+	return s;
+}
+
+// Connects (through the proxy environment when set); returns null with `error` set on failure.
+BioPtr RawConnect(bool ssl, const string &host, int port, int timeout_ms, DecideGetResult &result) {
+	const char *no_proxy = ProxyEnv("NO_PROXY", "no_proxy");
+	const bool bypass = DecideProxyBypass(no_proxy ? no_proxy : "", host);
+	const char *proxy = bypass ? nullptr : (ssl ? ProxyEnv("HTTPS_PROXY", "https_proxy") : ProxyEnv("HTTP_PROXY", "http_proxy"));
+	if (!bypass && !proxy) {
+		proxy = ProxyEnv("ALL_PROXY", "all_proxy");
+	}
+	string proxy_host;
+	int proxy_port = 0;
+	const bool use_proxy = proxy && DecideParseProxy(proxy, proxy_host, proxy_port);
+	const string connect_to = use_proxy ? proxy_host + ":" + std::to_string(proxy_port) : host + ":" + std::to_string(port);
+
+	BioPtr conn(BIO_new_connect(connect_to.c_str()));
+	if (!conn) {
+		result.error = "cannot create a connection";
+		result.error_kind = "other";
+		return nullptr;
+	}
+	BIO_set_nbio(conn.get(), 1);
+	if (BIO_do_connect_retry(conn.get(), std::max(1, timeout_ms / 1000), 100) <= 0) {
+		result.error = use_proxy ? "cannot connect to the proxy " + connect_to : "cannot connect to " + connect_to;
+		result.error_kind = use_proxy ? "proxy" : "connection";
+		return nullptr;
+	}
+	if (use_proxy && ssl) {
+		const string connect_req = "CONNECT " + host + ":" + std::to_string(port) + " HTTP/1.1\r\nHost: " + host + ":" +
+		                           std::to_string(port) + "\r\n\r\n";
+		if (!RawWriteAll(conn.get(), connect_req, timeout_ms)) {
+			result.error = "the proxy closed the connection";
+			result.error_kind = "proxy";
+			return nullptr;
+		}
+		string head;
+		char c;
+		while (head.size() < 8192 && (head.size() < 4 || head.compare(head.size() - 4, 4, "\r\n\r\n") != 0)) {
+			if (RawRead(conn.get(), &c, 1, timeout_ms) <= 0) {
+				result.error = "the proxy did not answer the CONNECT request";
+				result.error_kind = "proxy";
+				return nullptr;
+			}
+			head.push_back(c);
+		}
+		if (head.compare(0, 9, "HTTP/1.1 ") != 0 && head.compare(0, 9, "HTTP/1.0 ") != 0) {
+			result.error = "the proxy sent an invalid answer to CONNECT";
+			result.error_kind = "proxy";
+			return nullptr;
+		}
+		if (head.compare(9, 1, "2") != 0) {
+			result.error = "the proxy refused the CONNECT request (" + head.substr(9, 3) + ")";
+			result.error_kind = "proxy";
+			return nullptr;
+		}
+	}
+	if (!ssl) {
+		return conn;
+	}
+	std::unique_ptr<SSL_CTX, SslCtxDeleter> ctx(SSL_CTX_new(TLS_client_method()));
+	if (!ctx) {
+		result.error = "cannot create a TLS context";
+		result.error_kind = "tls";
+		return nullptr;
+	}
+	SSL_CTX_set_min_proto_version(ctx.get(), TLS1_2_VERSION);
+	SSL_CTX_set_verify(ctx.get(), SSL_VERIFY_PEER, nullptr);
+	SSL_CTX_set_default_verify_paths(ctx.get());
+#ifdef _WIN32
+	duckdb_httplib_openssl::detail::load_system_certs_on_windows(SSL_CTX_get_cert_store(ctx.get()));
+#endif
+#ifdef __APPLE__
+	SSL_CTX_load_verify_locations(ctx.get(), "/etc/ssl/cert.pem", nullptr);
+#endif
+	BIO *ssl_bio = BIO_new_ssl(ctx.get(), 1);
+	if (!ssl_bio) {
+		result.error = "cannot create a TLS connection";
+		result.error_kind = "tls";
+		return nullptr;
+	}
+	SSL *ssl_handle = nullptr;
+	BIO_get_ssl(ssl_bio, &ssl_handle);
+	SSL_set_tlsext_host_name(ssl_handle, host.c_str());
+	SSL_set1_host(ssl_handle, host.c_str());
+	BIO_push(ssl_bio, conn.release());
+	BioPtr out(ssl_bio);
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+	while (BIO_do_handshake(out.get()) <= 0) {
+		if (!BIO_should_retry(out.get()) || std::chrono::steady_clock::now() > deadline) {
+			const long verify = SSL_get_verify_result(ssl_handle);
+			result.error = verify != X509_V_OK ? string("certificate verification failed: ") +
+			                                         X509_verify_cert_error_string(verify)
+			                                   : "TLS handshake failed";
+			result.error_kind = "tls";
+			return nullptr;
+		}
+		RawWait(out.get(), 100, BIO_should_write(out.get()));
+	}
+	return out;
+}
+
+} // namespace
+
+static DecideGetResult DecideRawGet(const string &url, int64_t range_from, int timeout_ms, const DecideGetHeaders &on_headers,
+                                    const DecideGetData &on_data) {
+	DecideGetResult result;
+	bool ssl = false;
+	string host, path;
+	int port = 0;
+	if (!DecideSplitUrl(url, ssl, host, port, path)) {
+		result.error = "'" + url + "' is not an http:// or https:// URL";
+		result.error_kind = "invalid_endpoint";
+		return result;
+	}
+	try {
+		auto bio = RawConnect(ssl, host, port, timeout_ms, result);
+		if (!bio) {
+			return result;
+		}
+		// Plain http through a proxy needs the absolute URI; everything else sends the origin-form target.
+		const char *no_proxy = ProxyEnv("NO_PROXY", "no_proxy");
+		const char *http_proxy = ProxyEnv("HTTP_PROXY", "http_proxy");
+		const bool absolute = !ssl && http_proxy && !DecideProxyBypass(no_proxy ? no_proxy : "", host);
+		string request = "GET " + (absolute ? "http://" + host + ":" + std::to_string(port) + path : path) +
+		                 " HTTP/1.1\r\nHost: " + host + ((ssl && port != 443) || (!ssl && port != 80) ? ":" + std::to_string(port) : "") +
+		                 "\r\nUser-Agent: anofox-decide\r\nAccept-Encoding: identity\r\nConnection: close\r\n";
+		if (range_from > 0) {
+			request += "Range: bytes=" + std::to_string(range_from) + "-\r\n";
+		}
+		request += "\r\n";
+		if (!RawWriteAll(bio.get(), request, timeout_ms)) {
+			result.error = "the server closed the connection while the request was sent";
+			result.error_kind = "read";
+			return result;
+		}
+		// Headers.
+		string head;
+		char buf[16384];
+		string pending; // body bytes that arrived with the headers
+		while (true) {
+			int n = RawRead(bio.get(), buf, sizeof(buf), timeout_ms);
+			if (n <= 0) {
+				result.error = n == 0 ? "the server closed the connection before it answered" : "timed out waiting for the server";
+				result.error_kind = n == 0 ? "read" : "timeout";
+				return result;
+			}
+			head.append(buf, (size_t)n);
+			auto end = head.find("\r\n\r\n");
+			if (end != string::npos) {
+				pending = head.substr(end + 4);
+				head.resize(end);
+				break;
+			}
+			if (head.size() > 65536) {
+				result.error = "the response headers are too large";
+				result.error_kind = "other";
+				return result;
+			}
+		}
+		if (head.compare(0, 5, "HTTP/") != 0 || head.size() < 12) {
+			result.error = "the server did not answer with HTTP";
+			result.error_kind = "other";
+			return result;
+		}
+		result.status = std::atoi(head.substr(9, 3).c_str());
+		bool chunked = false;
+		int64_t content_length = -1;
+		size_t line_start = head.find("\r\n");
+		while (line_start != string::npos) {
+			size_t next = head.find("\r\n", line_start + 2);
+			string line = head.substr(line_start + 2, next == string::npos ? string::npos : next - line_start - 2);
+			line_start = next;
+			auto colon = line.find(':');
+			if (colon == string::npos) {
+				continue;
+			}
+			const string name = LowerCopy(line.substr(0, colon));
+			string value = line.substr(colon + 1);
+			while (!value.empty() && value.front() == ' ') {
+				value.erase(value.begin());
+			}
+			if (name == "location") {
+				result.location = value;
+			} else if (name == "content-range") {
+				result.content_range = value;
+			} else if (name == "content-length") {
+				content_length = std::atoll(value.c_str());
+			} else if (name == "transfer-encoding" && LowerCopy(value).find("chunked") != string::npos) {
+				chunked = true;
+			}
+		}
+		if (result.status != 200 && result.status != 206) {
+			result.transport_ok = true;
+			return result;
+		}
+		if (!on_headers(result.status, result.content_range)) {
+			result.error = "the answer was refused by the caller";
+			result.error_kind = "refused";
+			return result;
+		}
+		// Body.
+		int64_t received = 0;
+		auto deliver = [&](const char *data, size_t n) {
+			received += (int64_t)n;
+			return on_data(data, n);
+		};
+		bool ok = true;
+		if (!chunked) {
+			if (!pending.empty()) {
+				ok = deliver(pending.data(), pending.size());
+			}
+			while (ok && (content_length < 0 || received < content_length)) {
+				int n = RawRead(bio.get(), buf, sizeof(buf), timeout_ms);
+				if (n < 0) {
+					result.error = "the connection stalled while the file was transferred";
+					result.error_kind = "timeout";
+					return result;
+				}
+				if (n == 0) {
+					break;
+				}
+				ok = deliver(buf, (size_t)n);
+			}
+			if (!ok) {
+				result.error = "the caller stopped the transfer";
+				result.error_kind = "other";
+				return result;
+			}
+			if (content_length >= 0 && received < content_length) {
+				result.error = "the connection closed after " + std::to_string(received) + " of " +
+				               std::to_string(content_length) + " bytes";
+				result.error_kind = "read";
+				return result;
+			}
+		} else {
+			string data = pending;
+			auto fill = [&]() {
+				int n = RawRead(bio.get(), buf, sizeof(buf), timeout_ms);
+				if (n <= 0) {
+					return false;
+				}
+				data.append(buf, (size_t)n);
+				return true;
+			};
+			while (true) {
+				size_t eol;
+				while ((eol = data.find("\r\n")) == string::npos) {
+					if (!fill()) {
+						result.error = "the connection closed inside a chunked body";
+						result.error_kind = "read";
+						return result;
+					}
+				}
+				const long size = std::strtol(data.substr(0, eol).c_str(), nullptr, 16);
+				data.erase(0, eol + 2);
+				if (size <= 0) {
+					break;
+				}
+				size_t left = (size_t)size;
+				while (left > 0) {
+					if (data.empty() && !fill()) {
+						result.error = "the connection closed inside a chunk";
+						result.error_kind = "read";
+						return result;
+					}
+					const size_t take = std::min(left, data.size());
+					if (!deliver(data.data(), take)) {
+						result.error = "the caller stopped the transfer";
+						result.error_kind = "other";
+						return result;
+					}
+					data.erase(0, take);
+					left -= take;
+				}
+				while (data.size() < 2) {
+					if (!fill()) {
+						break;
+					}
+				}
+				data.erase(0, std::min<size_t>(2, data.size()));
+			}
+		}
+		result.transport_ok = true;
+	} catch (const std::exception &e) {
+		result.error = e.what();
+		result.error_kind = "other";
+	}
+	return result;
+}
+
 DecideGetResult DecideHttpGet(const string &url, int64_t range_from, int timeout_ms, const DecideGetHeaders &on_headers,
                               const DecideGetData &on_data) {
+	if (url.find('?') != string::npos) {
+		return DecideRawGet(url, range_from, timeout_ms, on_headers, on_data); // see the note above DecideRawGet
+	}
 	DecideGetResult result;
 	bool ssl = false;
 	string host, path;

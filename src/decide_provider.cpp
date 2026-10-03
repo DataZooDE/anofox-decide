@@ -111,6 +111,32 @@ static unique_ptr<FileHandle> DecideOpenLocalFile(ClientContext &context, const 
 	}
 }
 
+// "laya" out of {"profile": "laya", ...} in <graph>.meta.json; "" when the file is missing or says nothing.
+static string DecideGraphMetaProfile(ClientContext &context, const string &graph_path) {
+	try {
+		auto &fs = FileSystem::GetFileSystem(context);
+		const string meta = graph_path + ".meta.json";
+		if (!fs.FileExists(meta)) {
+			return "";
+		}
+		auto handle = fs.OpenFile(meta, FileOpenFlags::FILE_FLAGS_READ);
+		string raw;
+		raw.resize((size_t)MinValue<idx_t>(handle->GetFileSize(), 65536));
+		if (!raw.empty()) {
+			handle->Read((void *)raw.data(), raw.size(), 0);
+		}
+		auto key = raw.find("\"profile\"");
+		if (key == string::npos) {
+			return "";
+		}
+		auto open = raw.find('"', raw.find(':', key) + 1);
+		auto close = open == string::npos ? string::npos : raw.find('"', open + 1);
+		return close == string::npos ? "" : raw.substr(open + 1, close - open - 1);
+	} catch (...) {
+		return "";
+	}
+}
+
 void DecideCheckLocalFile(ClientContext &context, const string &path, const char *role, const string &hint) {
 	DecideOpenLocalFile(context, path, role, hint, "decide_register_model")->Close();
 }
@@ -278,6 +304,21 @@ void DecideRegistry::RegisterModel(ClientContext &context, const string &id, con
 		// not at first scoring.
 		DecideCheckLocalFile(context, entry.graph_path, "graph");
 		DecideCheckLocalFile(context, entry.tokenizer_path, "tokenizer", tokenizer_hint);
+		// <graph>.meta.json (written by tools/export_julia) names the profile the graph was exported for: adopt it
+		// when none was given, refuse a different one. A graph without metadata keeps the caller's profile.
+		const string meta_profile = DecideGraphMetaProfile(context, entry.graph_path);
+		if (!meta_profile.empty()) {
+			if (!profile.empty() && profile != meta_profile) {
+				throw InvalidInputException(DecideMsg(
+				    fn, "the graph '" + entry.graph_path + "' was exported for profile '" + meta_profile +
+				            "' but you passed '" + profile + "'",
+				    "use '" + meta_profile + "' as the 5th argument, or export the checkpoint again for '" + profile +
+				        "' (tools/export_julia)"));
+			}
+			if (profile.empty()) {
+				entry.profile = meta_profile;
+			}
+		}
 		if (!profile.empty()) {
 			entry.profile = profile;
 		}

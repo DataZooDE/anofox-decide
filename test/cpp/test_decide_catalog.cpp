@@ -101,7 +101,10 @@ string TempDir(const string &name) {
 
 const char *kRevision = "0123456789abcdef0123456789abcdef01234567";
 
-enum class Mode { Plain, Redirect, IgnoreRange, RedirectLoop, NotFound };
+enum class Mode { Plain, Redirect, RedirectSigned, IgnoreRange, RedirectLoop, NotFound };
+
+// The query a signed CDN URL carries: not sorted, '+' and %XX kept as sent.
+const char *kSignedQuery = "z=1&Policy=a%2Bb%7Ec&a=2&Signature=x+y%3Bz&Key-Pair-Id=K";
 
 // Serves /<repo>/resolve/<rev>/<path> from an in-memory map; counts requests and remembers Range headers.
 class FileServer {
@@ -120,6 +123,11 @@ public:
 				        res.set_header("Location", req.path);
 				        return;
 			        }
+			        if (mode == Mode::RedirectSigned) {
+				        res.status = 302;
+				        res.set_header("Location", "/cdn/" + FileOf(req.path) + "?" + kSignedQuery);
+				        return;
+			        }
 			        if (mode == Mode::Redirect) {
 				        res.status = 302;
 				        res.set_header("Location", "/cdn/" + FileOf(req.path));
@@ -130,6 +138,10 @@ public:
 		svr.Get(R"(/cdn/.+)",
 		        [this](const duckdb_httplib_openssl::Request &req, duckdb_httplib_openssl::Response &res) {
 			        cdn_hits++;
+			        if (mode == Mode::RedirectSigned && req.target.substr(req.target.find('?') + 1) != kSignedQuery) {
+				        res.status = 403; // what the Hugging Face CDN does when the signed query is reordered or re-encoded
+				        return;
+			        }
 			        Serve(req, res, FileOf(req.path));
 		        });
 		port = svr.bind_to_any_port("127.0.0.1");
@@ -373,6 +385,33 @@ TEST_CASE("decide_download follows redirects", "[anofox_decide][catalog]") {
 	fs::remove_all(cache);
 }
 
+TEST_CASE("decide_download sends a signed redirect query byte for byte", "[anofox_decide][catalog]") {
+	FileServer server(TinyFiles(), Mode::RedirectSigned);
+	auto entry = TestEntry(server);
+	auto cache = TempDir("signed");
+	auto rows = DecideDownloadEntry(entry, cache, 5000);
+	REQUIRE(rows.size() == 2);
+	REQUIRE(server.cdn_hits == 2);
+	for (auto &r : rows) {
+		REQUIRE(ReadFile(r.path) == server.files[r.file]);
+	}
+	// Resume over the signed hop too.
+	const string dir = DecideCatalogModelDir(cache, entry);
+	fs::remove(dir + "/model.safetensors");
+	{
+		std::ofstream part(dir + "/model.safetensors.part", std::ios::binary);
+		part.write(server.files["model.safetensors"].data(), 777);
+	}
+	auto again = DecideDownloadEntry(entry, cache, 5000);
+	for (auto &r : again) {
+		REQUIRE(ReadFile(r.path) == server.files[r.file]);
+		if (r.file == "model.safetensors") {
+			REQUIRE(r.status == "resumed");
+		}
+	}
+	fs::remove_all(cache);
+}
+
 TEST_CASE("decide_download reports a redirect loop", "[anofox_decide][catalog]") {
 	FileServer server(TinyFiles(), Mode::RedirectLoop);
 	auto entry = TestEntry(server);
@@ -576,4 +615,38 @@ void CheckReal(const RealModel &m) {
 
 TEST_CASE("real weights: laya-multilingual matches the reference", "[anofox_decide][catalog][real]") {
 	CheckReal({"LAYA_ML_DIR", "laya-multilingual", "laya", 0.9821, 0.0012, "tokenizer/tokenizer.json"});
+}
+
+// The reference values below are what the earlier Python-exported full graphs gave (the 200-ticket evaluation
+// reproduces to the last digit through the weight-free path).
+TEST_CASE("real weights: laya-typed-decisions matches the reference", "[anofox_decide][catalog][real]") {
+	CheckReal({"LAYA_TD_DIR", "laya-typed-decisions", "laya", 0.7057, 0.0020, "tokenizer/tokenizer.json"});
+}
+
+TEST_CASE("real weights: julia-1 matches the reference", "[anofox_decide][catalog][real]") {
+	CheckReal({"JULIA_WEIGHTS_DIR", "julia-1", "julia-1", 0.9908, 0.9995, "tokenizer/tokenizer.json"});
+}
+
+TEST_CASE("a graph's .meta.json decides the profile", "[anofox_decide][catalog]") {
+	auto dir = TempDir("meta");
+	fs::copy_file("test/fixtures/julia1_tiny.onnx", dir + "/g.onnx");
+	fs::copy_file("test/fixtures/tiny_tokenizer.json", dir + "/tok.json");
+	{
+		std::ofstream meta(dir + "/g.onnx.meta.json");
+		meta << "{\n \"format\": 1,\n \"profile\": \"julia-1\"\n}\n";
+	}
+	DuckDB db(nullptr);
+	db.LoadStaticExtension<AnofoxDecideExtension>();
+	Connection con(db);
+	auto bad = con.Query("SELECT decide_register_model('m1', 'local', '" + dir + "/g.onnx', '" + dir + "/tok.json', 'laya')");
+	REQUIRE(bad->HasError());
+	REQUIRE_THAT(bad->GetError(), Contains("was exported for profile 'julia-1' but you passed 'laya'"));
+	REQUIRE_THAT(bad->GetError(), Contains("Fix: use 'julia-1' as the 5th argument"));
+	REQUIRE_NO_FAIL(con.Query("SELECT decide_register_model('m2', 'local', '" + dir + "/g.onnx', '" + dir + "/tok.json')"));
+	auto profile = con.Query("SELECT profile FROM decide_models() WHERE model = 'm2'");
+	REQUIRE(profile->GetValue(0, 0).ToString() == "julia-1");
+	// No metadata: the caller's profile is trusted, as before.
+	fs::remove(dir + "/g.onnx.meta.json");
+	REQUIRE_NO_FAIL(con.Query("SELECT decide_register_model('m3', 'local', '" + dir + "/g.onnx', '" + dir + "/tok.json', 'julia-1')"));
+	fs::remove_all(dir);
 }

@@ -8,11 +8,16 @@ require anofox_decide
 statement ok
 LOAD anofox_decide
 
-# Builtin stub model is pre-registered by the extension load.
+# Builtin stub model is pre-registered by the extension load; the catalog models (not downloaded) are listed too.
+query I
+SELECT count(*) FROM decide_models() WHERE ready
+----
+1
+
 query I
 SELECT count(*) FROM decide_models()
 ----
-1
+4
 
 query I
 SELECT count(*) FROM decide_models() WHERE model='stub' AND provider='stub'
