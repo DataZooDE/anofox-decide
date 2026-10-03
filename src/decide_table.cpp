@@ -375,35 +375,10 @@ unique_ptr<LocalTableFunctionState> DecideTableInitLocal(ExecutionContext &conte
 }
 
 void DecideTableEmitRow(DataChunk &output, idx_t out_idx, const DecideAnswer &a, const string &fallback_model) {
-	output.SetValue(0, out_idx, Value(a.id));
-	output.SetValue(1, out_idx, Value(a.kind == "noul" ? "binary" : (a.kind == "score" ? "score" : "choice")));
-	output.SetValue(2, out_idx, Value::DOUBLE(a.probability));
-	if (a.kind == "choice" && !a.choice.empty()) {
-		output.SetValue(3, out_idx, Value(a.choice));
-	} else {
-		output.SetValue(3, out_idx, Value(LogicalType::VARCHAR));
-	}
-	if (std::isfinite(a.confidence)) {
-		output.SetValue(4, out_idx, Value::DOUBLE(a.confidence));
-	} else {
-		output.SetValue(4, out_idx, Value(LogicalType::DOUBLE));
-	}
-	output.SetValue(5, out_idx, Value(a.model.empty() ? fallback_model : a.model));
-	if (a.kind == "score" && std::isfinite(a.expected)) {
-		output.SetValue(6, out_idx, Value::DOUBLE(a.expected));
-	} else {
-		output.SetValue(6, out_idx, Value(LogicalType::DOUBLE));
-	}
-	if (!a.distribution.empty()) {
-		vector<Value> keys;
-		vector<Value> values;
-		for (auto &kv : a.distribution) {
-			keys.emplace_back(Value(kv.first));
-			values.emplace_back(Value::DOUBLE(kv.second));
-		}
-		output.SetValue(7, out_idx, Value::MAP(LogicalType::VARCHAR, LogicalType::DOUBLE, std::move(keys), std::move(values)));
-	} else {
-		output.SetValue(7, out_idx, Value(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::DOUBLE)));
+	auto row = DecideAnswerStructValue(a, fallback_model);
+	auto &children = StructValue::GetChildren(row);
+	for (idx_t c = 0; c < children.size(); c++) {
+		output.SetValue(c, out_idx, children[c]);
 	}
 }
 
@@ -488,6 +463,48 @@ OperatorResultType DecideTableInOut(ExecutionContext &context, TableFunctionInpu
 }
 
 } // namespace
+
+// The shared answer row of decide_table and decide_answers: one place, so both surfaces always agree.
+LogicalType DecideAnswerStructType() {
+	child_list_t<LogicalType> children;
+	children.emplace_back("question_id", LogicalType::VARCHAR);
+	children.emplace_back("kind", LogicalType::VARCHAR);
+	children.emplace_back("probability", LogicalType::DOUBLE);
+	children.emplace_back("choice", LogicalType::VARCHAR);
+	children.emplace_back("confidence", LogicalType::DOUBLE);
+	children.emplace_back("model", LogicalType::VARCHAR);
+	children.emplace_back("score", LogicalType::DOUBLE);
+	children.emplace_back("distribution", LogicalType::MAP(LogicalType::VARCHAR, LogicalType::DOUBLE));
+	return LogicalType::STRUCT(std::move(children));
+}
+
+Value DecideAnswerStructValue(const DecideAnswer &a, const string &fallback_model) {
+	child_list_t<Value> children;
+	children.emplace_back("question_id", Value(a.id));
+	children.emplace_back("kind", Value(a.kind == "noul" ? "binary" : (a.kind == "score" ? "score" : "choice")));
+	children.emplace_back("probability", Value::DOUBLE(a.probability));
+	children.emplace_back("choice", (a.kind == "choice" && !a.choice.empty()) ? Value(a.choice)
+	                                                                          : Value(LogicalType::VARCHAR));
+	children.emplace_back("confidence", std::isfinite(a.confidence) ? Value::DOUBLE(a.confidence)
+	                                                                : Value(LogicalType::DOUBLE));
+	children.emplace_back("model", Value(a.model.empty() ? fallback_model : a.model));
+	children.emplace_back("score", (a.kind == "score" && std::isfinite(a.expected)) ? Value::DOUBLE(a.expected)
+	                                                                                : Value(LogicalType::DOUBLE));
+	if (!a.distribution.empty()) {
+		vector<Value> keys;
+		vector<Value> values;
+		for (auto &kv : a.distribution) {
+			keys.emplace_back(Value(kv.first));
+			values.emplace_back(Value::DOUBLE(kv.second));
+		}
+		children.emplace_back("distribution",
+		                      Value::MAP(LogicalType::VARCHAR, LogicalType::DOUBLE, std::move(keys), std::move(values)));
+	} else {
+		children.emplace_back("distribution", Value(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::DOUBLE)));
+	}
+	return Value::STRUCT(std::move(children));
+}
+
 
 void RegisterDecideTableFunctions(ExtensionLoader &loader) {
 	const auto V = LogicalType::VARCHAR;

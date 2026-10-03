@@ -37,10 +37,13 @@ FROM decide_table((SELECT text FROM tickets WHERE id = 1),
   '[{"id":"refund","kind":"binary","instruction":"A refund is requested."},
     {"id":"vat","kind":"binary","instruction":"The writer disputes a tax amount."}]');
 
--- A lateral join over a table works and is fine for a few rows, but DuckDB gives the function one row
--- per call there, so it runs one request after another: prefer the scalar calls above for many rows.
-SELECT t.id, dt.question_id, dt.probability
-FROM tickets t,
-     LATERAL (SELECT * FROM decide_table(t.text,
-       '[{"id":"refund","kind":"binary","instruction":"A refund is requested."}]')) dt
-ORDER BY t.id;
+-- The same rows for a whole table: decide_answers returns decide_table's rows as a list per text, and
+-- unnest(..., recursive := true) turns them into columns. It runs in the scalar pipeline, so the texts
+-- are scored concurrently, identical texts are sent once and calibration applies. Prefer it to a
+-- lateral join over decide_table (DuckDB gives that one row per call, so it runs one request after another).
+SELECT id, question_id, kind, probability, choice
+FROM (SELECT id, unnest(decide_answers(text,
+  '[{"id":"refund","kind":"binary","instruction":"A refund is requested."},
+    {"id":"team","kind":"choice","instruction":"Which team owns this?","options":["billing","defect","other"]}]'),
+  recursive := true) FROM tickets)
+ORDER BY id, question_id;

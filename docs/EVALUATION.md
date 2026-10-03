@@ -172,8 +172,12 @@ several runs into one directory first).
 
 The remote latency noted above (1 to 34 s per call) made sequential runs slow. Scalar `decide_*` calls now send a
 chunk's requests concurrently (`anofox_decide_max_concurrency`, default 8 for hosted providers): 8 real D1 calls took
-176.7 s one after another and 23.1 s together. `tools/eval/run_eval.py` does not benefit yet: it scores through
-`LATERAL decide_table`, which DuckDB runs one row at a time (see "Scoring many rows" in the README). Moving it to the
-scalar functions (or to a future scalar that returns the question rows) would cut the remote runs by about the
-concurrency factor.
+176.7 s one after another and 23.1 s together. `tools/eval/run_eval.py` now scores through `decide_answers` (the rows of `decide_table` as a value, so the scalar
+pipeline and its concurrency apply; a `LATERAL decide_table` join runs one row at a time). Measured on the 200-ticket
+sample with Cloudflare Clef (two questions per ticket, 200 requests), 3 Oct 2026: 13 s with the default concurrency
+(8), against 134 s for the earlier `LATERAL decide_table` run and 86 s with `--concurrency 1` through
+`decide_answers` (hosted latency varies from run to run, so compare the 13 s with the 86 s of the same code path).
+Accuracy is identical: 85.0% refund, 88.0% routing, refund AUROC 0.951, and the refund probabilities and routing
+choices of all 200 tickets equal the earlier run's. Use `--concurrency N` to set `anofox_decide_max_concurrency`
+for a run.
 

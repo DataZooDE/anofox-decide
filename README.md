@@ -204,6 +204,16 @@ FROM decide_table('The bill is wrong and I want my money back.',
 `decide_many` returns the same answers as one JSON document per text:
 `{"model": "...", "results": [{"id", "kind", "probability", ...}]}`.
 
+`decide_answers` returns the same rows as a list of structs, one list per text. To score every row of a
+table and get `decide_table`'s columns, unnest it (this runs concurrently, unlike a lateral join):
+
+```sql
+SELECT id, question_id, probability, choice
+FROM (SELECT id, unnest(decide_answers(body, '[{"id": "refund", "kind": "binary", "instruction": "A refund is requested."}]',
+                                        model := 'd1:free'), recursive := true)
+      FROM tickets);
+```
+
 **NULLs.** A NULL text, question, option list or threshold gives a NULL result: no model is resolved and
 nothing is sent. A NULL `model` argument falls back to the session default.
 
@@ -223,6 +233,7 @@ Every function is available as `anofox_decide_<name>` and as the short alias `de
 | `decide_score(state, question, levels[, model])` | `DOUBLE` | the expected 0-based level on an ordered rubric |
 | `decide_many(state, questions[, model])` | `VARCHAR` (JSON) | several questions about one text in one request |
 | `decide_table(state, questions[, model])` | table | the same, one row per question |
+| `decide_answers(state, questions[, model])` | `LIST(STRUCT(...))` | the rows of `decide_table` as a value: `unnest(decide_answers(...), recursive := true)` gives its columns for every row of a table, scored concurrently |
 | `decide_accuracy(p, outcome[, threshold])` | `DOUBLE` | share of rows where thresholding `p` reproduces the label (aggregate) |
 | `decide_brier_score(p, outcome)` | `DOUBLE` | mean squared error of the probabilities; 0 is perfect, 0.25 a constant 0.5 (aggregate) |
 | `decide_ece(p, outcome)` | `DOUBLE` | expected calibration error over ten equal-width bins (aggregate) |
@@ -357,7 +368,8 @@ whatever the SQL looks like. What you control is how many run at the same time.
 |---|---|---|
 | `decide_probability` / `decide_choice` / `decide_score` / `decide_decision` / `decide_many` over a table | one per distinct row, **up to 8 at a time** | The fast path. A chunk of rows is evaluated together: identical rows are sent once, connections are reused, and a `429` makes the query back off |
 | `decide_table(text, questions)` with constant arguments | one request for all questions | One document, many questions |
-| `LATERAL decide_table(t.text, ...)` over a table | one per row, **one after another** | DuckDB gives the function one row per call in a lateral join, so it cannot be concurrent (measured: with 8 DuckDB threads the peak is still 1 request in flight). Fine for a few rows |
+| `unnest(decide_answers(t.text, questions), recursive := true)` over a table | one per distinct row, **up to 8 at a time** | The fast way to get `decide_table`'s rows (one per question) for every row of a table: same columns, same answers, scalar speed |
+| `LATERAL decide_table(t.text, ...)` over a table | one per row, **one after another** | Gives the same rows, but DuckDB gives the function one row per call in a lateral join, so it cannot be concurrent (measured: with 8 DuckDB threads the peak is still 1 request in flight). Fine for a few rows; use `decide_answers` for many |
 
 Measured on the real Liquid D1 service (8 tickets, three questions each): 176.7 s with
 `SET anofox_decide_max_concurrency = 1` against 23.1 s with the default, same answers (D1 itself varies

@@ -1,0 +1,153 @@
+# name: test/sql/decide_answers.test
+# description: decide_answers(state, questions_json[, model]) returns the rows of
+#              decide_table as a LIST(STRUCT(...)) value, so
+#              unnest(decide_answers(...), recursive := true) gives decide_table's
+#              columns for every row of a table, at scalar speed. Same validation
+#              contract and providers as decide_many and decide_table.
+# group: [anofox_decide]
+
+require anofox_decide
+
+statement ok
+LOAD anofox_decide
+
+# The result type is the shared answer row.
+query I
+SELECT typeof(decide_answers('x', '[{"id":"q","kind":"binary","instruction":"Y?"}]', 'stub'))
+----
+STRUCT(question_id VARCHAR, kind VARCHAR, probability DOUBLE, choice VARCHAR, confidence DOUBLE, model VARCHAR, score DOUBLE, distribution MAP(VARCHAR, DOUBLE))[]
+
+# Rows equal decide_table (all three kinds, every column), in question order.
+query I
+SELECT count(*) FROM (
+  SELECT * FROM decide_table('The bill is wrong.',
+    '[{"id":"refund","kind":"binary","instruction":"A refund is requested."},
+      {"id":"team","kind":"choice","instruction":"Owning team?","options":["billing","other"]},
+      {"id":"urgency","kind":"score","instruction":"How urgent?","levels":["low","medium","high"]}]', 'stub')
+  EXCEPT
+  SELECT unnest(decide_answers('The bill is wrong.',
+    '[{"id":"refund","kind":"binary","instruction":"A refund is requested."},
+      {"id":"team","kind":"choice","instruction":"Owning team?","options":["billing","other"]},
+      {"id":"urgency","kind":"score","instruction":"How urgent?","levels":["low","medium","high"]}]', 'stub'), recursive := true)
+)
+----
+0
+
+query TTRTRTRT
+SELECT question_id, kind, probability, choice, confidence, model, score, distribution
+FROM (SELECT unnest(decide_answers('x',
+    '[{"id":"refund","kind":"binary","instruction":"A refund is requested."},
+      {"id":"team","kind":"choice","instruction":"Owning team?","options":["billing","other"]},
+      {"id":"urgency","kind":"score","instruction":"How urgent?","levels":["low","medium","high"]}]', 'stub'), recursive := true))
+----
+refund	binary	0.5	NULL	NULL	stub	NULL	NULL
+team	choice	1.0	billing	NULL	stub	NULL	{billing=1.0, other=0.0}
+urgency	score	0.3333333333333333	NULL	NULL	stub	1.0	{low=0.3333333333333333, medium=0.3333333333333333, high=0.3333333333333333}
+
+# A table: one row per ticket and question.
+query ITT
+SELECT id, question_id, model FROM (
+  SELECT id, unnest(decide_answers(text, '[{"id":"a","kind":"binary","instruction":"A?"},{"id":"b","kind":"binary","instruction":"B?"}]', model := 'stub'), recursive := true)
+  FROM (VALUES (1, 'one'), (2, 'two')) t(id, text)
+) ORDER BY 1, 2
+----
+1	a	stub
+1	b	stub
+2	a	stub
+2	b	stub
+
+# Positional and named model, the default model setting, and the full name.
+query I
+SELECT len(decide_answers('x', '[{"id":"q","kind":"binary","instruction":"Y?"}]', 'stub'))
+----
+1
+
+query I
+SELECT len(anofox_decide_answers('x', '[{"id":"q","kind":"binary","instruction":"Y?"}]', model := 'stub'))
+----
+1
+
+statement ok
+SET anofox_decide_model='stub'
+
+query T
+SELECT decide_answers('x', '[{"id":"q","kind":"binary","instruction":"Y?"}]')[1].model
+----
+stub
+
+statement ok
+RESET anofox_decide_model
+
+# NULL state or questions: a NULL list (no rows after unnest); a NULL model argument uses the setting.
+query I
+SELECT decide_answers(NULL, '[{"id":"q","kind":"binary","instruction":"Y?"}]', 'stub') IS NULL
+----
+1
+
+query I
+SELECT decide_answers('x', NULL, 'stub') IS NULL
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT unnest(decide_answers(NULL, '[{"id":"q","kind":"binary","instruction":"Y?"}]', 'stub'), recursive := true))
+----
+0
+
+# NULL rows do not break the rows around them.
+query IT
+SELECT id, decide_answers(t, '[{"id":"q","kind":"binary","instruction":"Y?"}]', 'stub')[1].question_id
+FROM (VALUES (1, 'a'), (2, NULL), (3, 'c')) v(id, t) ORDER BY id
+----
+1	q
+2	NULL
+3	q
+
+# Errors name decide_answers and stay actionable (including the empty list).
+statement error
+SELECT decide_answers('x', 'not json', 'stub')
+----
+<REGEX>:.*decide_answers.*
+
+statement error
+SELECT decide_answers('x', '[]', 'stub')
+----
+<REGEX>:.*decide_answers.*empty question list.*
+
+statement error
+SELECT decide_answers('x', '[{"id":"q","kind":"binary","instruction":"A"},{"id":"q","kind":"binary","instruction":"B"}]', 'stub')
+----
+<REGEX>:.*decide_answers: duplicate question id.*
+
+statement error
+SELECT decide_answers('x', '[{"id":"q","kind":"mystery","instruction":"A"}]', 'stub')
+----
+<REGEX>:.*decide_answers.*unsupported kind.*
+
+statement error
+SELECT decide_answers('x', '[{"id":"q","kind":"choice","instruction":"A"}]', 'stub')
+----
+<REGEX>:.*decide_answers.*non-empty 'options'.*
+
+# Too many questions respects anofox_decide_max_questions.
+statement ok
+SET anofox_decide_max_questions = 1
+
+statement error
+SELECT decide_answers('x', '[{"id":"a","kind":"binary","instruction":"A"},{"id":"b","kind":"binary","instruction":"B"}]', 'stub')
+----
+<REGEX>:.*decide_answers.*
+
+statement ok
+RESET anofox_decide_max_questions
+
+# Unknown models fail with an error that names the fix; no model at all says how to choose one.
+statement error
+SELECT decide_answers('x', '[{"id":"q","kind":"binary","instruction":"Y?"}]', 'nope')
+----
+<REGEX>:.*model 'nope' is not registered.*
+
+statement error
+SELECT decide_answers('x', '[{"id":"q","kind":"binary","instruction":"Y?"}]')
+----
+<REGEX>:.*decide_answers.*
