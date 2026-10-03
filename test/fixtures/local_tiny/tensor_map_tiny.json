@@ -1,0 +1,113 @@
+{
+ "arch": "tiny",
+ "checkpoint_tensors": 27,
+ "encoder": {
+  "hidden_size": 32
+ },
+ "format": 1,
+ "initializers": {
+  "encoder.embeddings.norm.weight": "encoder.embeddings.norm.weight",
+  "encoder.embeddings.tok_embeddings.weight": "encoder.embeddings.tok_embeddings.weight",
+  "encoder.layers.0.attn.Wo.weight": "encoder.layers.0.attn.Wo.weight",
+  "encoder.layers.0.attn.Wqkv.weight": "encoder.layers.0.attn.Wqkv.weight",
+  "encoder.layers.0.mlp.Wi.weight": "encoder.layers.0.mlp.Wi.weight",
+  "encoder.layers.0.mlp.Wo.weight": "encoder.layers.0.mlp.Wo.weight",
+  "head.layers.0.linear1.bias": "head.layers.0.linear1.bias",
+  "head.layers.0.linear1.weight": "head.layers.0.linear1.weight",
+  "head.layers.0.linear2.bias": "head.layers.0.linear2.bias",
+  "head.layers.0.linear2.weight": "head.layers.0.linear2.weight",
+  "head.layers.0.self_attn.in_proj_bias": "head.layers.0.self_attn.in_proj_bias",
+  "head.layers.0.self_attn.in_proj_weight": "head.layers.0.self_attn.in_proj_weight",
+  "head.layers.0.self_attn.out_proj.bias": "head.layers.0.self_attn.out_proj.bias",
+  "head.layers.0.self_attn.out_proj.weight": "head.layers.0.self_attn.out_proj.weight",
+  "scorer.1.bias": "scorer.1.bias",
+  "scorer.1.weight": "scorer.1.weight",
+  "scorer.3.bias": "scorer.3.bias",
+  "scorer.3.weight": "scorer.3.weight",
+  "type_emb.weight": "type_emb.weight"
+ },
+ "inputs": [
+  "input_ids",
+  "attention_mask",
+  "marker_pos",
+  "marker_mask",
+  "qtype"
+ ],
+ "masked_fill": -10000.0,
+ "opset": 17,
+ "outputs": [
+  "scores"
+ ],
+ "shapes": {
+  "encoder.embeddings.norm.weight": [
+   32
+  ],
+  "encoder.embeddings.tok_embeddings.weight": [
+   1000,
+   32
+  ],
+  "encoder.layers.0.attn.Wo.weight": [
+   32,
+   32
+  ],
+  "encoder.layers.0.attn.Wqkv.weight": [
+   96,
+   32
+  ],
+  "encoder.layers.0.mlp.Wi.weight": [
+   128,
+   32
+  ],
+  "encoder.layers.0.mlp.Wo.weight": [
+   32,
+   64
+  ],
+  "head.layers.0.linear1.bias": [
+   128
+  ],
+  "head.layers.0.linear1.weight": [
+   128,
+   32
+  ],
+  "head.layers.0.linear2.bias": [
+   32
+  ],
+  "head.layers.0.linear2.weight": [
+   32,
+   128
+  ],
+  "head.layers.0.self_attn.in_proj_bias": [
+   96
+  ],
+  "head.layers.0.self_attn.in_proj_weight": [
+   96,
+   32
+  ],
+  "head.layers.0.self_attn.out_proj.bias": [
+   32
+  ],
+  "head.layers.0.self_attn.out_proj.weight": [
+   32,
+   32
+  ],
+  "scorer.1.bias": [
+   32
+  ],
+  "scorer.1.weight": [
+   32,
+   32
+  ],
+  "scorer.3.bias": [
+   1
+  ],
+  "scorer.3.weight": [
+   1,
+   32
+  ],
+  "type_emb.weight": [
+   3,
+   32
+  ]
+ },
+ "transforms": {}
+}

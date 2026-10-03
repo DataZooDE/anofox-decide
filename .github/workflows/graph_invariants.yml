@@ -1,0 +1,39 @@
+# The committed graphs must carry no weight bytes (the repository never
+# redistributes model weights). Needs only the onnx package: no ONNX Runtime,
+# no weights, no platform matrix.
+name: Graph invariants
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  weight-free:
+    name: Committed graphs are weight-free
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install --quiet onnx
+      - name: Graphs in resources/ and the test fixture
+        run: |
+          python tools/export_julia/scripts/check_graph_invariants.py \
+            resources/graph_*.onnx test/fixtures/local_tiny/graph_*.onnx
+      - name: No weight files are tracked in resources/
+        run: |
+          if git ls-files resources | grep -E '\.(safetensors|onnx\.data|bin|pt)$'; then
+            echo "weight file tracked under resources/"; exit 1
+          fi

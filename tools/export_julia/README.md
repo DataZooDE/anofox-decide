@@ -38,6 +38,18 @@ it). For a Laya checkpoint, use the snapshot subfolder that holds its encoder an
 `rl_agent_config.json` next to the graph: the `laya` profile reads its sequence limits and calibration
 temperatures from it.
 
+## Weight-free graphs (what the extension embeds)
+
+`export_julia export ... --weight-free --arch <julia-1|laya-multilingual|laya-typed-decisions>` writes
+`graph_<arch>.onnx` and `tensor_map_<arch>.json` instead of the full graph. The graph is exported without
+constant folding (so parameters keep their names), every checkpoint tensor is replaced by an external-data
+stub, and the map lists `initializer name -> safetensors key` (plus the shape the loader verifies). Every
+mapping is value-checked against the checkpoint at export time. The three graphs in `resources/` were
+produced this way (165 / 165 / 201 mapped initializers, all by exact name, no transposes, 0.6-1.0 MB each).
+`scripts/gate_parity.py` runs the weight-free graph with the real safetensors injected next to the full-weights
+graph on real tickets; `scripts/check_graph_invariants.py` is the CI check that committed graphs carry no
+weight bytes; `scripts/make_tiny_fixture.py` regenerates the random-init test fixture.
+
 ## Use it
 
 ```sql
