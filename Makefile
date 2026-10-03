@@ -10,9 +10,9 @@ endif
 EXT_NAME=anofox_decide
 EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 
-# DuckDB / extension-ci-tools pins (same as tabfm: v1.5.5 / v1.5-variegata).
+# DuckDB / extension-ci-tools pins (same as tabfm: v1.5.6 / v1.5-variegata).
 # Bootstrap: `make init` clones the submodules at these pins.
-DUCKDB_VER ?= v1.5.5
+DUCKDB_VER ?= v1.5.6
 CI_TOOLS_BRANCH ?= v1.5-variegata
 
 # Release/distribution builds link ONNX Runtime statically via the vcpkg
