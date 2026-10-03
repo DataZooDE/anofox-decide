@@ -381,6 +381,54 @@ TEST_CASE("decide_models readiness uses the registration checks", "[anofox_decid
 	REQUIRE_THAT(uni.detail, Contains("is a Unigram tokenizer"));
 }
 
+namespace {
+
+string OpenError(Connection &con, const string &path, const char *function = "decide_probability") {
+	try {
+		DecideLocalSession::Open(*con.context, path, function);
+	} catch (std::exception &e) {
+		return e.what();
+	}
+	return "";
+}
+
+} // namespace
+
+TEST_CASE("ONNX Runtime failures while opening a graph are mapped to project errors", "[anofox_decide][local]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	SECTION("a text file is not a readable model") {
+		auto msg = OpenError(con, "test/fixtures/not_a_model.txt");
+		INFO(msg);
+		REQUIRE_THAT(msg, Contains("decide_probability: the graph 'test/fixtures/not_a_model.txt' is not a readable ONNX "
+		                           "model"));
+		REQUIRE_THAT(msg, Contains(" Fix: pass the .onnx file the exporter wrote"));
+		REQUIRE_THAT(msg, !Contains("Schema error"));
+	}
+	SECTION("a weights file is not a readable model") {
+		auto msg = OpenError(con, "test/fixtures/fake_weights.safetensors", "decide_doctor");
+		INFO(msg);
+		REQUIRE_THAT(msg, Contains("decide_doctor: "));
+		REQUIRE_THAT(msg, Contains(" Fix: "));
+	}
+	SECTION("a graph with other inputs gets a name diff, not a count check") {
+		auto msg = OpenError(con, "test/fixtures/wrong_inputs.onnx");
+		INFO(msg);
+		REQUIRE_THAT(msg, Contains("decide_probability: the graph 'test/fixtures/wrong_inputs.onnx' has the inputs 'x', "
+		                           "but a local model is fed 'input_ids', 'attention_mask', 'marker_pos', 'marker_mask', "
+		                           "'qtype'; missing 'input_ids', 'attention_mask', 'marker_pos', 'marker_mask', 'qtype'; "
+		                           "not used 'x'"));
+		REQUIRE_THAT(msg, Contains(" Fix: this is not a scores graph from tools/export_julia"));
+	}
+	SECTION("the exception types are expected user errors (no report-it footer)") {
+		REQUIRE_THROWS_AS(DecideLocalSession::Open(*con.context, "test/fixtures/not_a_model.txt"), InvalidInputException);
+		REQUIRE_THROWS_AS(DecideLocalSession::Open(*con.context, "test/fixtures/wrong_inputs.onnx"), InvalidInputException);
+	}
+	SECTION("the tiny fixture still opens") {
+		REQUIRE(OpenError(con, "test/fixtures/julia1_tiny.onnx").empty());
+	}
+}
+
 TEST_CASE("ORT error mapping is keyed on the error code and ends with a Fix", "[anofox_decide][local]") {
 	string kind;
 	auto msg = DecideOrtErrorMessage(7 /* ORT_INVALID_PROTOBUF */, "Load model from x failed:Protobuf parsing failed.\nsecond line",
