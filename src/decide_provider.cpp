@@ -2,6 +2,7 @@
 #include "decide_errors.hpp"
 #include "decide_registration.hpp"
 #include "decide_remote.hpp"
+#include "decide_catalog.hpp"
 #include "decide_local_nli.hpp"
 #include "decide_local_validate.hpp"
 
@@ -290,6 +291,13 @@ void DecideRegistry::RegisterModel(ClientContext &context, const string &id, con
 	models[id] = entry;
 }
 
+void DecideRegistry::RegisterCatalogModel(const DecideModelEntry &entry) {
+	lock_guard<mutex> guard(lock);
+	if (models.find(entry.id) == models.end()) {
+		models[entry.id] = entry;
+	}
+}
+
 vector<DecideModelEntry> DecideRegistry::List() {
 	lock_guard<mutex> guard(lock);
 	vector<DecideModelEntry> out;
@@ -386,6 +394,17 @@ DecideModelEntry DecideResolveModel(ClientContext &context, const string &functi
 	if (registry->TryLookup(model, entry)) {
 		return entry;
 	}
+	// A catalog model (decide_download): registered on the fly once its files are in the cache.
+	DecideCatalogEntry catalog_entry;
+	if (DecideCatalogFind(model, catalog_entry)) {
+		const auto cache_dir = DecideCacheDir(context, function.c_str());
+		if (!DecideCatalogCached(cache_dir, catalog_entry)) {
+			throw InvalidInputException(DecideCatalogNotDownloadedMessage(function, catalog_entry));
+		}
+		registry->RegisterCatalogModel(DecideCatalogModelEntry(cache_dir, catalog_entry));
+		registry->TryLookup(model, entry);
+		return entry;
+	}
 	const string close = DecideDidYouMean(model, ids);
 	string what = "model '" + model + "' is not registered (given by " +
 	              (from_setting ? "the anofox_decide_model setting" : "the model argument") + ")";
@@ -467,6 +486,26 @@ DecideModelStatus DecideDescribeModel(ClientContext &context, const DecideModelE
 		} catch (const std::exception &e) {
 			status.detail = DecideCleanExceptionMessage(e);
 		}
+		return status;
+	}
+	if (entry.provider == "local" && !entry.catalog_id.empty()) {
+		DecideCatalogEntry catalog_entry;
+		if (!DecideCatalogFind(entry.catalog_id, catalog_entry)) {
+			status.detail = "catalog model '" + entry.catalog_id + "' is not in this version's catalog";
+			return status;
+		}
+		const auto slash = entry.weights_path.find_last_of("/\\");
+		const bool cached = slash != string::npos &&
+		                    DecideCatalogDirCached(entry.weights_path.substr(0, slash), catalog_entry);
+		if (!cached) {
+			status.detail = "not downloaded yet (" + DecideFormatBytes(catalog_entry.TotalBytes()) +
+			                " from Hugging Face, " + catalog_entry.note + ")";
+			status.fix = "CALL decide_download('" + entry.catalog_id + "');";
+			return status;
+		}
+		status.ready = true;
+		status.detail = "ready: downloaded (" + catalog_entry.license + "); the graph loads on the first call "
+		                "(seconds for large models)";
 		return status;
 	}
 	if (entry.provider == "local") {

@@ -107,6 +107,10 @@ public:
 	//! `function` is the user-facing function named in errors (ONNX Runtime failures go through DecideMapOrtError).
 	static shared_ptr<DecideLocalSession> Open(ClientContext &context, const string &graph_path,
 	                                           const char *function = "decide");
+	//! Catalog models: the embedded weight-free graph + the downloaded safetensors injected as initializers;
+	//! other entries open entry.graph_path.
+	static shared_ptr<DecideLocalSession> Open(ClientContext &context, const DecideModelEntry &entry,
+	                                           const char *function = "decide");
 
 	//! Raw scores [B][M] in marker order.
 	vector<vector<float>> Score(const DecideLocalBatch &batch, const char *function = "decide");

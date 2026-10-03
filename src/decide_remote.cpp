@@ -1477,6 +1477,109 @@ static DecideHttpPost DecideMakeHttplibTransport() {
 }
 
 
+//--- Streaming GET (decide_download) -------------------------------------------
+// One GET of a large file through the same bundled httplib + OpenSSL and proxy handling as the
+// providers. Redirects are not followed here (the caller follows them, so it can enforce its own
+// limits); the body is handed to `on_data` as it arrives.
+
+static bool DecideSplitUrl(const string &url, bool &ssl, string &host, int &port, string &path) {
+	string rest;
+	if (url.compare(0, 8, "https://") == 0) {
+		ssl = true;
+		port = 443;
+		rest = url.substr(8);
+	} else if (url.compare(0, 7, "http://") == 0) {
+		ssl = false;
+		port = 80;
+		rest = url.substr(7);
+	} else {
+		return false;
+	}
+	auto slash = rest.find('/');
+	string authority = slash == string::npos ? rest : rest.substr(0, slash);
+	path = slash == string::npos ? "/" : rest.substr(slash);
+	auto colon = authority.rfind(':');
+	if (colon != string::npos && authority.find(']') == string::npos) {
+		host = authority.substr(0, colon);
+		try {
+			port = std::stoi(authority.substr(colon + 1));
+		} catch (...) {
+			return false;
+		}
+	} else {
+		host = authority;
+	}
+	return !host.empty() && port > 0 && port <= 65535;
+}
+
+DecideGetResult DecideHttpGet(const string &url, int64_t range_from, int timeout_ms, const DecideGetHeaders &on_headers,
+                              const DecideGetData &on_data) {
+	DecideGetResult result;
+	bool ssl = false;
+	string host, path;
+	int port = 0;
+	if (!DecideSplitUrl(url, ssl, host, port, path)) {
+		result.error = "'" + url + "' is not an http:// or https:// URL";
+		result.error_kind = "invalid_endpoint";
+		return result;
+	}
+	try {
+		std::unique_ptr<duckdb_httplib_openssl::Client> cli;
+		if (ssl) {
+			cli = make_uniq<duckdb_httplib_openssl::Client>("https://" + host + ":" + std::to_string(port));
+		} else {
+			cli = make_uniq<duckdb_httplib_openssl::Client>(host, port);
+		}
+		ApplyProxyEnv(*cli, ssl, host);
+		if (!cli->is_valid()) {
+			result.error = ssl ? "invalid HTTPS endpoint" : "invalid HTTP endpoint";
+			result.error_kind = "invalid_endpoint";
+			return result;
+		}
+		const int secs = std::max(1, timeout_ms / 1000);
+		cli->set_connection_timeout(secs, 0);
+		cli->set_read_timeout(secs, 0);
+		cli->set_write_timeout(secs, 0);
+		duckdb_httplib_openssl::Headers headers;
+		headers.emplace("User-Agent", "anofox-decide");
+		if (range_from > 0) {
+			headers.emplace("Range", "bytes=" + std::to_string(range_from) + "-");
+		}
+		bool refused_by_caller = false;
+		auto res = cli->Get(
+		    path.c_str(), headers,
+		    [&](const duckdb_httplib_openssl::Response &r) {
+			    result.status = r.status;
+			    result.location = r.get_header_value("Location", "");
+			    result.content_range = r.get_header_value("Content-Range", "");
+			    if (r.status != 200 && r.status != 206) {
+				    return false; // errors and redirects carry no body we want
+			    }
+			    if (!on_headers(r.status, result.content_range)) {
+				    refused_by_caller = true;
+				    return false;
+			    }
+			    return true;
+		    },
+		    [&](const char *data, size_t n) { return on_data(data, n); });
+		if (res) {
+			result.transport_ok = true;
+			return result;
+		}
+		if (result.status > 0 && !refused_by_caller && result.status != 200 && result.status != 206) {
+			result.transport_ok = true; // an HTTP answer we chose not to read
+			return result;
+		}
+		auto failure = DecideTransportFailure(res.error());
+		result.error = failure.transport_error;
+		result.error_kind = refused_by_caller ? "refused" : failure.error_kind;
+	} catch (const std::exception &e) {
+		result.error = e.what();
+		result.error_kind = "other";
+	}
+	return result;
+}
+
 //--- Evaluate ----------------------------------------------------------------
 
 static string GateMessage(const string &function, const string &id, const string &display, const string &endpoint) {

@@ -286,5 +286,22 @@ vector<DecideAnswer> DecideRemoteEvaluate(ClientContext &context, const string &
                                           const vector<DecideQuestion> &questions,
                                           const DecideRemoteTarget &target, const string &function = "decide");
 
+// One streaming GET of a (large) file; no redirects are followed (the caller does). `on_headers` sees the
+// status and Content-Range of a 200/206 answer before any body byte and returns false to stop;
+// `on_data` receives the body and returns false to stop (e.g. disk full). Other statuses (redirects,
+// errors) come back in the result with transport_ok = true. range_from > 0 sends "Range: bytes=N-".
+struct DecideGetResult {
+	bool transport_ok = false;
+	int status = -1;
+	string location;      // Location header of a redirect
+	string content_range; // Content-Range header of a 206
+	string error;         // reason when transport_ok is false
+	string error_kind;    // as DecideHttpResponse::error_kind, plus "refused" (on_headers/on_data said stop)
+};
+using DecideGetHeaders = std::function<bool(int status, const string &content_range)>;
+using DecideGetData = std::function<bool(const char *data, size_t size)>;
+DecideGetResult DecideHttpGet(const string &url, int64_t range_from, int timeout_ms, const DecideGetHeaders &on_headers,
+                              const DecideGetData &on_data);
+
 } // namespace anofox
 } // namespace duckdb

@@ -8,6 +8,7 @@
 #include "decide_provider.hpp"
 #include "decide_remote.hpp"
 #include "decide_local_nli.hpp"
+#include "decide_catalog.hpp"
 
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -70,6 +71,16 @@ unique_ptr<GlobalTableFunctionState> DecideModelsInitGlobal(ClientContext &conte
 	// pattern): rows are stable for the scan even if later statements
 	// register more models.
 	gstate->rows = DecideRegistry::Get(context)->List();
+	{
+		// Catalog models that are not registered yet (not downloaded, or downloaded but not used so far).
+		vector<string> ids;
+		for (auto &row : gstate->rows) {
+			ids.push_back(row.id);
+		}
+		for (auto &extra : DecideCatalogUnregistered(context, ids)) {
+			gstate->rows.push_back(std::move(extra));
+		}
+	}
 	gstate->default_model = DecideDefaultModel(context);
 	for (auto &row : gstate->rows) {
 		gstate->status.push_back(DecideDescribeModel(context, row));
@@ -86,7 +97,7 @@ void DecideModelsScan(ClientContext &context, TableFunctionInput &data, DataChun
 		output.SetValue(0, row_count, Value(row.id));
 		output.SetValue(1, row_count, Value(row.provider));
 		output.SetValue(2, row_count, Value(row.mode));
-		output.SetValue(3, row_count, Value(row.graph_path));
+		output.SetValue(3, row_count, Value(row.graph_path.empty() ? row.weights_path : row.graph_path));
 		auto &status = gstate.status[gstate.offset];
 		output.SetValue(4, row_count, Value::BOOLEAN(!gstate.default_model.empty() && row.id == gstate.default_model));
 		output.SetValue(5, row_count, Value::BOOLEAN(status.ready));
@@ -197,6 +208,20 @@ unique_ptr<GlobalTableFunctionState> DecideDoctorInitGlobal(ClientContext &conte
 		}
 		auto status = DecideDescribeModel(context, e);
 		rows.push_back({"model '" + e.id + "'", status.ready ? "ok" : "fail", status.detail, status.fix});
+	}
+
+	// 4b. Catalog models that are not downloaded yet.
+	{
+		vector<string> ids;
+		for (auto &e : entries) {
+			ids.push_back(e.id);
+		}
+		for (auto &e : DecideCatalogUnregistered(context, ids)) {
+			auto status = DecideDescribeModel(context, e);
+			if (!status.ready) {
+				rows.push_back({"local model '" + e.id + "'", "warn", status.detail, status.fix});
+			}
+		}
 	}
 
 	// 5. Telemetry state (informational).
