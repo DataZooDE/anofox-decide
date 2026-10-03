@@ -214,7 +214,7 @@ Measured: real D1, 8 tickets, 176.7 s sequential vs 23.1 s concurrent (same answ
 50 ms: 3.6 s at 8 in flight.
 
 **LATERAL cannot benefit.** A lateral `decide_table` is planned as a delim join whose in-out function receives the
-correlated column as a projected input, and DuckDB 1.5.5 then calls it with one row per call (`input.size() == 1`);
+correlated column as a projected input, and DuckDB 1.5.5 and 1.5.6 then call it with one row per call (`input.size() == 1`);
 with 8 DuckDB threads the peak is still 1 request in flight (300 rows at 50 ms: 15.1 s, against 3.6 s for the scalar).
 The chunk-level rewrite of the in-out operator was tried and dropped because it can never see more than one row.
 Open idea: a scalar returning `LIST(STRUCT(question_id, kind, probability, ...))` for use with `UNNEST`, which would
