@@ -54,6 +54,11 @@ public:
 	           const std::string &mask_content = "<mask>", const std::string &pad_content = "<pad>",
 	           const std::string &unk_content = "<unk>");
 
+	//! Name of the user-facing function that errors from Load/Parse report ("decide" by default).
+	void SetFunction(const std::string &name) {
+		function_name = name;
+	}
+
 	bool Loaded() const {
 		return !vocab.empty();
 	}
@@ -92,6 +97,7 @@ private:
 	DecideSpecialIds specials;
 	std::string unk_token = "<unk>";
 	size_t vocab_size = 0;
+	std::string function_name = "decide";
 };
 
 } // namespace anofox

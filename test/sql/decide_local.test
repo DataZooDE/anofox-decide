@@ -58,11 +58,11 @@ SELECT (a = b)::INTEGER FROM (
 ----
 1
 
-# Local enforces the upstream 2..20 option rule.
+# Local enforces the upstream option-count rule, in public vocabulary (no 2..20 interval, no validate_row).
 statement error
 SELECT decide_choice('x', 'y?', ['only-one'], model := 'tiny-local')
 ----
-<REGEX>:.*2\.\.20.*
+<REGEX>:.*decide_choice: the question has 1 option, but local models need 2 to 20\. Fix: give the question between 2 and 20 options.*
 
 # Score over the tiny fixture (qtype 1): a finite expected level inside the
 # rubric, deterministic across calls, and the per-level distribution sums to 1.
@@ -91,3 +91,73 @@ SELECT count(*) FROM decide_table('The bill is wrong.',
   model := 'tiny-local')
 ----
 3
+
+# --- Text that does not fit the window is an error, not a silent cut ---------------------------------
+
+# decide_token_count: the cost of a text against the window, local models only.
+query I
+SELECT decide_token_count('ab ab ab', model := 'tiny-local') > 0
+----
+true
+
+query I
+SELECT decide_token_count(repeat('ab ', 9000), 'tiny-local') > 8192
+----
+true
+
+query I
+SELECT decide_token_count(NULL, 'tiny-local') IS NULL
+----
+true
+
+statement error
+SELECT decide_token_count('ab', model := 'stub')
+----
+<REGEX>:.*decide_token_count: the built-in 'stub' test model has no tokenizer.*
+
+query I
+SELECT decide_probability(repeat('ab ', 100), 'A refund is requested.', model := 'tiny-local') BETWEEN 0 AND 1
+----
+true
+
+statement error
+SELECT decide_probability(repeat('ab ', 9000), 'A refund is requested.', model := 'tiny-local')
+----
+<REGEX>:.*decide_probability: the text is \d+ tokens but the local model reads at most \d+ after the question and options \(anofox_decide_max_length = 8192\); \d+ tokens at the end would be ignored\. Fix: shorten the text, raise anofox_decide_max_length, use a model with a longer window, or SET anofox_decide_on_truncate = 'ignore'.*decide_token_count\(text\)\..*
+
+# The question id is named when the call has several questions.
+statement error
+SELECT decide_many(repeat('ab ', 9000), '[{"id":"refund","kind":"binary","instruction":"A refund is requested."}]', model := 'tiny-local')
+----
+<REGEX>:.*decide_many: the text is \d+ tokens.*\(question 'refund'\).*
+
+statement ok
+SET anofox_decide_on_truncate = 'ignore'
+
+query I
+SELECT decide_probability(repeat('ab ', 9000), 'A refund is requested.', model := 'tiny-local') BETWEEN 0 AND 1
+----
+true
+
+query I
+SELECT current_setting('anofox_decide_on_truncate')
+----
+ignore
+
+statement ok
+RESET anofox_decide_on_truncate
+
+query I
+SELECT current_setting('anofox_decide_on_truncate')
+----
+error
+
+statement error
+SET anofox_decide_on_truncate = 'warn'
+----
+<REGEX>:.*anofox_decide_on_truncate: must be 'error' or 'ignore', got 'warn' \(default 'error'\)\. Fix: SET anofox_decide_on_truncate = 'ignore';.*
+
+statement error
+SET anofox_decide_on_truncate = NULL
+----
+<REGEX>:.*anofox_decide_on_truncate: the setting cannot be NULL.*

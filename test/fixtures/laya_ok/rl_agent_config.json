@@ -1,0 +1,11 @@
+{
+  "encoder": "jhu-clsp/mmBERT-base",
+  "max_len": 512,
+  "head_max_len": 128,
+  "temperature": [
+    1.0,
+    1.0,
+    1.0
+  ],
+  "temperature_by_options": {}
+}

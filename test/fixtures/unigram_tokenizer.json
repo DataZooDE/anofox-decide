@@ -1,0 +1,17 @@
+{
+ "version": "1.0",
+ "model": {
+  "type": "Unigram",
+  "unk_id": 0,
+  "vocab": [
+   [
+    "<unk>",
+    0.0
+   ],
+   [
+    "a",
+    -1.0
+   ]
+  ]
+ }
+}

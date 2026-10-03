@@ -1,0 +1,4 @@
+{
+  "encoder": "jhu-clsp/mmBERT-base",
+  "head_max_len": 16
+}
