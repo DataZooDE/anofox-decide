@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 import platform
 import subprocess
+import time
 import sys
 import tempfile
 import urllib.request
@@ -226,9 +227,19 @@ def run_smoke_test(extension_path: str, duckdb_version: str, arch: str) -> None:
             "SELECT round(decide_probability('I want my money back.', 'A refund is requested.', "
             "model := 'julia-1'), 3);"
         )
-        proc = _run_sql(duckdb_bin, sql, home, timeout=1200)
+        # Hugging Face can rate limit or hiccup for shared CI addresses, and this is a required check: retry the
+        # network-dependent step (a half-finished .part file is resumed by decide_download) before failing.
+        proc = None
+        for attempt in range(1, 4):
+            proc = _run_sql(duckdb_bin, sql, home, timeout=1200)
+            if proc.returncode == 0:
+                break
+            print(f"      attempt {attempt}/3 failed (rc={proc.returncode}); "
+                  f"{'retrying' if attempt < 3 else 'giving up'}")
+            if attempt < 3:
+                time.sleep(30 * attempt)
         if proc.returncode != 0:
-            _fail("decide_download / local inference failed", proc)
+            _fail("decide_download / local inference failed after 3 attempts", proc)
         lines = [ln.strip() for ln in (proc.stdout or "").splitlines() if ln.strip()]
         if lines[-2:] != ["2", "0.991"]:
             _fail(f"expected 2 downloaded files and probability 0.991 (reference 0.99083), got {lines}", proc)
