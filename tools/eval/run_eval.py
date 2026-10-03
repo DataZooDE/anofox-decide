@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Run the labelled ticket evaluation through anofox_decide and report metrics.
 
-For every model one DuckDB session scores each ticket with ONE decide_table call
-(two questions, one provider request per ticket for hosted models):
+For every model one DuckDB session scores all tickets with ONE query over decide_answers
+(two questions per ticket, one provider request per distinct ticket for hosted models; the requests
+run concurrently, see --concurrency):
   refund   binary  "A refund is requested."
   routing  choice  billing | orders | account | other
 Results are written to <out>/results_<model>.csv; metrics to <out>/report.md/json.
@@ -15,6 +16,7 @@ Models (all optional, pick with --models):
   kev                          a running Kev server (--kev-url, default http://127.0.0.1:8009)
   strands                      a running `strands-decider serve` (--strands-url, default http://127.0.0.1:8000)
 
+--concurrency N sets anofox_decide_max_concurrency (0 = automatic: 8 for hosted providers, 1 for local).
 Needs a built extension (default build/release). Telemetry is always disabled here.
 """
 import argparse
@@ -76,21 +78,22 @@ def models(env, kev_url, strands_url):
     }
 
 
-def run_model(name, spec, tickets, out, duckdb, ext, env):
+def run_model(name, spec, tickets, out, duckdb, ext, env, concurrency=None):
     display, register, model_id, keys = spec
     missing = [k for k in keys if not env.get(k)]
     if missing:
         print(f"SKIP {name}: missing {', '.join(missing)}", file=sys.stderr)
         return None
     res = out / f"results_{name}.csv"
+    setting = f"SET anofox_decide_max_concurrency = {int(concurrency)};\n" if concurrency is not None else ""
     sql = f"""
 LOAD '{esc(str(ext))}';
 SET anofox_decide_allow_remote = true;
-{register}
+{setting}{register}
 CREATE TABLE t AS SELECT * FROM read_csv('{esc(str(tickets))}', all_varchar=true);
 COPY (
-  SELECT t.id::INTEGER AS id, dt.question_id AS qid, dt.probability, dt.choice
-  FROM t, LATERAL (SELECT * FROM decide_table(t.text, '{esc(QUESTIONS)}', model := '{model_id}')) dt
+  SELECT id::INTEGER AS id, question_id AS qid, probability, choice
+  FROM (SELECT id, unnest(decide_answers(text, '{esc(QUESTIONS)}', model := '{model_id}'), recursive := true) FROM t)
   ORDER BY 1, 2
 ) TO '{esc(str(res))}' (HEADER);
 """
@@ -250,6 +253,8 @@ def main():
     ap.add_argument("--extension", default=str(ROOT / "build/release/extension/anofox_decide/anofox_decide.duckdb_extension"))
     ap.add_argument("--kev-url", default="http://127.0.0.1:8009")
     ap.add_argument("--strands-url", default="http://127.0.0.1:8000")
+    ap.add_argument("--concurrency", type=int, default=None,
+                    help="anofox_decide_max_concurrency for hosted models (0 = automatic, the extension default)")
     ap.add_argument("--analyse-only", action="store_true", help="skip scoring; reuse results_*.csv in --out")
     a = ap.parse_args()
     out = Path(a.out)
@@ -263,7 +268,7 @@ def main():
     times = {}
     if not a.analyse_only:
         for n in names:
-            t = run_model(n, specs[n], a.tickets, out, a.duckdb, a.extension, env)
+            t = run_model(n, specs[n], a.tickets, out, a.duckdb, a.extension, env, a.concurrency)
             if t is not None:
                 times[n] = t
     report, truth = analyse(a.tickets, out, names, {k: v[0] for k, v in specs.items()})

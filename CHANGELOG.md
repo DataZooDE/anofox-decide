@@ -7,6 +7,13 @@ All notable changes to `anofox_decide` are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **`decide_answers(state, questions[, model])`**: the rows of `decide_table` as a `LIST(STRUCT(question_id, kind,
+  probability, choice, confidence, model, score, distribution))`, one list per text. `unnest(decide_answers(...),
+  recursive := true)` over a table gives `decide_table`'s columns at scalar speed: a chunk's requests run
+  concurrently (`anofox_decide_max_concurrency`), identical texts are sent once and calibration applies, which a
+  `LATERAL decide_table` join cannot do. NULL state or questions give a NULL list (no rows after unnest). Both
+  functions build their rows with one shared builder, so they always agree. `tools/eval/run_eval.py` now scores
+  through it and has a `--concurrency` option.
 - **Cloudflare Clef** as a hosted provider: `decide_register_model('clef', 'cloudflare')` (or `'clef-flash'`) with
   `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` (or `MAP {'account_id': '...'}`). The Workers AI response
   envelope (`{"result": ...}`) and its `errors[]` are understood for every provider; the account id and model go

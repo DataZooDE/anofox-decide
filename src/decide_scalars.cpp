@@ -333,6 +333,43 @@ void DecideManyFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 }
 
+// decide_answers(state, questions_json[, model]) -> LIST(STRUCT(...)): the rows of decide_table for one
+// text, as a value (unnest(decide_answers(...), recursive := true) gives decide_table's columns). Runs in
+// the scalar pipeline, so a chunk's remote requests are concurrent, identical rows are sent once and
+// calibration applies. NULL state or questions return NULL (unnest then yields no rows).
+void DecideAnswersFun(DataChunk &args, ExpressionState &state, Vector &result) {
+	ClientContext &context = state.GetContext();
+	bool has_model = args.ColumnCount() > 2;
+	string def = DecideDefaultModel(context);
+	DecideModelCache cache{DecideRegistry::Get(context)};
+	idx_t max_questions = DecideMaxQuestions(context);
+	const auto struct_type = DecideAnswerStructType();
+	const auto list_type = LogicalType::LIST(struct_type);
+	EvaluateRows(
+	    context, "decide_answers", args.size(),
+	    [&](idx_t i, DecideBatchRequest &request) {
+		    auto state_v = args.data[0].GetValue(i);
+		    auto questions_v = args.data[1].GetValue(i);
+		    if (state_v.IsNull() || questions_v.IsNull()) {
+			    result.SetValue(i, Value(list_type));
+			    return false;
+		    }
+		    request.entry = RowEntry(context, "decide_answers", cache, args, has_model, 2, i, def);
+		    request.questions = DecideParseManyQuestions(questions_v.ToString(), max_questions, "decide_answers");
+		    request.state = state_v.ToString();
+		    return true;
+	    },
+	    [&](idx_t i, const DecideBatchRequest &request, const vector<DecideAnswer> &answers) {
+		    vector<Value> rows;
+		    rows.reserve(answers.size());
+		    for (auto &a : answers) {
+			    rows.push_back(DecideAnswerStructValue(a, request.entry.id));
+		    }
+		    result.SetValue(i, Value::LIST(struct_type, std::move(rows)));
+	    });
+	result.SetVectorType(VectorType::FLAT_VECTOR);
+}
+
 // decide_register_model(id[, provider[, graph_path[, tokenizer_path[, profile]]]]) -> BOOLEAN,
 // or decide_register_model(id, provider, options MAP(VARCHAR, VARCHAR)) for remote providers
 // (keys: endpoint, path, model, key_env, criteria, calibration), or the same options MAP as a 6th
@@ -442,6 +479,7 @@ DECIDE_SCALAR_TELEMETRY_BIND(DecideChoiceDistributionBind, "decide_choice_distri
 DECIDE_SCALAR_TELEMETRY_BIND(DecideScoreBind, "decide_score")
 DECIDE_SCALAR_TELEMETRY_BIND(DecideDecisionBind, "decide_decision")
 DECIDE_SCALAR_TELEMETRY_BIND(DecideManyBind, "decide_many")
+DECIDE_SCALAR_TELEMETRY_BIND(DecideAnswersBind, "decide_answers")
 DECIDE_SCALAR_TELEMETRY_BIND(DecideRegisterModelBind, "decide_register_model")
 DECIDE_SCALAR_TELEMETRY_BIND(DecideUnregisterModelBind, "decide_unregister_model")
 
@@ -627,6 +665,26 @@ void RegisterDecideScalars(ExtensionLoader &loader) {
 		                 "-- uses the session default model: SET anofox_decide_model = '<id>';\nSELECT decide_many('The bill is wrong.', '[{\"id\":\"refund\",\"kind\":\"binary\",\"instruction\":\"A refund is requested.\"}]');"},
 		                {{"state", "questions", "model"}, {V, V, V},
 		                 "SELECT decide_many(body, '[{\"id\":\"refund\",\"kind\":\"binary\",\"instruction\":\"A refund is requested.\"}]', model := 'jev-latest') FROM tickets;"}}));
+	}
+	{
+		const auto answers_type = LogicalType::LIST(DecideAnswerStructType());
+		ScalarFunctionSet set("anofox_decide_answers");
+		set.AddFunction(DECIDE_SCALAR("anofox_decide_answers", answers_type, DecideAnswersFun, DecideAnswersBind, {V, V}));
+		set.AddFunction(DECIDE_SCALAR("anofox_decide_answers", answers_type, DecideAnswersFun, DecideAnswersBind, {V, V, V}));
+		RegisterScalarFunctionSetWithAlias(
+		    loader, std::move(set), "decide_answers",
+		    DecideDocs("Evaluate several questions against one `state` and return one row per question as a list of "
+		               "structs (question_id, kind, probability, choice, confidence, model, score, distribution), the "
+		               "same rows decide_table returns. `questions` is the JSON array decide_many takes. Use "
+		               "unnest(decide_answers(...), recursive := true) to get decide_table's columns for every row of a "
+		               "table. Unlike LATERAL decide_table, it runs in the scalar pipeline: the rows of a chunk are "
+		               "scored concurrently (anofox_decide_max_concurrency), identical rows are sent once and "
+		               "calibration applies. NULL state or questions returns NULL (no rows after unnest).",
+		               "evaluate",
+		               {{{"state", "questions"}, {V, V},
+		                 "-- uses the session default model: SET anofox_decide_model = '<id>';\nSELECT decide_answers('The bill is wrong.', '[{\"id\":\"refund\",\"kind\":\"binary\",\"instruction\":\"A refund is requested.\"}]');"},
+		                {{"state", "questions", "model"}, {V, V, V},
+		                 "SELECT id, unnest(decide_answers(body, '[{\"id\":\"refund\",\"kind\":\"binary\",\"instruction\":\"A refund is requested.\"}]', model := 'jev-latest'), recursive := true) FROM tickets;"}}));
 	}
 	{
 		ScalarFunctionSet set("anofox_decide_unregister_model");
