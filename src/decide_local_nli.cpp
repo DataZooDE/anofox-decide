@@ -1,6 +1,7 @@
 // DecideLocalNli — Julia-1 local scoring. ONLY TU including onnxruntime.
 
 #include "decide_local_nli.hpp"
+#include "decide_errors.hpp"
 #include "decide_provider.hpp"
 #include "decide_remote.hpp" // DecideQuestion/DecideAnswer (provider-neutral structs)
 #include "decide_tokenizer.hpp"
@@ -56,7 +57,7 @@ shared_ptr<DecideLocalCache> LocalCache(ClientContext &context) {
 }
 
 
-shared_ptr<LayaConfig> LoadLayaConfig(ClientContext &context, const string &path) {
+shared_ptr<LayaConfig> LoadLayaConfig(ClientContext &context, const string &path, const string &function) {
 	auto cache = LocalCache(context);
 	{
 		std::lock_guard<std::mutex> guard(cache->lock);
@@ -65,34 +66,77 @@ shared_ptr<LayaConfig> LoadLayaConfig(ClientContext &context, const string &path
 			return it->second;
 		}
 	}
+	static const char *copy_fix = "copy rl_agent_config.json from the Laya checkpoint folder you exported the graph "
+	                              "from, next to the graph";
 	auto raw = DecideReadLocalFile(context, path, "laya config");
 	auto doc = yyjson_read(raw.data(), raw.size(), 0);
 	if (!doc) {
-		throw InvalidInputException("decide: laya config '%s' is not valid JSON", path);
+		throw InvalidInputException(
+		    DecideMsg(function, "the Laya config file '" + path + "' is not valid JSON", copy_fix));
+	}
+	struct DocFree {
+		yyjson_doc *d;
+		~DocFree() {
+			yyjson_doc_free(d);
+		}
+	} doc_free {doc};
+	auto root = yyjson_doc_get_root(doc);
+	if (!root || !yyjson_is_obj(root)) {
+		throw InvalidInputException(
+		    DecideMsg(function, "the Laya config file '" + path + "' is not a JSON object", copy_fix));
+	}
+	// The limits and the calibration temperatures decide every score: a missing key must not fall back
+	// to a default silently.
+	vector<string> missing;
+	for (const char *key : {"max_len", "head_max_len", "temperature"}) {
+		if (!yyjson_obj_get(root, key)) {
+			missing.push_back(key);
+		}
+	}
+	if (!missing.empty()) {
+		throw InvalidInputException(DecideMsg(
+		    function, "the Laya config file '" + path + "' lacks the key" + (missing.size() > 1 ? "s " : " ") +
+		                  DecideJoinQuoted(missing) + " (it is not a rl_agent_config.json of a Laya checkpoint)",
+		    copy_fix));
 	}
 	auto cfg = make_shared_ptr<LayaConfig>();
-	auto root = yyjson_doc_get_root(doc);
 	auto num = [&](yyjson_val *v, double &out) {
 		if (v && (yyjson_is_real(v) || yyjson_is_int(v))) {
 			out = yyjson_get_num(v);
+			return true;
 		}
+		return false;
 	};
+	vector<string> not_number;
 	double tmp = 0;
-	tmp = (double)cfg->max_len;
-	num(yyjson_obj_get(root, "max_len"), tmp);
-	cfg->max_len = (int64_t)tmp;
-	tmp = (double)cfg->head_max_len;
-	num(yyjson_obj_get(root, "head_max_len"), tmp);
-	cfg->head_max_len = (int64_t)tmp;
+	if (num(yyjson_obj_get(root, "max_len"), tmp)) {
+		cfg->max_len = (int64_t)tmp;
+	} else {
+		not_number.push_back("max_len");
+	}
+	if (num(yyjson_obj_get(root, "head_max_len"), tmp)) {
+		cfg->head_max_len = (int64_t)tmp;
+	} else {
+		not_number.push_back("head_max_len");
+	}
 	auto temps = yyjson_obj_get(root, "temperature");
-	if (temps && yyjson_is_arr(temps)) {
+	if (yyjson_is_arr(temps) && yyjson_arr_size(temps) == 3) {
 		size_t idx, max;
 		yyjson_val *v;
 		yyjson_arr_foreach(temps, idx, max, v) {
-			if (idx < 3) {
-				num(v, cfg->temperature[idx]);
+			if (!num(v, cfg->temperature[idx])) {
+				not_number.push_back("temperature");
+				break;
 			}
 		}
+	} else {
+		not_number.push_back("temperature");
+	}
+	if (!not_number.empty()) {
+		throw InvalidInputException(DecideMsg(
+		    function, "the Laya config file '" + path + "' has an unusable value for " + DecideJoinQuoted(not_number) +
+		                  " (max_len and head_max_len are numbers, temperature is a list of 3 numbers)",
+		    copy_fix));
 	}
 	auto by_opts = yyjson_obj_get(root, "temperature_by_options");
 	if (by_opts && yyjson_is_obj(by_opts)) {
@@ -104,9 +148,12 @@ shared_ptr<LayaConfig> LoadLayaConfig(ClientContext &context, const string &path
 			cfg->temperature_by_options[yyjson_get_str(k)] = t;
 		}
 	}
-	yyjson_doc_free(doc);
 	if (cfg->max_len < 32 || cfg->head_max_len < 8 || cfg->head_max_len + 4 >= cfg->max_len) {
-		throw InvalidInputException("decide: laya config '%s' has unusable max_len/head_max_len", path);
+		throw InvalidInputException(DecideMsg(
+		    function, "the Laya config file '" + path + "' has unusable limits: max_len = " +
+		                  std::to_string(cfg->max_len) + ", head_max_len = " + std::to_string(cfg->head_max_len) +
+		                  " (max_len must be at least 32, head_max_len at least 8 and more than 4 below max_len)",
+		    copy_fix));
 	}
 	std::lock_guard<std::mutex> guard(cache->lock);
 	cache->laya_configs[path] = cfg;
@@ -236,31 +283,71 @@ static std::string CleanText(const DecideTokenizer &tok, const std::string &text
 	return out;
 }
 
+// "question 'dept'" ("" for the internal id of the single-question scalars, which the user never wrote)
+static string QuestionLabel(const string &question_id) {
+	return (question_id.empty() || question_id == "q") ? string() : "question '" + question_id + "'";
+}
+
+// " (question 'dept')" or ""
+static string QuestionSuffix(const string &question_id) {
+	const auto label = QuestionLabel(question_id);
+	return label.empty() ? string() : " (" + label + ")";
+}
+
+static string Preview(const string &text) {
+	const size_t max_chars = 32;
+	if (text.size() <= max_chars) {
+		return text;
+	}
+	size_t cut = max_chars;
+	while (cut > 0 && (static_cast<unsigned char>(text[cut]) & 0xC0) == 0x80) {
+		cut--; // do not split a UTF-8 sequence
+	}
+	return text.substr(0, cut) + "...";
+}
+
 DecideCollatedRow DecideCollateRow(const DecideTokenizer &tok, const std::string &state,
                                    const std::string &question, const duckdb::vector<string> &options,
                                    int qtype, int64_t max_length, int64_t head_length,
-                                   bool allow_empty_state_room) {
+                                   bool allow_empty_state_room, const string &function,
+                                   const string &question_id) {
+	const auto label = QuestionLabel(question_id);
+	const string subject = label.empty() ? string("the question") : label;
 	if (options.size() < 2 || options.size() > 20) {
-		throw InvalidInputException("decide: local questions need 2..20 options, got %d "
-		                            "(upstream Julia validate_row rule)",
-		                            (int)options.size());
+		throw InvalidInputException(DecideMsg(
+		    function, subject + " has " + std::to_string(options.size()) + " option" +
+		                  (options.size() == 1 ? "" : "s") + ", but local models need 2 to 20",
+		    "give the question between 2 and 20 options"));
 	}
-	for (auto &o : options) {
-		if (o.empty()) {
-			throw InvalidInputException("decide: local options must be nonempty strings");
+	for (size_t i = 0; i < options.size(); i++) {
+		if (options[i].empty()) {
+			throw InvalidInputException(DecideMsg(function,
+			                                      "option " + std::to_string(i + 1) + " of " + subject +
+			                                          " is an empty string",
+			                                      "give every option a non-empty text"));
 		}
 	}
 	if (question.empty()) {
-		throw InvalidInputException("decide: local questions need a nonempty instruction");
+		throw InvalidInputException(DecideMsg(function, subject + " has an empty instruction",
+		                                      "give the question a non-empty instruction text"));
 	}
 	const auto &sp = tok.Specials();
 	const char *type_name = (qtype == 2) ? "noul" : (qtype == 1) ? "score" : "choice";
 	auto head = tok.Encode(std::string(type_name) + " question: " + CleanText(tok, question));
+	DecideTruncation trunc;
+	trunc.max_length = max_length;
+	trunc.head_length = head_length;
+	trunc.head_tokens = (int64_t)head.size();
+	const int64_t OPTION_CAP = 48;
+	trunc.option_limit = OPTION_CAP;
 	std::vector<std::vector<int32_t>> opt_ids;
+	std::vector<int64_t> opt_full; // token count of each option before any cut
 	for (auto &o : options) {
 		auto ids = tok.Encode(" " + CleanText(tok, o));
-		if (ids.size() > 48) {
-			ids.resize(48);
+		opt_full.push_back((int64_t)ids.size());
+		trunc.max_option_tokens = std::max<int64_t>(trunc.max_option_tokens, (int64_t)ids.size());
+		if ((int64_t)ids.size() > OPTION_CAP) {
+			ids.resize((size_t)OPTION_CAP);
 		}
 		opt_ids.push_back(std::move(ids));
 	}
@@ -282,20 +369,28 @@ DecideCollatedRow DecideCollateRow(const DecideTokenizer &tok, const std::string
 				o.resize((size_t)per_option);
 			}
 		}
+		trunc.option_limit = std::min(trunc.option_limit, per_option);
 		budget = head_budget();
 	}
-	bool head_cut = false;
+	for (size_t i = 0; i < opt_ids.size(); i++) {
+		if (opt_full[i] > (int64_t)opt_ids[i].size()) {
+			if (trunc.options_cut == 0) {
+				trunc.first_cut_option = (int64_t)i;
+				trunc.first_cut_tokens = opt_full[i];
+			}
+			trunc.options_cut++;
+		}
+	}
 	if ((int64_t)head.size() > std::max<int64_t>(8, budget)) {
 		head.resize((size_t)std::max<int64_t>(8, budget));
-		head_cut = true;
 	}
+	trunc.head_kept = (int64_t)head.size();
 
 	DecideCollatedRow row;
 	row.qtype = qtype;
 	row.ids.push_back(sp.cls);
 	row.ids.insert(row.ids.end(), head.begin(), head.end());
 	row.ids.push_back(sp.sep);
-	bool truncated = false;
 	for (auto &o : opt_ids) {
 		row.markers.push_back((int64_t)row.ids.size());
 		row.ids.push_back(sp.mask);
@@ -303,32 +398,98 @@ DecideCollatedRow DecideCollateRow(const DecideTokenizer &tok, const std::string
 	}
 	row.ids.push_back(sp.sep);
 	auto state_ids = tok.Encode(CleanText(tok, state));
+	trunc.state_tokens = (int64_t)state_ids.size();
 	int64_t room = max_length - (int64_t)row.ids.size() - 1;
 	if (room < 1 && !allow_empty_state_room) {
-		throw InvalidInputException("decide: question/options exceed the local sequence budget; shorten the "
-		                            "instruction or options, or raise anofox_decide_max_length");
+		throw InvalidInputException(DecideMsg(
+		    function,
+		    "the question and options use " + std::to_string(row.ids.size()) + " tokens, which leaves no room for the "
+		    "text within the limit of " + std::to_string(max_length) + " tokens" + QuestionSuffix(question_id),
+		    "shorten the question or the options, or raise anofox_decide_max_length (Laya models take their limit "
+		    "from rl_agent_config.json)"));
 	}
 	if (room < 0) {
 		room = 0;
 	}
 	if ((int64_t)state_ids.size() > room) {
 		state_ids.resize((size_t)room);
-		truncated = true;
 	}
+	trunc.state_kept = (int64_t)state_ids.size();
 	row.ids.insert(row.ids.end(), state_ids.begin(), state_ids.end());
 	row.ids.push_back(sp.sep);
-	row.truncated = truncated || head_cut;
+	row.truncation = trunc;
 	return row;
 }
 
-static const DecideTokenizer &TokenizerFor(ClientContext &context, const DecideModelEntry &entry);
+string DecideTruncationMessage(const DecideTruncation &t, const string &function, const string &question_id,
+                               const vector<string> &options, bool laya) {
+	const string suffix = QuestionSuffix(question_id);
+	const string label = QuestionLabel(question_id);
+	const string subject = label.empty() ? string("the question") : label;
+	const string ignore_hint = "SET anofox_decide_on_truncate = 'ignore';";
+	const char *laya_note = "; Laya models take this limit from their rl_agent_config.json, so anofox_decide_max_length "
+	                        "and anofox_decide_head_length do not apply to them";
+	if (t.OptionsCut()) {
+		const auto idx = (size_t)t.first_cut_option;
+		string what = "option " + std::to_string(idx + 1) + " ('" + Preview(idx < options.size() ? options[idx] : "") +
+		              "') of " + subject + " is " + std::to_string(t.first_cut_tokens) +
+		              " tokens but the local model reads at most " + std::to_string(t.option_limit) +
+		              " tokens of an option" +
+		              (t.options_cut > 1 ? "; " + std::to_string(t.options_cut - 1) + " more option" +
+		                                       (t.options_cut > 2 ? "s are" : " is") + " cut too"
+		                                 : string());
+		if (t.option_limit < 48) {
+			what += "; the limit is below 48 because the question and options share " +
+			        string(laya ? "head_max_len" : "anofox_decide_head_length") + " = " +
+			        std::to_string(t.head_length) + " tokens";
+		}
+		if (laya) {
+			what += laya_note;
+		}
+		return DecideMsg(function, what,
+		                 "shorten the options" +
+		                     string(laya ? ", use a model with a longer head" : ", raise anofox_decide_head_length") +
+		                     ", or " + ignore_hint);
+	}
+	if (t.HeadCut()) {
+		string what = "the question is " + std::to_string(t.head_tokens) + " tokens but only " +
+		              std::to_string(t.head_kept) + " fit in the head budget of " + std::to_string(t.head_length) +
+		              " tokens (" + (laya ? "head_max_len" : "anofox_decide_head_length") +
+		              ", shared with the options); the last " + std::to_string(t.head_tokens - t.head_kept) +
+		              " tokens of the question would be ignored" + suffix;
+		if (laya) {
+			what += laya_note;
+		}
+		return DecideMsg(function, what,
+		                 string("shorten the question or the options, ") +
+		                     (laya ? "use a model with a longer head" : "raise anofox_decide_head_length") +
+		                     ", or " + ignore_hint);
+	}
+	string what = "the text is " + std::to_string(t.state_tokens) + " tokens but the local model reads at most " +
+	              std::to_string(t.state_kept) + " after the question and options (" +
+	              (laya ? "max_len" : "anofox_decide_max_length") + " = " + std::to_string(t.max_length) + "); " +
+	              std::to_string(t.state_tokens - t.state_kept) + " tokens at the end would be ignored" + suffix;
+	if (laya) {
+		what += laya_note;
+	}
+	return DecideMsg(function, what,
+	                 string("shorten the text, ") + (laya ? "" : "raise anofox_decide_max_length, ") +
+	                     "use a model with a longer window, or " + ignore_hint +
+	                     " check lengths with decide_token_count(text).");
+}
+
+static const DecideTokenizer &TokenizerFor(ClientContext &context, const string &tokenizer_path, const string &id,
+                                           const string &function);
 
 //--- Full local path ---------------------------------------------------------
 
 vector<DecideAnswer> DecideLocalScore(ClientContext &context, const DecideModelEntry &entry,
-                                           const string &state, const vector<DecideQuestion> &questions) {
+                                           const string &state, const vector<DecideQuestion> &questions,
+                                           const char *function_name) {
+	const string function = function_name;
 	if (questions.empty()) {
-		throw InvalidInputException("decide: refusing a local batch with no questions");
+		throw InvalidInputException(DecideMsg(function, "no questions were given to the local model",
+		                                      "pass at least one question"));
 	}
 	const bool laya = entry.profile == "laya";
 	Value max_v, head_v;
@@ -338,7 +499,7 @@ vector<DecideAnswer> DecideLocalScore(ClientContext &context, const DecideModelE
 		// The laya profile fixes its limits from rl_agent_config.json (the
 		// checkpoint was trained/calibrated at these); the settings apply
 		// to julia-1 only.
-		laya_cfg = LoadLayaConfig(context, entry.config_path);
+		laya_cfg = LoadLayaConfig(context, entry.config_path, function);
 		max_length = laya_cfg->max_len;
 		head_length = laya_cfg->head_max_len;
 	} else {
@@ -349,7 +510,12 @@ vector<DecideAnswer> DecideLocalScore(ClientContext &context, const DecideModelE
 			head_length = BigIntValue::Get(head_v.DefaultCastAs(LogicalType::BIGINT));
 		}
 	}
-	const auto &tok = TokenizerFor(context, entry);
+	bool fail_on_truncate = true;
+	Value trunc_v;
+	if (context.TryGetCurrentSetting("anofox_decide_on_truncate", trunc_v) && !trunc_v.IsNull()) {
+		fail_on_truncate = trunc_v.ToString() != "ignore";
+	}
+	const auto &tok = TokenizerFor(context, entry.tokenizer_path, entry.id, function);
 	struct Row {
 		DecideCollatedRow c;
 		const DecideQuestion *q;
@@ -373,7 +539,7 @@ vector<DecideAnswer> DecideLocalScore(ClientContext &context, const DecideModelE
 			// Ordered rubric (2..10 levels, validated upstream of the provider). julia-1 scores the level
 			// descriptions as given (julia/typed.py); laya renders them "level <i>: <text>" with a 0-based
 			// index (rl_common.py render_options).
-			DecideValidateScoreLevels("decide", q.id, q.options);
+			DecideValidateScoreLevels(function, q.id, q.options);
 			if (laya) {
 				for (size_t i = 0; i < q.options.size(); i++) {
 					options.push_back("level " + std::to_string(i) + ": " + q.options[i]);
@@ -383,11 +549,17 @@ vector<DecideAnswer> DecideLocalScore(ClientContext &context, const DecideModelE
 			}
 			qtype = 1;
 		} else {
-			throw InvalidInputException("decide: local question '%s' has unsupported kind '%s' "
-			                            "(supported: 'noul', 'choice', 'score')",
-			                            q.id, q.kind);
+			throw InvalidInputException(DecideMsg(
+			    function, "question '" + q.id + "' has the kind '" + q.kind + "', which local models do not support",
+			    "use 'binary', 'choice' or 'score'"));
 		}
-		rows.push_back({DecideCollateRow(tok, state, q.instruction, options, qtype, max_length, head_length, laya), &q});
+		rows.push_back({DecideCollateRow(tok, state, q.instruction, options, qtype, max_length, head_length, laya,
+		                                 function, q.id),
+		                &q});
+		if (fail_on_truncate && rows.back().c.truncation.Any()) {
+			throw InvalidInputException(
+			    DecideTruncationMessage(rows.back().c.truncation, function, q.id, options, laya));
+		}
 		T = std::max<int64_t>(T, rows.back().c.ids.size());
 		M = std::max<int64_t>(M, rows.back().c.markers.size());
 	}
@@ -471,23 +643,39 @@ vector<DecideAnswer> DecideLocalScore(ClientContext &context, const DecideModelE
 	return out;
 }
 
-static const DecideTokenizer &TokenizerFor(ClientContext &context, const DecideModelEntry &entry) {
-	if (entry.tokenizer_path.empty()) {
-		throw InvalidInputException("decide: local model '%s' has no tokenizer path "
-		                            "(pass tokenizer.json as 4th decide_register_model argument)",
-		                            entry.id);
+static const DecideTokenizer &TokenizerFor(ClientContext &context, const string &tokenizer_path, const string &id,
+                                           const string &function) {
+	if (tokenizer_path.empty()) {
+		throw InvalidInputException(DecideMsg(
+		    function, "local model '" + id + "' has no tokenizer path",
+		    "register it with the tokenizer.json as the 4th argument of decide_register_model"));
 	}
 	auto cache = LocalCache(context);
 	std::lock_guard<std::mutex> guard(cache->lock);
-	auto it = cache->tokenizers.find(entry.tokenizer_path);
+	auto it = cache->tokenizers.find(tokenizer_path);
 	if (it != cache->tokenizers.end()) {
 		return *it->second;
 	}
 	auto tok = make_shared_ptr<DecideTokenizer>();
+	tok->SetFunction(function);
 	// Read through DuckDB's filesystem (F4): same access gate as read_csv.
-	tok->Parse(DecideReadLocalFile(context, entry.tokenizer_path, "tokenizer"), entry.tokenizer_path);
-	cache->tokenizers[entry.tokenizer_path] = tok;
+	tok->Parse(DecideReadLocalFile(context, tokenizer_path, "tokenizer"), tokenizer_path);
+	cache->tokenizers[tokenizer_path] = tok;
 	return *tok;
+}
+
+void DecideEnsureTokenizer(ClientContext &context, const string &path, const string &function) {
+	TokenizerFor(context, path, path, function);
+}
+
+void DecideEnsureLayaConfig(ClientContext &context, const string &path, const string &function) {
+	LoadLayaConfig(context, path, function);
+}
+
+int64_t DecideLocalTokenCount(ClientContext &context, const DecideModelEntry &entry, const string &text,
+                              const string &function) {
+	const auto &tok = TokenizerFor(context, entry.tokenizer_path, entry.id, function);
+	return (int64_t)tok.Encode(CleanText(tok, text)).size();
 }
 
 } // namespace anofox

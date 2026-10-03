@@ -1,0 +1,109 @@
+# name: test/sql/decide_local_validate.test
+# description: Registration-depth validation of local model files: a weights file, a text file or a
+#              Unigram tokenizer is rejected when it is registered (not at the first score), a Laya config
+#              is parsed and its missing keys are named, and decide_models()/decide_doctor() agree.
+# group: [anofox_decide]
+
+require anofox_decide
+
+statement ok
+LOAD anofox_decide
+
+# --- The graph must not be a weights file, text or an archive ----------------------------------------
+
+statement error
+SELECT decide_register_model('w', 'local', 'test/fixtures/fake_weights.safetensors', 'test/fixtures/tiny_tokenizer.json')
+----
+<REGEX>:.*decide_register_model: the graph file 'test/fixtures/fake_weights\.safetensors' is a safetensors weights file, not an ONNX graph\. Fix: pass the \.onnx file that tools/export_julia wrote.*
+
+statement error
+SELECT decide_register_model('t', 'local', 'test/fixtures/not_a_model.txt', 'test/fixtures/tiny_tokenizer.json')
+----
+<REGEX>:.*the graph file 'test/fixtures/not_a_model\.txt' is a text file, not an ONNX graph\. Fix: pass the \.onnx file.*
+
+statement error
+SELECT decide_register_model('j', 'local', 'test/fixtures/julia1_tiny_tensor_map.json', 'test/fixtures/tiny_tokenizer.json')
+----
+<REGEX>:.*is a JSON file, not an ONNX graph \(a tokenizer\.json or a config\?\)\. Fix:.*
+
+statement error
+SELECT decide_register_model('r', 'local', 'README.md', 'test/fixtures/tiny_tokenizer.json')
+----
+<REGEX>:.*the graph file 'README\.md' is a text file, not an ONNX graph.*
+
+# A refused registration leaves nothing behind.
+query I
+SELECT count(*) FROM decide_models() WHERE model IN ('w', 't', 'j', 'r')
+----
+0
+
+# --- The tokenizer is parsed at registration -----------------------------------------------------------
+
+statement error
+SELECT decide_register_model('u', 'local', 'test/fixtures/stub_graph.onnx', 'test/fixtures/unigram_tokenizer.json')
+----
+<REGEX>:.*decide_register_model: the tokenizer file 'test/fixtures/unigram_tokenizer\.json' is a Unigram tokenizer, but local models need a BPE tokenizer.*Fix: pass the tokenizer\.json of a Julia-1 or Laya checkpoint.*
+
+# A JSON file that is not a tokenizer.
+statement error
+SELECT decide_register_model('c', 'local', 'test/fixtures/stub_graph.onnx', 'test/fixtures/julia1_tiny_tensor_map.json')
+----
+<REGEX>:.*the tokenizer file 'test/fixtures/julia1_tiny_tensor_map\.json' has no 'model' object.*
+
+# Not JSON at all.
+statement error
+SELECT decide_register_model('c', 'local', 'test/fixtures/stub_graph.onnx', 'test/fixtures/not_a_model.txt')
+----
+<REGEX>:.*the tokenizer file 'test/fixtures/not_a_model\.txt' is not valid JSON.*
+
+# --- Laya: the config is parsed and its keys are named ---------------------------------------------------
+
+statement error
+SELECT decide_register_model('lb', 'local', 'test/fixtures/laya_bad/model.onnx', 'test/fixtures/tiny_tokenizer.json', 'laya')
+----
+<REGEX>:.*decide_register_model: the Laya config file 'test/fixtures/laya_bad/rl_agent_config\.json' lacks the keys 'max_len', 'temperature'.*Fix: copy rl_agent_config\.json from the Laya checkpoint folder.*
+
+statement error
+SELECT decide_register_model('ll', 'local', 'test/fixtures/laya_limits/model.onnx', 'test/fixtures/tiny_tokenizer.json', 'laya')
+----
+<REGEX>:.*has unusable limits: max_len = 20, head_max_len = 16.*
+
+# Laya needs its config next to the graph.
+statement error
+SELECT decide_register_model('ln', 'local', 'test/fixtures/stub_graph.onnx', 'test/fixtures/tiny_tokenizer.json', 'laya')
+----
+<REGEX>:.*the Laya config file 'test/fixtures/rl_agent_config\.json' does not exist.*
+
+query I
+SELECT decide_register_model('laya-ok', 'local', 'test/fixtures/laya_ok/model.onnx', 'test/fixtures/tiny_tokenizer.json', 'laya')
+----
+1
+
+# The same graph folder registered without a profile is most likely a Laya checkpoint registered as julia-1.
+statement error
+SELECT decide_register_model('laya-as-julia', 'local', 'test/fixtures/laya_ok/model.onnx', 'test/fixtures/tiny_tokenizer.json')
+----
+<REGEX>:.*rl_agent_config\.json' sits next to the graph 'test/fixtures/laya_ok/model\.onnx', so it comes from a Laya checkpoint, but the model is registered with the default profile 'julia-1'.*Fix: add the profile.*'laya'.*
+
+# Saying 'julia-1' explicitly is believed.
+query I
+SELECT decide_register_model('julia-explicit', 'local', 'test/fixtures/laya_ok/model.onnx', 'test/fixtures/tiny_tokenizer.json', 'julia-1')
+----
+1
+
+# --- decide_models() / decide_doctor() use the same validation ------------------------------------------
+
+query I
+SELECT decide_register_model('tiny-ok', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json')
+----
+1
+
+query I
+SELECT ready FROM decide_models() WHERE model = 'tiny-ok'
+----
+true
+
+query I
+SELECT ready FROM decide_models() WHERE model = 'laya-ok'
+----
+true

@@ -1,0 +1,2 @@
+This is a README, not a model.
+A local model graph is an .onnx file written by tools/export_julia.

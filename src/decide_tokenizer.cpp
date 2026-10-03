@@ -1,6 +1,7 @@
 // DecideTokenizer — HF tokenizers BPE port (Julia-1). See decide_tokenizer.hpp.
 
 #include "decide_tokenizer.hpp"
+#include "decide_errors.hpp"
 
 #include "yyjson.hpp"
 #include "utf8proc.hpp"
@@ -230,9 +231,9 @@ void DecideTokenizer::Load(const std::string &tokenizer_json_path, const std::st
 	// context-free so the Catch2 golden tests run without a database.
 	std::ifstream in(tokenizer_json_path, std::ios::binary);
 	if (!in) {
-		throw InvalidInputException("decide: tokenizer file not found: '%s' "
-		                            "(register a local model with its tokenizer/ directory)",
-		                            tokenizer_json_path);
+		throw InvalidInputException(DecideMsg(
+		    function_name, "tokenizer file not found: '" + tokenizer_json_path + "'",
+		    "pass the tokenizer.json that shipped with the model"));
 	}
 	std::ostringstream ss;
 	ss << in.rdbuf();
@@ -244,6 +245,12 @@ void DecideTokenizer::Parse(const std::string &tokenizer_json, const std::string
                             const std::string &mask_content, const std::string &pad_content,
                             const std::string &unk_content) {
 	const std::string &raw = tokenizer_json;
+	// "the tokenizer file 'x' <what>. Fix: ..." in the project's error shape.
+	auto bad = [&](const std::string &what) {
+		return InvalidInputException(DecideMsg(function_name, "the tokenizer file '" + tokenizer_json_path + "' " + what,
+		                                       "pass the tokenizer.json of a Julia-1 or Laya checkpoint (the file "
+		                                       "named tokenizer.json, not tokenizer_config.json or a vocabulary file)"));
+	};
 	struct DocFree {
 		yyjson_doc *d;
 		~DocFree() {
@@ -253,19 +260,24 @@ void DecideTokenizer::Parse(const std::string &tokenizer_json, const std::string
 		}
 	} doc {yyjson_read(raw.c_str(), raw.size(), 0)};
 	if (!doc.d) {
-		throw InvalidInputException("decide: tokenizer file is not valid JSON: '%s'", tokenizer_json_path);
+		throw bad("is not valid JSON");
 	}
 	auto root = yyjson_doc_get_root(doc.d);
 	if (!root || !yyjson_is_obj(root)) {
-		throw InvalidInputException("decide: tokenizer file has no root object: '%s'", tokenizer_json_path);
+		throw bad("is not a JSON object");
 	}
 	auto model = yyjson_obj_get(root, "model");
 	if (!model || !yyjson_is_obj(model)) {
-		throw InvalidInputException("decide: tokenizer file has no 'model' object: '%s'", tokenizer_json_path);
+		throw bad("has no 'model' object");
 	}
 	auto type_v = yyjson_obj_get(model, "type");
 	if (!type_v || !yyjson_is_str(type_v) || ToUtf8Str(type_v) != "BPE") {
-		throw InvalidInputException("decide: only BPE tokenizers are supported (file '%s')", tokenizer_json_path);
+		const std::string kind = (type_v && yyjson_is_str(type_v)) ? ToUtf8Str(type_v) : std::string("unknown");
+		throw InvalidInputException(DecideMsg(
+		    function_name,
+		    "the tokenizer file '" + tokenizer_json_path + "' is a " + kind + " tokenizer, but local models need a BPE "
+		    "tokenizer (the one Julia-1 and Laya checkpoints ship)",
+		    "pass the tokenizer.json of a Julia-1 or Laya checkpoint"));
 	}
 	vocab.clear();
 	merge_rank.clear();
@@ -273,7 +285,7 @@ void DecideTokenizer::Parse(const std::string &tokenizer_json, const std::string
 
 	auto vocab_v = yyjson_obj_get(model, "vocab");
 	if (!vocab_v || !yyjson_is_obj(vocab_v)) {
-		throw InvalidInputException("decide: tokenizer file has no model.vocab object: '%s'", tokenizer_json_path);
+		throw bad("has no model.vocab object");
 	}
 	yyjson_obj_iter viter;
 	yyjson_obj_iter_init(vocab_v, &viter);
@@ -281,7 +293,7 @@ void DecideTokenizer::Parse(const std::string &tokenizer_json, const std::string
 	while ((vkey = yyjson_obj_iter_next(&viter))) {
 		auto vval = yyjson_obj_iter_get_val(vkey);
 		if (!yyjson_is_uint(vval) && !yyjson_is_sint(vval)) {
-			throw InvalidInputException("decide: non-integer vocab id in '%s'", tokenizer_json_path);
+			throw bad("has a vocabulary entry whose id is not an integer");
 		}
 		std::string token(yyjson_get_str(vkey), yyjson_get_len(vkey));
 		vocab[token] = (int32_t)yyjson_get_sint(vval);
@@ -301,7 +313,7 @@ void DecideTokenizer::Parse(const std::string &tokenizer_json, const std::string
 				std::string s = ToUtf8Str(entry);
 				auto sp = s.find(' ');
 				if (sp == std::string::npos) {
-					throw InvalidInputException("decide: malformed merge entry in '%s'", tokenizer_json_path);
+					throw bad("has a malformed merge entry");
 				}
 				left = s.substr(0, sp);
 				right = s.substr(sp + 1);
@@ -311,16 +323,16 @@ void DecideTokenizer::Parse(const std::string &tokenizer_json, const std::string
 				yyjson_arr_iter_init(entry, &piter);
 				it = yyjson_arr_iter_next(&piter);
 				if (!it || !yyjson_is_str(it)) {
-					throw InvalidInputException("decide: malformed merge pair in '%s'", tokenizer_json_path);
+					throw bad("has a malformed merge pair");
 				}
 				left = ToUtf8Str(it);
 				it = yyjson_arr_iter_next(&piter);
 				if (!it || !yyjson_is_str(it)) {
-					throw InvalidInputException("decide: malformed merge pair in '%s'", tokenizer_json_path);
+					throw bad("has a malformed merge pair");
 				}
 				right = ToUtf8Str(it);
 			} else {
-				throw InvalidInputException("decide: malformed merge entry in '%s'", tokenizer_json_path);
+				throw bad("has a malformed merge entry");
 			}
 			merge_rank[left + "\x1f" + right] = rank++;
 		}
@@ -392,9 +404,8 @@ void DecideTokenizer::Parse(const std::string &tokenizer_json, const std::string
 		if (it != vocab.end()) {
 			return it->second;
 		}
-		throw InvalidInputException("decide: cannot resolve %s token '%s' "
-		                            "(not in added_tokens nor vocab of '%s')",
-		                            role, content, tokenizer_json_path);
+		throw bad(std::string("has no '") + content + "' token, which a local model needs as its " + role +
+		          " token (this tokenizer belongs to another model family)");
 	};
 	// ByteLevel tokenizers name their specials [CLS]/[SEP]/...: swap in
 	// those names when the caller kept the Gemma-style defaults.

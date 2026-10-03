@@ -240,6 +240,7 @@ Every function is available as `anofox_decide_<name>` and as the short alias `de
 | `decide_fit_calibration(p, outcome)` | `VARCHAR` | fits Platt scaling to a model's raw probabilities and returns the `'platt:a,b'` spec for `decide_register_model` ([Calibration](#calibration)) (aggregate) |
 | `decide_register_model(id[, provider[, ...]])` | `BOOLEAN` | register a model for this database instance |
 | `decide_unregister_model(id)` | `BOOLEAN` | remove a registered model so it can be registered again |
+| `decide_token_count(text[, model])` | `BIGINT` | tokens `text` has for a local model, to find rows that do not fit its window ([Local models](#local-models)) |
 | `decide_models()` | table | the registered models, whether each can be called now, and what to do if not |
 | `decide_doctor()` | table | `item`, `status` (`ok` / `warn` / `fail`), `detail`, `fix` for the whole setup |
 
@@ -496,10 +497,24 @@ SELECT decide_register_model('laya', 'local', '<dir>/julia1.onnx',
 ```
 
 Both SentencePiece-style tokenizers (Julia-1, Laya multilingual) and ByteLevel BPE (Laya English and
-typed-decisions) are supported. `decide_doctor()` opens the files and says which one is missing. Text
-longer than the model's limit is cut off (8192 tokens for `julia-1`, adjustable with
-`anofox_decide_max_length`; Laya uses the limit in its `rl_agent_config.json`). See
-[`examples/05_local_model.sql`](examples/05_local_model.sql).
+typed-decisions) are supported. Registration checks the files, not only that they exist: a weights file
+(`.safetensors`), a text file or a zip as the graph, a tokenizer that is not BPE, and a Laya config
+without its keys are rejected with a message that says what the file is. `decide_models()` and
+`decide_doctor()` run the same checks.
+
+**Long text is an error, not a silent cut.** A local model reads a fixed window (8192 tokens for
+`julia-1`, adjustable with `anofox_decide_max_length` and `anofox_decide_head_length`; Laya models use the
+`max_len` and `head_max_len` of their `rl_agent_config.json` and ignore those two settings). When the text,
+the question or an option does not fit, the call fails and says how much would be ignored, and for which
+question. Find the long rows first with `decide_token_count`, or accept the cut with
+`SET anofox_decide_on_truncate = 'ignore';`:
+
+```sql
+SELECT id, decide_token_count(body, model := 'julia-1') AS tokens FROM tickets ORDER BY tokens DESC LIMIT 10;
+SET anofox_decide_on_truncate = 'ignore';  -- score the shortened text instead of failing
+```
+
+See [`examples/05_local_model.sql`](examples/05_local_model.sql).
 
 ---
 
@@ -519,6 +534,7 @@ example.
 | `anofox_decide_max_questions` | `100` | Most questions in one `decide_many` / `decide_table` call, up to 1000 |
 | `anofox_decide_max_length` | `8192` | Tokens a `julia-1` local model reads per question (Laya uses its own config) |
 | `anofox_decide_head_length` | `512` | Tokens reserved for the question and its options in local models |
+| `anofox_decide_on_truncate` | `error` | `error`: a local model refuses text, question or options that do not fit its window; `ignore`: score the shortened input |
 | `anofox_decide_api_key` | *(unset)* | Legacy key for the `typesafe` provider, kept in plain text; prefer `CREATE SECRET` or the env var |
 | `anofox_decide_endpoint` | `https://api.typesafe.ai` | Legacy endpoint for `typesafe`; other providers take a per-model `endpoint` |
 | `anofox_telemetry_enabled` | `true` | Anonymous usage telemetry, see [Telemetry](#telemetry) |
@@ -586,6 +602,12 @@ that caused it. Run `SELECT * FROM decide_doctor();` first when something does n
 | `... answered HTTP 200 but not with JSON (an HTML page)` | the endpoint or path is not a System One server (a login or error page) | check the endpoint and path in `decide_models()` |
 | `endpoint '<x>' contains a path` / `has an invalid port` | an endpoint is only `scheme://host[:port]` | `MAP {'endpoint': 'https://host', 'path': '/v1/...'}` |
 | `the graph file '...' does not exist` | the path is wrong; relative paths resolve against the DuckDB working directory | pass the full path of the exported `.onnx`; see [Local models](#local-models) |
+| `the text is N tokens but the local model reads at most M ...` | the text does not fit the local model's window, and the end would be ignored | shorten the text, raise `anofox_decide_max_length` (`julia-1` only), or `SET anofox_decide_on_truncate = 'ignore';`; `decide_token_count(text)` measures it |
+| `... the question is N tokens but only M fit in the head budget` / `option N (...) of question '...' is N tokens but ...` | the question or an option is too long for the part of the window they share | shorten it, raise `anofox_decide_head_length`, or `SET anofox_decide_on_truncate = 'ignore';` |
+| `the graph file '...' is a safetensors weights file, not an ONNX graph` (also: text, JSON, HTML, zip, pickle) | the graph argument is not the exported `.onnx` | pass the `.onnx` file that `tools/export_julia` wrote; see [Local models](#local-models) |
+| `the tokenizer file '...' is a Unigram tokenizer, but local models need a BPE tokenizer` | the tokenizer belongs to another model family | pass the `tokenizer.json` of a Julia-1 or Laya checkpoint |
+| `the Laya config file '...' lacks the keys ...` | `rl_agent_config.json` is not the one of a Laya checkpoint | copy it from the checkpoint folder next to the graph |
+| `'.../rl_agent_config.json' sits next to the graph ..., so it comes from a Laya checkpoint` | a Laya graph registered without the profile would be scored as `julia-1` | add the 5th argument: `decide_register_model('<id>', 'local', '<graph>', '<tokenizer>', 'laya')` |
 | `provider '<x>' takes no file paths` | a remote provider was given a path argument | remote providers take an options `MAP`: `decide_register_model('m', 'typesafe', MAP {'endpoint': 'https://host'})` |
 | `model '<id>' is already registered` | ids are unique per database instance | `decide_unregister_model('<id>')`, then register again |
 | `<setting>: must be between A and B, got X` | a setting is out of range | the message shows the default and an example `SET` |
