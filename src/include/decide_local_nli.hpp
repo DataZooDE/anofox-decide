@@ -59,6 +59,9 @@ DecideCollatedRow DecideCollateRow(const DecideTokenizer &tok, const string &sta
 class DecideLocalSession {
 public:
 	static shared_ptr<DecideLocalSession> Open(ClientContext &context, const string &graph_path);
+	//! Catalog models: the embedded weight-free graph + the downloaded safetensors injected as initializers;
+	//! other entries open entry.graph_path.
+	static shared_ptr<DecideLocalSession> Open(ClientContext &context, const DecideModelEntry &entry);
 
 	//! Raw scores [B][M] in marker order.
 	vector<vector<float>> Score(const DecideLocalBatch &batch);

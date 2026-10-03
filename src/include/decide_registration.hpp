@@ -13,6 +13,7 @@ void RegisterDecideScalars(ExtensionLoader &loader);    // decide_scalars.cpp
 void RegisterDecideTableFunctions(ExtensionLoader &loader); // decide_table.cpp
 void RegisterDecideMetrics(ExtensionLoader &loader);         // decide_metrics.cpp
 void RegisterDecideSecret(ExtensionLoader &loader);          // decide_secret.cpp
+void RegisterDecideCatalog(ExtensionLoader &loader);         // decide_catalog.cpp (cache dir setting, decide_download)
 
 } // namespace anofox
 } // namespace duckdb

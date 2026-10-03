@@ -41,6 +41,13 @@ struct DecideModelEntry {
 	string profile = "julia-1";
 	// laya profile only: rl_agent_config.json (limits + temperatures).
 	string config_path;
+	// Catalog models (decide_download): the weight-free graph embedded in the extension, its tensor map and the
+	// downloaded safetensors file. graph_path is empty for these. catalog_id is set for every catalog model,
+	// including the ones listed by decide_models() that are not registered yet.
+	string bundled_graph;
+	string bundled_map;
+	string weights_path;
+	string catalog_id;
 	// Remote providers only (empty = the provider profile's default; see
 	// DecideRemoteProfile): scheme://host[:port], API path, the model name on
 	// the wire (the registered id when empty), and an explicit env var to
@@ -102,6 +109,8 @@ public:
 	void RegisterModel(ClientContext &context, const string &id, const string &provider,
 	                   const string &graph_path = "", const string &tokenizer_path = "",
 	                   const string &profile = "", const DecideRegisterOptions &options = DecideRegisterOptions());
+	//! Register a downloaded catalog model (see decide_catalog.hpp); a no-op when the id is already registered.
+	void RegisterCatalogModel(const DecideModelEntry &entry);
 	//! Ordered snapshot for decide_models().
 	vector<DecideModelEntry> List();
 	//! Validated lookup. Throws the unknown-model error (prefer DecideResolveModel, which
