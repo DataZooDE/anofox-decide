@@ -79,7 +79,7 @@ SELECT count(DISTINCT function_name)
 FROM duckdb_functions()
 WHERE function_name LIKE 'decide\_%' ESCAPE '\' AND alias_of = 'anofox_' || function_name
 ----
-16
+17
 
 # Spot-check the documented signatures.
 query T
