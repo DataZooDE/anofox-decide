@@ -145,6 +145,17 @@ static string DirOf(const string &path) {
 
 void DecideValidateLocalFiles(ClientContext &context, const DecideModelEntry &entry, const string &function,
                               const string &tokenizer_hint, bool profile_explicit) {
+	if (!entry.bundled_graph.empty()) {
+		// Catalog model (decide_download): the graph is embedded and weight-free, so there is no graph file to
+		// classify; the downloaded tokenizer and config are what can be wrong.
+		DecideCheckLocalFile(context, entry.tokenizer_path, "tokenizer", tokenizer_hint);
+		DecideEnsureTokenizer(context, entry.tokenizer_path, function);
+		if (!entry.config_path.empty()) {
+			DecideCheckLocalFile(context, entry.config_path, "laya config");
+			DecideEnsureLayaConfig(context, entry.config_path, function);
+		}
+		return;
+	}
 	// Existence and access first: these carry the role-specific "pass the path of ..." guidance.
 	DecideCheckLocalFile(context, entry.graph_path, "graph");
 	DecideCheckLocalFile(context, entry.tokenizer_path, "tokenizer", tokenizer_hint);

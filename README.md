@@ -60,7 +60,7 @@ SELECT extension_version FROM duckdb_extensions() WHERE extension_name = 'anofox
 ```
 
 The extension ships no model weights and calls nothing until you register a model and, for hosted
-models, opt in.
+models, opt in. Local models are downloaded only when you run `decide_download`.
 
 ### 2. Pick a model
 
@@ -73,7 +73,8 @@ models, opt in.
 | A Cloudflare account ([Clef](https://blog.cloudflare.com/clef-decision-models/) on Workers AI) | `export CLOUDFLARE_API_TOKEN=...` and `CLOUDFLARE_ACCOUNT_ID=...`, then `decide_register_model('clef', 'cloudflare')` ([Cloudflare Clef](#cloudflare-clef)). |
 | A TypeSafe key (Jev) | `export TYPESAFE_API_KEY=...`, then `decide_register_model('jev-latest', 'typesafe')`. |
 | A machine that can run a 2B model | Run [strands-decider](https://github.com/strands-labs/strands-decider) locally, no key: [Models and providers](#models-and-providers). |
-| An exported ONNX model | Run it inside DuckDB, offline: [Local models](#local-models). |
+| Nothing but a laptop and a download (about 0.7 GB) | `CALL decide_download('laya-multilingual');`, then `model := 'laya-multilingual'`. It runs inside DuckDB, offline after the download: [Local models](#local-models). |
+| Your own exported ONNX model | Register the files yourself: [Local models](#local-models). |
 
 On a fresh install the doctor says what is missing and the fix for each item:
 
@@ -238,6 +239,7 @@ Every function is available as `anofox_decide_<name>` and as the short alias `de
 | `decide_brier_score(p, outcome)` | `DOUBLE` | mean squared error of the probabilities; 0 is perfect, 0.25 a constant 0.5 (aggregate) |
 | `decide_ece(p, outcome)` | `DOUBLE` | expected calibration error over ten equal-width bins (aggregate) |
 | `decide_fit_calibration(p, outcome)` | `VARCHAR` | fits Platt scaling to a model's raw probabilities and returns the `'platt:a,b'` spec for `decide_register_model` ([Calibration](#calibration)) (aggregate) |
+| `decide_download(model)` | table | download a local model's weights from Hugging Face into the cache directory, verified and resumable ([Local models](#local-models)) |
 | `decide_register_model(id[, provider[, ...]])` | `BOOLEAN` | register a model for this database instance |
 | `decide_unregister_model(id)` | `BOOLEAN` | remove a registered model so it can be registered again |
 | `decide_token_count(text[, model])` | `BIGINT` | tokens `text` has for a local model, to find rows that do not fit its window ([Local models](#local-models)) |
@@ -477,9 +479,38 @@ FROM (SELECT decide_choice_distribution(body, 'Which team owns this?', ['billing
 
 ## Local models
 
-A local model runs inside DuckDB on ONNX Runtime, on the CPU and fully offline after setup. The extension
-ships no weights and no graphs: you export a checkpoint to ONNX once with
-[`tools/export_julia`](tools/export_julia/README.md), then register the files.
+A local model runs inside DuckDB on ONNX Runtime, on the CPU and fully offline once its weights are on disk.
+Three models work out of the box:
+
+| Model | Download | Peak memory | Notes |
+|---|---|---|---|
+| `laya-multilingual` | 0.68 GB | 3.4 GB | multilingual (mmBERT-base encoder); the recommended start |
+| `laya-typed-decisions` | 0.85 GB | 5.1 GB | English (ModernBERT-large encoder); the best router in our evaluation |
+| `julia-1` | 0.61 GB | 1.5 GB | smallest and fastest, but the weakest in our evaluation |
+
+```sql
+CALL decide_download('laya-multilingual');           -- once: fetches and verifies the files (8 to 11 seconds on the test machine's connection)
+SELECT decide_probability('I want my money back.', 'A refund is requested.', model := 'laya-multilingual');
+```
+
+That is all: no registration, no Python, no `INSTALL httpfs`. The extension embeds the model graphs (about
+1 MB each, without weights); `decide_download` fetches the upstream weights from Hugging Face, pinned to a
+fixed revision, checks size and SHA-256 of every file, resumes an interrupted download, and keeps them in
+`~/.cache/anofox-decide` (change it with `SET anofox_decide_cache_dir = '<dir>'`). From then on nothing leaves
+your machine. `SELECT model, ready, hint FROM decide_models();` lists the three with `ready = false` and the
+call to run until they are downloaded, `decide_doctor()` reports them, and naming a model that is not
+downloaded fails with `model 'laya-multilingual' is not downloaded. Fix: CALL decide_download('laya-multilingual');`.
+Behind a proxy, set `HTTPS_PROXY` as for the hosted models.
+
+The first call in a session loads the model (4.0 s for `laya-multilingual`, 5.5 s for
+`laya-typed-decisions`, 1.4 s for `julia-1` on the test machine, files in the page cache); later calls reuse it.
+Peak resident memory is the table above (measured with `getrusage` over a whole DuckDB process): the Laya
+checkpoints are float16 and ONNX Runtime computes in float32.
+
+### Your own exported model
+
+To run a checkpoint that is not in the catalog (a fine-tune, another Laya variant), export it to ONNX once with
+[`tools/export_julia`](tools/export_julia/README.md) (Python, torch) and register the files:
 
 ```sql
 SELECT decide_register_model('julia-1', 'local', '<path>/julia1.onnx', '<path>/tokenizer/tokenizer.json');
@@ -532,6 +563,7 @@ example.
 | `anofox_decide_timeout_ms` | `30000` | Per-request timeout for remote calls |
 | `anofox_decide_max_retries` | `3` | Retries after a `429`, a `5xx` or a connection failure, 0 to 10 |
 | `anofox_decide_max_questions` | `100` | Most questions in one `decide_many` / `decide_table` call, up to 1000 |
+| `anofox_decide_cache_dir` | *(unset: `~/.cache/anofox-decide`)* | Where `decide_download` keeps the local models' weights |
 | `anofox_decide_max_length` | `8192` | Tokens a `julia-1` local model reads per question (Laya uses its own config) |
 | `anofox_decide_head_length` | `512` | Tokens reserved for the question and its options in local models |
 | `anofox_decide_on_truncate` | `error` | `error`: a local model refuses text, question or options that do not fit its window; `ignore`: score the shortened input |
@@ -561,7 +593,7 @@ on Linux (amd64, arm64), macOS (arm64) and Windows (amd64) against DuckDB 1.5.6.
 unlike refund and routing it has not been scored for accuracy on labelled data.
 
 **Not yet:** images (Cloudflare Clef accepts them, our functions take text only); GPU execution for local models; the Von model (it needs order-invariant attention in the
-export); a built-in download for local model files (today you export them with `tools/export_julia`);
+export);
 on macOS only Apple silicon is built (ONNX Runtime ships no Intel macOS archive after v1.23.2), and
 WebAssembly, musl and MinGW are not built.
 
@@ -636,8 +668,10 @@ or `DATAZOO_NO_BANNER=1`.
 ## License
 
 - **This extension's code:** MIT.
-- **Models:** the extension ships **no model weights and no graphs**, and never redistributes any. Check a
-  model's license before you build on it, especially one you export or serve yourself:
+- **Models:** the extension ships **no model weights**, and never redistributes any: `decide_download` fetches the
+  Julia-1 and Laya weights from their authors' Hugging Face repositories on your request, at a pinned revision
+  (the extension embeds only weight-free graphs, which carry no weights). Check a model's license before you
+  build on it, especially one you export or serve yourself:
 
 | Model | Provider | License / terms | Where it runs |
 |---|---|---|---|
@@ -646,8 +680,8 @@ or `DATAZOO_NO_BANNER=1`.
 | Clef, Clef-flash | Cloudflare | Apache 2.0 weights; the hosted service under Cloudflare's terms | hosted on Workers AI; receives the text you score |
 | strands-decider | Strands Labs | Apache 2.0 | your machine, as a local server |
 | Kev | Jared Palmer | Apache 2.0 | your machine, as a local server |
-| Julia-1 | SupersonicLabs | Apache 2.0 | your machine, in-process |
-| Laya | ConvAI Innovations | Apache 2.0 | your machine, in-process |
+| Julia-1 | SupersonicLabs ([SupersonicLabs/Julia-1](https://huggingface.co/SupersonicLabs/Julia-1)) | Apache 2.0 | your machine, in-process; weights downloaded from Hugging Face on request |
+| Laya multilingual, Laya typed-decisions | ConvAI Innovations ([convaiinnovations/laya](https://huggingface.co/convaiinnovations/laya)) | Apache 2.0 | your machine, in-process; weights downloaded from Hugging Face on request |
 
 Licenses are as published by each project at the time of writing.
 
