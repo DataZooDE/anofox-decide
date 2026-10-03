@@ -103,7 +103,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 #ifdef EXT_VERSION_ANOFOX_DECIDE
 	version = EXT_VERSION_ANOFOX_DECIDE;
 #else
-	version = "0.1.0";
+	version = "2026.10.03"; // builds without a version tag (EXT_VERSION_ANOFOX_DECIDE) report the release they come from
 #endif
 	if (telemetry_enabled) {
 		Value key_value;

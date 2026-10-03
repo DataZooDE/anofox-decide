@@ -1,6 +1,6 @@
 {
 	"name": "anofox-decide",
-	"version-string": "2026.10.02",
+	"version-string": "2026.10.03",
 	"description": "DuckDB extension for natural-language decisions: yes/no probabilities, choices and ordinal scores from hosted, local-server and in-process ONNX decision models",
 	"dependencies": [
 		"openssl"
