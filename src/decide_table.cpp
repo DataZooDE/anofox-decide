@@ -57,6 +57,8 @@ unique_ptr<FunctionData> DecideModelsBind(ClientContext &context, TableFunctionB
 	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("wire_model");
 	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("calibration");
+	return_types.emplace_back(LogicalType::VARCHAR);
 	return make_uniq<DecideModelsData>();
 }
 
@@ -96,6 +98,9 @@ void DecideModelsScan(ClientContext &context, TableFunctionInput &data, DataChun
 		output.SetValue(9, row_count,
 		                endpoint.empty() ? Value(LogicalType::VARCHAR)
 		                                 : Value(row.wire_model.empty() ? row.id : row.wire_model));
+		output.SetValue(10, row_count,
+		                row.calibration.set ? Value(DecideFormatPlatt(row.calibration.a, row.calibration.b))
+		                                    : Value(LogicalType::VARCHAR));
 		gstate.offset++;
 		row_count++;
 	}

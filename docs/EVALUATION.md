@@ -64,6 +64,39 @@ test machine), Liquid D1 1807 s. D1's free tier showed highly
 variable latency (1 to 34 s per call in plain `curl` tests on the same payloads), so this is the API, not
 the extension.
 
+## Calibration
+
+Raw cut-offs differ per model (D1 says "refund" for every complaint at 0.5), so each model's refund
+probabilities were re-scaled with Platt scaling, the same maths as `decide_fit_calibration` and the
+registration option `MAP {'calibration': 'platt:a,b'}`. To keep the estimate honest the tickets are split
+into two stratified halves, the scaling is fitted on one half and applied to the other (both halves are
+scored this way), averaged over 20 random splits. Each fit therefore uses 100 tickets (30 refund) and is
+judged on tickets it never saw.
+
+| Model | Accuracy @0.5 raw -> calibrated | Brier raw -> calibrated | ECE raw -> calibrated |
+|---|---|---|---|
+| Liquid D1 | 77.0% -> 91.0% | 0.157 -> 0.065 | 0.225 -> 0.049 |
+| TypeSafe Jev | 93.0% -> 93.2% | 0.066 -> 0.050 | 0.125 -> 0.046 |
+| Laya multilingual | 92.0% -> 93.7% | 0.066 -> 0.055 | 0.074 -> 0.052 |
+| Laya typed-decisions | 88.5% -> 93.5% | 0.090 -> 0.054 | 0.169 -> 0.048 |
+| Kev-0.8B | 70.5% -> 80.7% | 0.206 -> 0.143 | 0.245 -> 0.069 |
+
+- **D1's weakness was calibration, not discrimination.** Scaling lifts it from 77% to 91% and its Brier score to
+  Jev's level, so the model ranks refund requests well and only its cut-off was off.
+- **Every model's probabilities get more honest** (Brier and ECE fall for all five), and the spread between
+  the top four on refund shrinks from 16 points to under 3 (D1 91.0%, Jev 93.2%, Laya typed-decisions 93.5%,
+  Laya multilingual 93.7%), which is inside the sampling interval of 200 tickets (about +/-5 points).
+  Laya typed-decisions gains most among them (88.5% -> 93.5%), because its raw cut-off was too conservative.
+- **Kev-0.8B improves but stays behind** (80.7%).
+- **Julia-1 cannot be calibrated**: its probabilities rank refund requests worse than chance (AUROC 0.407), and
+  the fit correctly refuses it.
+- Routing is a choice question and is not calibrated; the routing table above is unchanged.
+- This is in-distribution: the calibration is fitted and judged on the same kind of (template-generated,
+  English) tickets. Expect a calibration fitted on one ticket stream to need a refit on another.
+
+Reproduce from the results of `run_eval.py`: `python3 tools/eval/crossfit_calibration.py --tickets
+/tmp/eval/tickets.csv --results /tmp/eval/out`.
+
 ## What it shows
 
 - **Jev is the most accurate overall** (93% refund, 92% routing) and the best calibrated on refund (Brier 0.066).

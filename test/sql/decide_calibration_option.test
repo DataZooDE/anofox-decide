@@ -1,0 +1,361 @@
+# name: test/sql/decide_calibration_option.test
+# description: Per-model Platt calibration of yes/no probabilities
+#              (MAP {'calibration': 'platt:a,b'}), decide_fit_calibration, and
+#              decide_choice_distribution. Hermetic: the stub answers a constant
+#              0.5, so a calibrated stub is deterministic (sigmoid(b)), and the
+#              tiny local fixture checks the same path through ONNX.
+# group: [anofox_decide]
+
+require anofox_decide
+
+statement ok
+LOAD anofox_decide
+
+# --- registration ----------------------------------------------------------
+
+query I
+SELECT decide_register_model('stub-cal', 'stub', MAP {'calibration': 'platt:1,1'})
+----
+1
+
+query I
+SELECT decide_register_model('stub-cal2', 'stub', MAP {'calibration': 'platt:2,-0.5'})
+----
+1
+
+# decide_models() shows the spec (NULL when uncalibrated).
+query TT
+SELECT model, calibration FROM decide_models() WHERE model IN ('stub', 'stub-cal', 'stub-cal2') ORDER BY model
+----
+stub	NULL
+stub-cal	platt:1,1
+stub-cal2	platt:2,-0.5
+
+# --- effect on yes/no probabilities -----------------------------------------
+
+# stub says 0.5 (logit 0): p' = sigmoid(b).
+query I
+SELECT round(decide_probability('x', 'y', model := 'stub'), 6)
+----
+0.5
+
+query I
+SELECT round(decide_probability('x', 'y', model := 'stub-cal'), 6)
+----
+0.731059
+
+query I
+SELECT round(decide_probability('x', 'y', model := 'stub-cal2'), 6)
+----
+0.377541
+
+# The decision threshold sees the calibrated probability.
+query I
+SELECT decide_decision('x', 'y', 0.7, model := 'stub-cal')
+----
+true
+
+query I
+SELECT decide_decision('x', 'y', 0.7, model := 'stub')
+----
+false
+
+# decide_many and decide_table go through the same path.
+query I
+SELECT round((regexp_extract(decide_many('x', '[{"id":"q","kind":"binary","instruction":"y"}]', model := 'stub-cal'), '"probability":([0-9.]+)', 1))::DOUBLE, 3)
+----
+0.731
+
+query I
+SELECT round(probability, 3) FROM decide_table('x', '[{"id":"q","kind":"binary","instruction":"y"}]', model := 'stub-cal')
+----
+0.731
+
+# Choice answers are never calibrated.
+query I
+SELECT decide_choice('x', 'q', ['a', 'b'], model := 'stub-cal')
+----
+a
+
+# --- invalid specs ------------------------------------------------------------
+
+statement error
+SELECT decide_register_model('bad1', 'stub', MAP {'calibration': 'platt:1'})
+----
+<REGEX>:.*option 'calibration' is invalid.*two numbers.*decide_fit_calibration.*
+
+statement error
+SELECT decide_register_model('bad2', 'stub', MAP {'calibration': 'platt:0,1'})
+----
+<REGEX>:.*slope a must be greater than 0.*
+
+statement error
+SELECT decide_register_model('bad3', 'stub', MAP {'calibration': 'platt:-1,0'})
+----
+<REGEX>:.*slope a must be greater than 0.*invert.*
+
+statement error
+SELECT decide_register_model('bad4', 'stub', MAP {'calibration': 'isotonic:1,2'})
+----
+<REGEX>:.*not a calibration spec.*platt.*
+
+statement error
+SELECT decide_register_model('bad5', 'stub', MAP {'calibration': 'platt:nan,1'})
+----
+<REGEX>:.*non-finite.*
+
+# A failed registration leaves nothing behind.
+query I
+SELECT count(*) FROM decide_models() WHERE model LIKE 'bad%'
+----
+0
+
+# --- remote and local registration accept it, and show it ---------------------
+
+query I
+SELECT decide_register_model('d1-cal', 'liquid', MAP {'model': 'd1:free', 'calibration': 'platt:0.8,-1.5'})
+----
+1
+
+query T
+SELECT calibration FROM decide_models() WHERE model = 'd1-cal'
+----
+platt:0.8,-1.5
+
+query I
+SELECT decide_register_model('tiny', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json')
+----
+1
+
+# The 6-argument form carries the options MAP for local models. a=1, b=0 is the identity.
+query I
+SELECT decide_register_model('tiny-id', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json', 'julia-1', MAP {'calibration': 'platt:1,0'})
+----
+1
+
+query I
+SELECT decide_register_model('tiny-x2', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json', 'julia-1', MAP {'calibration': 'platt:2,0'})
+----
+1
+
+query I
+SELECT abs(decide_probability('The bill is wrong.', 'A refund is requested.', model := 'tiny-id') - decide_probability('The bill is wrong.', 'A refund is requested.', model := 'tiny')) < 1e-9
+----
+true
+
+# platt:2,0 sharpens: p' = sigmoid(2 * logit(p)) = p^2 / (p^2 + (1-p)^2).
+query I
+SELECT abs(
+  decide_probability('The bill is wrong.', 'A refund is requested.', model := 'tiny-x2') -
+  (pow(decide_probability('The bill is wrong.', 'A refund is requested.', model := 'tiny'), 2) /
+   (pow(decide_probability('The bill is wrong.', 'A refund is requested.', model := 'tiny'), 2) +
+    pow(1 - decide_probability('The bill is wrong.', 'A refund is requested.', model := 'tiny'), 2)))) < 1e-6
+----
+true
+
+# Local models keep their file/profile argument checks when a MAP is given.
+statement error
+SELECT decide_register_model('tiny-bad', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json', 'nope', MAP {'calibration': 'platt:1,0'})
+----
+<REGEX>:.*profile 'nope' is not supported.*
+
+# --- decide_fit_calibration -----------------------------------------------------
+
+statement ok
+CREATE TABLE labelled(p DOUBLE, y BOOLEAN)
+
+statement ok
+INSERT INTO labelled VALUES
+  (0.2579, false),
+  (0.7121, true),
+  (0.5536, true),
+  (0.0659, false),
+  (0.0587, false),
+  (0.0704, false),
+  (0.3887, false),
+  (0.0947, false),
+  (0.6824, false),
+  (0.6136, true),
+  (0.9457, true),
+  (0.8957, true),
+  (0.1058, false),
+  (0.2407, false),
+  (0.1283, false),
+  (0.6971, true),
+  (0.5711, true),
+  (0.0665, false),
+  (0.7469, true),
+  (0.2469, false),
+  (0.4302, false),
+  (0.854, true),
+  (0.1772, false),
+  (0.5377, false),
+  (0.7985, true),
+  (0.9469, true),
+  (0.3796, false),
+  (0.1103, false),
+  (0.0593, false),
+  (0.8303, true),
+  (0.9049, true),
+  (0.7635, true),
+  (0.6176, true),
+  (0.8849, true),
+  (0.4612, false),
+  (0.0669, false),
+  (0.7074, false),
+  (0.8734, true),
+  (0.3351, false),
+  (0.0539, false),
+  (0.1201, false),
+  (0.0662, false),
+  (0.0976, false),
+  (0.342, false),
+  (0.0747, false),
+  (0.5736, false),
+  (0.8717, true),
+  (0.2092, false),
+  (0.3, false),
+  (0.9397, true),
+  (0.1254, false),
+  (0.168, false),
+  (0.6306, true),
+  (0.0485, false),
+  (0.3134, false),
+  (0.9381, true),
+  (0.5232, false),
+  (0.7422, true),
+  (0.9166, true),
+  (0.9044, true)
+
+# Fitted on 60 rows by an independent optimiser (LBFGS + Newton in Python): a = 1.917975, b = -0.722736.
+query I
+SELECT decide_fit_calibration(p, y) LIKE 'platt:%,%' FROM labelled
+----
+true
+
+query I
+SELECT abs(split_part(replace(decide_fit_calibration(p, y), 'platt:', ''), ',', 1)::DOUBLE - 1.917975) < 1e-4 FROM labelled
+----
+true
+
+query I
+SELECT abs(split_part(replace(decide_fit_calibration(p, y), 'platt:', ''), ',', 2)::DOUBLE + 0.722736) < 1e-4 FROM labelled
+----
+true
+
+# BIGINT outcomes give the same answer; NULL rows are skipped.
+query I
+SELECT decide_fit_calibration(p, y::BIGINT) = (SELECT decide_fit_calibration(p, y) FROM labelled) FROM labelled
+----
+true
+
+query I
+SELECT decide_fit_calibration(p, y) = (SELECT decide_fit_calibration(p, y) FROM labelled)
+FROM (SELECT p, y FROM labelled UNION ALL SELECT NULL, true UNION ALL SELECT 0.3, NULL)
+----
+true
+
+# The fitted spec registers, and calibration improves the Brier score on the data it was fitted on.
+statement ok
+SELECT decide_register_model('fitted', 'stub', MAP {'calibration': (SELECT decide_fit_calibration(p, y) FROM labelled)})
+
+query I
+SELECT calibration LIKE 'platt:%' FROM decide_models() WHERE model = 'fitted'
+----
+true
+
+# Empty input returns NULL; grouped fits work and parallel combine is exercised by a larger input.
+query I
+SELECT decide_fit_calibration(p, y) IS NULL FROM labelled WHERE false
+----
+true
+
+query I
+SELECT count(*) FROM (SELECT g, decide_fit_calibration(p, y) AS spec FROM (SELECT p, y, i % 2 AS g FROM (SELECT p, y, row_number() OVER () AS i FROM labelled)) GROUP BY g)
+----
+2
+
+query I
+SELECT decide_fit_calibration(least(0.999, greatest(0.001, ((i * 7919) % 1000) / 1000.0)), ((i * 104729) % 1000) / 1000.0 < least(0.999, greatest(0.001, ((i * 7919) % 1000) / 1000.0))) LIKE 'platt:%'
+FROM range(20000) t(i)
+----
+true
+
+# --- fit errors are actionable -------------------------------------------------
+
+statement error
+SELECT decide_fit_calibration(p, true) FROM labelled
+----
+<REGEX>:.*same outcome \(true\).*needs both.*
+
+statement error
+SELECT decide_fit_calibration(0.5, y) FROM labelled
+----
+<REGEX>:.*all probabilities are identical.*
+
+# Probabilities that rank outcomes backwards cannot be repaired by scaling.
+statement error
+SELECT decide_fit_calibration(1 - p, y) FROM labelled
+----
+<REGEX>:.*slope is not positive.*no better than chance.*
+
+statement error
+SELECT decide_fit_calibration(1.5, true)
+----
+<REGEX>:.*probability must be between 0 and 1.*
+
+# --- decide_choice_distribution ---------------------------------------------------
+
+query T
+SELECT decide_choice_distribution('x', 'q', ['a', 'b', 'c'], model := 'stub')
+----
+{a=1.0, b=0.0, c=0.0}
+
+query T
+SELECT typeof(decide_choice_distribution('x', 'q', ['a', 'b'], model := 'stub'))
+----
+MAP(VARCHAR, DOUBLE)
+
+# NULL contract mirrors decide_choice.
+query I
+SELECT decide_choice_distribution(NULL, 'q', ['a', 'b'], model := 'stub') IS NULL
+----
+true
+
+query I
+SELECT decide_choice_distribution('x', 'q', NULL::VARCHAR[], model := 'stub') IS NULL
+----
+true
+
+statement error
+SELECT decide_choice_distribution('x', 'q', [], model := 'stub')
+----
+<REGEX>:.*decide_choice_distribution: the options list is empty.*
+
+statement error
+SELECT decide_choice_distribution('x', 'q', ['a', NULL], model := 'stub')
+----
+<REGEX>:.*decide_choice_distribution: the options list contains NULL.*
+
+# A real (tiny local) model: a proper distribution whose argmax is decide_choice's answer.
+query I
+SELECT abs(list_sum(map_values(decide_choice_distribution('The bill is wrong.', 'Which team?', ['billing', 'other'], model := 'tiny'))) - 1.0) < 1e-6
+----
+true
+
+query I
+SELECT map_keys(decide_choice_distribution('The bill is wrong.', 'Which team?', ['billing', 'other'], model := 'tiny'))
+----
+[billing, other]
+
+query I
+SELECT list_position(map_values(d), list_max(map_values(d))) = list_position(map_keys(d), decide_choice('The bill is wrong.', 'Which team?', ['billing', 'other'], model := 'tiny'))
+FROM (SELECT decide_choice_distribution('The bill is wrong.', 'Which team?', ['billing', 'other'], model := 'tiny') AS d)
+----
+true
+
+# Calibration never touches choice distributions.
+query I
+SELECT decide_choice_distribution('x', 'q', ['a', 'b'], model := 'stub-cal') = decide_choice_distribution('x', 'q', ['a', 'b'], model := 'stub')
+----
+true

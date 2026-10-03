@@ -164,6 +164,16 @@ void DecideRegistry::RegisterModel(ClientContext &context, const string &id, con
 		    "drop the MAP, or use a remote provider: SELECT decide_register_model('" + id + "', 'typesafe', "
 		    "MAP {'endpoint': 'https://api.typesafe.ai'}); (remote providers: " + DecideRemoteProviderList() + ")"));
 	}
+	DecidePlatt calibration;
+	if (!options.calibration.empty()) {
+		string why;
+		if (!DecideParsePlatt(options.calibration, calibration, why)) {
+			throw InvalidInputException(DecideMsg(
+			    fn, "option 'calibration' is invalid: " + why,
+			    "use platt:<a>,<b> with a > 0, e.g. MAP {'calibration': 'platt:1.2,-0.4'}; fit it from labelled "
+			    "data with SELECT decide_fit_calibration(probability, outcome) FROM labelled;"));
+		}
+	}
 	if (remote_profile) {
 		if (!graph_path.empty() || !tokenizer_path.empty()) {
 			throw InvalidInputException(DecideMsg(
@@ -234,6 +244,7 @@ void DecideRegistry::RegisterModel(ClientContext &context, const string &id, con
 	entry.wire_model = options.wire_model;
 	entry.key_env = options.key_env;
 	entry.criteria = options.criteria;
+	entry.calibration = calibration;
 	if (provider == "local") {
 		string tokenizer_hint;
 		if (!tokenizer_path.empty()) {
@@ -461,8 +472,8 @@ DecideModelStatus DecideDescribeModel(ClientContext &context, const DecideModelE
 	return status;
 }
 
-vector<DecideAnswer> DecideEvaluate(ClientContext &context, const DecideModelEntry &entry, const string &state,
-                                    const vector<DecideQuestion> &questions, const char *function) {
+static vector<DecideAnswer> DecideEvaluateRaw(ClientContext &context, const DecideModelEntry &entry, const string &state,
+                                              const vector<DecideQuestion> &questions, const char *function) {
 	RequireKnownProvider(entry);
 	if (DecideFindRemoteProfile(entry.provider)) {
 		return DecideRemoteEvaluate(context, state, questions, TargetOf(entry), function);
@@ -495,6 +506,28 @@ vector<DecideAnswer> DecideEvaluate(ClientContext &context, const DecideModelEnt
 		out.push_back(std::move(a));
 	}
 	return out;
+}
+
+// The model's own calibration: Platt scaling touches yes/no probabilities only (choice and score answers
+// are returned as the provider gave them). Applied on every path that produces answers: the single-request
+// evaluator below and the remote requests of a chunk in DecideEvaluateBatch.
+static void ApplyCalibration(const DecideModelEntry &entry, vector<DecideAnswer> &answers) {
+	if (!entry.calibration.set) {
+		return;
+	}
+	for (auto &a : answers) {
+		if (a.kind == "noul" && std::isfinite(a.probability)) {
+			a.probability = DecidePlattApply(entry.calibration, a.probability);
+		}
+	}
+}
+
+// Provider answers, then the model's own calibration.
+vector<DecideAnswer> DecideEvaluate(ClientContext &context, const DecideModelEntry &entry, const string &state,
+                                    const vector<DecideQuestion> &questions, const char *function) {
+	auto answers = DecideEvaluateRaw(context, entry, state, questions, function);
+	ApplyCalibration(entry, answers);
+	return answers;
 }
 
 double RequireThresholdDouble(double threshold, const char *func) {
@@ -611,6 +644,9 @@ vector<vector<DecideAnswer>> DecideEvaluateBatch(ClientContext &context, const v
 	for (idx_t j = 0; j < jobs.size(); j++) {
 		answers[job_unique[j]] = std::move(jobs[j].answers);
 		errors[job_unique[j]] = jobs[j].error;
+		if (!errors[job_unique[j]]) {
+			ApplyCalibration(requests[firsts[job_unique[j]]].entry, answers[job_unique[j]]);
+		}
 	}
 	for (idx_t k = 0; k < u; k++) {
 		if (errors[k]) {

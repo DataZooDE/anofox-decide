@@ -219,3 +219,15 @@ with 8 DuckDB threads the peak is still 1 request in flight (300 rows at 50 ms: 
 The chunk-level rewrite of the in-out operator was tried and dropped because it can never see more than one row.
 Open idea: a scalar returning `LIST(STRUCT(question_id, kind, probability, ...))` for use with `UNNEST`, which would
 give the relational shape of `decide_table` with the speed of the scalars.
+
+## Per-model calibration and choice distributions (2 Oct 2026)
+
+Yes/no probabilities can be re-scaled per model: registration option `MAP {'calibration': 'platt:a,b'}`
+(`p' = sigmoid(a * logit(p) + b)`, `a > 0`, applied in `DecideEvaluate` to `noul` answers of every provider; also
+available for local models through a 6th MAP argument), `decide_fit_calibration(p, y)` (Newton fit with Platt's
+smoothed targets; refuses one-class data, constant probabilities and non-positive slopes) and a
+`calibration` column in `decide_models()`. `decide_choice_distribution(...)` returns the full option
+probabilities as `MAP(VARCHAR, DOUBLE)`. Cross-fitted on the 200-ticket evaluation (docs/EVALUATION.md):
+D1 refund accuracy 77% -> 91%, Brier 0.157 -> 0.065; the fit agrees with an independent LBFGS optimiser to
+1e-6. Stacked on #5 (errors-c1). Not done: choice/score calibration (temperature), calibration of already
+stored probabilities (no `decide_calibrate` scalar), an automatic recommendation of a cut-off.
