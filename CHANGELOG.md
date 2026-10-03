@@ -38,6 +38,12 @@ All notable changes to `anofox_decide` are documented here. The format follows
   at `decide_register_model` with a message that names the problem; a `rl_agent_config.json` next to a graph
   registered without a profile is reported as a probable Laya checkpoint. `decide_models()` and
   `decide_doctor()` use the same checks, so they no longer say `ready` for files registration would reject.
+- ONNX Runtime failures (an unreadable or damaged graph, an unsupported ONNX version, running out of memory) are
+  reported as `<function>: <what>. Fix: <what to run>` instead of the raw ONNX Runtime text; a graph with other
+  inputs than a local model is fed names the missing and the unused inputs.
+- The bundled ONNX is now built with `ONNX_DISABLE_STATIC_REGISTRATION=ON`, which should stop the
+  `Schema error: ... already registered` lines on the first local model load. Not yet verified on a release
+  build, so the README note about them stays.
 
 ## [2026.10.03] - 2026-10-03
 

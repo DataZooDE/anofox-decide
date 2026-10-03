@@ -2,6 +2,7 @@
 
 #include "decide_local_nli.hpp"
 #include "decide_errors.hpp"
+#include "decide_ort_errors.hpp"
 #include "decide_provider.hpp"
 #include "decide_remote.hpp" // DecideQuestion/DecideAnswer (provider-neutral structs)
 #include "decide_tokenizer.hpp"
@@ -180,10 +181,13 @@ struct DecideLocalSession::Impl {
 	string model_bytes;
 };
 
-shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, const string &graph_path) {
+shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, const string &graph_path,
+                                                        const char *function_name) {
+	const string function = function_name;
 	if (graph_path.empty()) {
-		throw InvalidInputException("decide: local model has no graph path "
-		                            "(SELECT decide_register_model('<id>', 'local', '<julia1.onnx path>'))");
+		throw InvalidInputException(DecideMsg(function, "the local model has no graph path",
+		                                      "register it with the graph as the 3rd argument: SELECT "
+		                                      "decide_register_model('<id>', 'local', '<model.onnx path>')"));
 	}
 	auto cache = LocalCache(context);
 	std::lock_guard<std::mutex> guard(cache->lock);
@@ -195,6 +199,7 @@ shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, 
 	handle->impl = make_shared_ptr<Impl>();
 	// Read through DuckDB's filesystem (F4): same access gate as read_csv.
 	handle->impl->model_bytes = DecideReadLocalFile(context, graph_path, "graph");
+	vector<string> input_names;
 	try {
 		Ort::SessionOptions opts;
 		opts.SetIntraOpNumThreads(0);
@@ -202,22 +207,24 @@ shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, 
 		handle->impl->session =
 		    Ort::Session(handle->impl->env, (const void *)bytes.data(), bytes.size(), opts);
 		handle->impl->mem = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+		for (size_t i = 0; i < handle->impl->session.GetInputCount(); i++) {
+			input_names.push_back(handle->impl->session.GetInputNameAllocated(i, handle->impl->alloc).get());
+		}
 	} catch (const Ort::Exception &e) {
-		throw IOException("decide: failed to load local graph '%s' (%s)", graph_path, e.what());
+		DecideMapOrtError(e, function, graph_path, DecideOrtStage::LOAD);
 	}
-	// Contract check: the Julia scores graph takes exactly our 5 inputs.
-	if (handle->impl->session.GetInputCount() != 5) {
-		throw InvalidInputException("decide: graph '%s' has %d inputs, expected 5 "
-		                            "(julia1 scores graph from tools/export_julia)",
-		                            graph_path, (int)handle->impl->session.GetInputCount());
-	}
+	// Contract check: the Julia scores graph takes exactly our 5 inputs; name the difference.
+	DecideRequireGraphInputs(input_names, {"input_ids", "attention_mask", "marker_pos", "marker_mask", "qtype"},
+	                         function, graph_path);
 	cache->sessions[graph_path] = handle;
 	return handle;
 }
 
-vector<vector<float>> DecideLocalSession::Score(const DecideLocalBatch &batch) {
+vector<vector<float>> DecideLocalSession::Score(const DecideLocalBatch &batch, const char *function_name) {
+	const string function = function_name;
 	if (batch.batch <= 0 || batch.seq <= 0 || batch.markers <= 0) {
-		throw InvalidInputException("decide: refusing an empty local batch");
+		throw InvalidInputException(DecideMsg(function, "refusing an empty batch for the local model",
+		                                      "pass at least one question and a text"));
 	}
 	auto &im = impl->mem;
 	std::vector<int64_t> shape_bm {batch.batch, batch.markers};
@@ -242,15 +249,18 @@ vector<vector<float>> DecideLocalSession::Score(const DecideLocalBatch &batch) {
 	try {
 		out = impl->session.Run(Ort::RunOptions {nullptr}, in_names, inputs.data(), 5, out_names, 1);
 	} catch (const Ort::Exception &e) {
-		throw IOException("decide: local graph run failed (%s)", e.what());
+		DecideMapOrtError(e, function, graph_path, DecideOrtStage::RUN);
 	}
 	auto info = out[0].GetTensorTypeAndShapeInfo();
 	auto dims = info.GetShape();
 	if (dims.size() != 2 || dims[0] != batch.batch || dims[1] != batch.markers) {
-		throw InvalidInputException("decide: local graph returned scores shape [%lld,%lld], expected [%lld,%lld]",
-		                            (long long)(dims.size() > 0 ? dims[0] : -1),
-		                            (long long)(dims.size() > 1 ? dims[1] : -1), (long long)batch.batch,
-		                            (long long)batch.markers);
+		throw InvalidInputException(DecideMsg(
+		    function,
+		    "the graph '" + graph_path + "' returned scores of shape [" +
+		        std::to_string(dims.size() > 0 ? dims[0] : -1) + ", " + std::to_string(dims.size() > 1 ? dims[1] : -1) +
+		        "], expected [" + std::to_string(batch.batch) + ", " + std::to_string(batch.markers) + "]",
+		    "export the model again with tools/export_julia (see "
+		    "https://github.com/DataZooDE/anofox-decide#local-models) and register the .onnx file it writes"));
 	}
 	const float *scores = out[0].GetTensorData<float>();
 	vector<vector<float>> rows;
@@ -585,8 +595,8 @@ vector<DecideAnswer> DecideLocalScore(ClientContext &context, const DecideModelE
 		}
 		batch.qtype[b] = r.qtype;
 	}
-	auto session = DecideLocalSession::Open(context, entry.graph_path);
-	auto scores = session->Score(batch);
+	auto session = DecideLocalSession::Open(context, entry.graph_path, function.c_str());
+	auto scores = session->Score(batch, function.c_str());
 	vector<DecideAnswer> out;
 	for (size_t b = 0; b < rows.size(); b++) {
 		const auto *q = rows[b].q;
