@@ -38,6 +38,7 @@ DECIDE_OFFLINE_ENV = env -u TYPESAFE_API_KEY -u LIQUID_API_KEY -u CLOUDFLARE_API
 test_release_internal:
 	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/release/test/unittest "test/sql/decide_contract.test"
 	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/release/test/unittest "test/sql/decide_registry.test"
+	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/release/test/unittest "test/sql/decide_catalog.test"
 	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/release/test/unittest "test/sql/decide_local.test"
 	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/release/test/unittest "test/sql/decide_local_access.test"
 	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/release/test/unittest "test/sql/decide_profile.test"
@@ -57,6 +58,7 @@ test_release_internal:
 test_debug_internal:
 	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/debug/test/unittest "test/sql/decide_contract.test"
 	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/debug/test/unittest "test/sql/decide_registry.test"
+	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/debug/test/unittest "test/sql/decide_catalog.test"
 	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/debug/test/unittest "test/sql/decide_local.test"
 	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/debug/test/unittest "test/sql/decide_local_access.test"
 	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/debug/test/unittest "test/sql/decide_profile.test"

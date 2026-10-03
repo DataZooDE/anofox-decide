@@ -1,0 +1,67 @@
+# name: test/sql/decide_catalog.test
+# description: the downloadable local models (catalog): listed by decide_models and decide_doctor, the
+#              not-downloaded message, decide_download errors and the cache directory setting. Offline: nothing
+#              is downloaded (the download path itself is covered by test/cpp/test_decide_catalog.cpp against a
+#              loopback server).
+# group: [anofox_decide]
+
+require anofox_decide
+
+statement ok
+LOAD anofox_decide
+
+statement ok
+SET anofox_decide_cache_dir = '__TEST_DIR__/decide_empty_cache'
+
+query IIT
+SELECT model, ready, profile FROM decide_models() WHERE model <> 'stub' ORDER BY model
+----
+julia-1	false	julia-1
+laya-multilingual	false	laya
+laya-typed-decisions	false	laya
+
+query T
+SELECT hint FROM decide_models() WHERE model = 'laya-multilingual'
+----
+not downloaded yet (678 MB from Hugging Face, multilingual encoder (mmBERT-base); the recommended starting point). Fix: CALL decide_download('laya-multilingual');
+
+query I
+SELECT count(*) FROM decide_doctor() WHERE item LIKE 'local model%' AND status = 'warn' AND fix LIKE 'CALL decide_download(%'
+----
+3
+
+statement error
+SELECT decide_probability('I want my money back.', 'A refund is requested.', model := 'laya-multilingual')
+----
+decide_probability: model 'laya-multilingual' is not downloaded. Fix: CALL decide_download('laya-multilingual');
+
+statement error
+SELECT decide_choice('x', 'Which team?', ['a', 'b'], model := 'julia-1')
+----
+decide_choice: model 'julia-1' is not downloaded. Fix: CALL decide_download('julia-1');
+
+statement error
+CALL decide_download('laya-multilingua')
+----
+Did you mean 'laya-multilingual'?
+
+statement error
+CALL decide_download('stub')
+----
+decide_download: 'stub' is not a downloadable model
+
+statement error
+CALL decide_download(NULL)
+----
+decide_download: the model is NULL
+
+statement error
+SET anofox_decide_cache_dir = NULL
+----
+anofox_decide_cache_dir: the setting cannot be NULL
+
+# The cache directory setting takes effect.
+query T
+SELECT current_setting('anofox_decide_cache_dir') LIKE '%decide_empty_cache'
+----
+true

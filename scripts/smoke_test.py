@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 import platform
 import subprocess
+import time
 import sys
 import tempfile
 import urllib.request
@@ -95,7 +96,8 @@ def _download_duckdb_cli(version: str, arch: str, dest_dir: str) -> str:
     return binary
 
 
-def _run_sql(duckdb_bin: str, sql: str, home: str) -> subprocess.CompletedProcess:
+def _run_sql(duckdb_bin: str, sql: str, home: str, extra_env: dict | None = None,
+             timeout: int = 300) -> subprocess.CompletedProcess:
     # An isolated HOME keeps the developer's real ~/.duckdb untouched, and
     # -unsigned is required because a locally built artifact is not signed.
     env = dict(os.environ)
@@ -103,12 +105,13 @@ def _run_sql(duckdb_bin: str, sql: str, home: str) -> subprocess.CompletedProces
     env["USERPROFILE"] = home
     # No telemetry from CI, and no network dependence in the smoke path.
     env["DATAZOO_DISABLE_TELEMETRY"] = "1"
+    env.update(extra_env or {})
     return subprocess.run(
         [duckdb_bin, "-unsigned", "-noheader", "-list", "-c", sql],
         capture_output=True,
         text=True,
         env=env,
-        timeout=300,
+        timeout=timeout,
     )
 
 
@@ -142,13 +145,13 @@ def run_smoke_test(extension_path: str, duckdb_version: str, arch: str) -> None:
         )
 
         # 1. Install -- catches a truncated or wrong-platform artifact.
-        print("[1/4] Installing the artifact into a stock CLI")
+        print("[1/6] Installing the artifact into a stock CLI")
         proc = _run_sql(duckdb_bin, f"INSTALL '{ext}';", home)
         if proc.returncode != 0:
             _fail("the artifact is not installable on this platform", proc)
 
         # 2. Load, and confirm DuckDB itself agrees it loaded.
-        print("[2/4] Loading and checking duckdb_extensions()")
+        print("[2/6] Loading and checking duckdb_extensions()")
         proc = _run_sql(
             duckdb_bin,
             f"LOAD {EXTENSION_NAME};\n"
@@ -168,7 +171,7 @@ def run_smoke_test(extension_path: str, duckdb_version: str, arch: str) -> None:
 
         # 3. Call a real function -- loading alone does not prove the registered
         #    functions work.
-        print(f"[3/4] Calling a real function:\n      {SMOKE_QUERY}")
+        print(f"[3/6] Calling a real function:\n      {SMOKE_QUERY}")
         proc = _run_sql(duckdb_bin, f"LOAD {EXTENSION_NAME};\n{SMOKE_QUERY}", home)
         if proc.returncode != 0:
             _fail("the smoke query failed", proc)
@@ -182,7 +185,7 @@ def run_smoke_test(extension_path: str, duckdb_version: str, arch: str) -> None:
         if not os.path.isdir(fixtures):
             _fail(f"fixture directory not found: {fixtures}")
         sql = INFERENCE_QUERY.replace(_FIXTURES, fixtures)
-        print("[4/4] Local inference on the committed fixture model")
+        print("[4/6] Local inference on the committed fixture model")
         proc = _run_sql(duckdb_bin, f"LOAD {EXTENSION_NAME};\n{sql}", home)
         if proc.returncode != 0:
             _fail("fixture-model inference failed", proc)
@@ -193,6 +196,54 @@ def run_smoke_test(extension_path: str, duckdb_version: str, arch: str) -> None:
                 proc,
             )
         print(f"      -> probability_in_range={lines[-2]} choice_valid={lines[-1]}")
+
+        # 5. TLS from our own HTTPS client on this OS: an unauthenticated call to the real Cloudflare API must
+        #    come back as an HTTP 401 envelope. A failed handshake or missing CA store reads differently
+        #    ("TLS", "certificate"), so this proves handshake + CA roots on Windows and macOS too.
+        print("[5/6] HTTPS handshake and CA roots (expecting an HTTP 401 from api.cloudflare.com)")
+        proc = _run_sql(
+            duckdb_bin,
+            f"LOAD {EXTENSION_NAME};\n"
+            "SET anofox_decide_allow_remote = true;\nSET anofox_decide_max_retries = 0;\n"
+            "SELECT decide_register_model('smoke-clef', 'cloudflare', "
+            "MAP {'account_id': '00000000000000000000000000000000'});\n"
+            "SELECT decide_probability('x', 'A refund is requested.', model := 'smoke-clef');",
+            home,
+            extra_env={"CLOUDFLARE_API_TOKEN": "smoke-test-not-a-key"},
+        )
+        combined = (proc.stdout or "") + (proc.stderr or "")
+        if proc.returncode == 0 or "HTTP 401" not in combined:
+            _fail("expected an HTTP 401 answer from api.cloudflare.com (a TLS or CA problem looks different)", proc)
+        print("      -> HTTP 401 envelope received")
+
+        # 6. The first-run path for local models: download a real model (Hugging Face, over our HTTPS client and
+        #    its signed CDN redirect), then score with it through the embedded graph and the injected weights.
+        print("[6/6] decide_download('julia-1') and a real local inference")
+        cache = os.path.join(tmpdir, "cache").replace("\\", "/")
+        sql = (
+            f"LOAD {EXTENSION_NAME};\n"
+            f"SET anofox_decide_cache_dir = '{cache}';\n"
+            "SELECT count(*) FROM decide_download('julia-1');\n"
+            "SELECT round(decide_probability('I want my money back.', 'A refund is requested.', "
+            "model := 'julia-1'), 3);"
+        )
+        # Hugging Face can rate limit or hiccup for shared CI addresses, and this is a required check: retry the
+        # network-dependent step (a half-finished .part file is resumed by decide_download) before failing.
+        proc = None
+        for attempt in range(1, 4):
+            proc = _run_sql(duckdb_bin, sql, home, timeout=1200)
+            if proc.returncode == 0:
+                break
+            print(f"      attempt {attempt}/3 failed (rc={proc.returncode}); "
+                  f"{'retrying' if attempt < 3 else 'giving up'}")
+            if attempt < 3:
+                time.sleep(30 * attempt)
+        if proc.returncode != 0:
+            _fail("decide_download / local inference failed after 3 attempts", proc)
+        lines = [ln.strip() for ln in (proc.stdout or "").splitlines() if ln.strip()]
+        if lines[-2:] != ["2", "0.991"]:
+            _fail(f"expected 2 downloaded files and probability 0.991 (reference 0.99083), got {lines}", proc)
+        print(f"      -> files={lines[-2]} probability={lines[-1]}")
 
     print(f"\nSmoke test PASSED ({EXTENSION_NAME} on {arch})")
 

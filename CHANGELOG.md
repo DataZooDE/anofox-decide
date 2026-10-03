@@ -7,6 +7,16 @@ All notable changes to `anofox_decide` are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Local models work out of the box.** `CALL decide_download('laya-multilingual')` (also `laya-typed-decisions` and
+  `julia-1`) fetches the upstream weights from Hugging Face into `~/.cache/anofox-decide`
+  (`anofox_decide_cache_dir`), pinned to a fixed revision, with size and SHA-256 verification, HTTP Range resume
+  and redirect following over the bundled HTTPS client (no `INSTALL httpfs`, no Python). The extension embeds the
+  weight-free ONNX graphs; the weights are injected into ONNX Runtime at load (float16 checkpoints are upcast).
+  `model := 'laya-multilingual'` then works with no registration; before the download it fails with
+  `model '...' is not downloaded. Fix: CALL decide_download('...');`. `decide_models()` lists the catalog models
+  with `ready = false` until downloaded and `decide_doctor()` reports them. Registering your own exported graph
+  with `decide_register_model(..., 'local', ...)` still works. `tools/export_julia --weight-free` produces the
+  embedded graphs and tensor maps; CI checks that the committed graphs carry no weight bytes.
 - **Cloudflare Clef** as a hosted provider: `decide_register_model('clef', 'cloudflare')` (or `'clef-flash'`) with
   `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` (or `MAP {'account_id': '...'}`). The Workers AI response
   envelope (`{"result": ...}`) and its `errors[]` are understood for every provider; the account id and model go

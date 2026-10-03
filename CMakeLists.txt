@@ -26,6 +26,9 @@ find_package(OpenSSL REQUIRED)
 #   CMAKE_PREFIX_PATH=../anofox-tabfm/build/release/vcpkg_installed/x64-linux
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/ort.cmake)
 
+# Weight-free graphs + tensor maps from resources/ compiled into the extension.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_resources.cmake)
+
 # --- Telemetry ---
 # Build telemetry as OBJECT library to avoid link order issues with DuckDB symbols.
 add_library(posthog_telemetry_obj OBJECT
@@ -56,6 +59,10 @@ set(EXTENSION_SOURCES
         src/decide_secret.cpp
         src/decide_calibration.cpp
         src/decide_errors.cpp
+        src/decide_safetensors.cpp
+        src/decide_local_weights.cpp
+        src/decide_catalog.cpp
+        ${DECIDE_BUNDLED_RESOURCES_SRC}
 )
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
@@ -109,6 +116,7 @@ set(DECIDE_CPP_TEST_SOURCES
     test/cpp/test_decide_tokenizer.cpp
     test/cpp/test_decide_local.cpp
     test/cpp/test_decide_calibration.cpp
+    test/cpp/test_decide_catalog.cpp
 )
 if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.19")
     add_library(anofox_decide_unittest_tests OBJECT ${DECIDE_CPP_TEST_SOURCES})
