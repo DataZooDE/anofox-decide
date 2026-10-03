@@ -31,6 +31,34 @@ INSTALL anofox_decide FROM community;
 LOAD anofox_decide;
 ```
 
+The community build is signed, so no extra flags are needed, but it is published by a separate submission
+and can trail a release by days. To take a release the moment it is out, use the anofox repository instead.
+Those builds are **unsigned**, so DuckDB must be started with `-unsigned`:
+
+```bash
+duckdb -unsigned
+```
+```sql
+INSTALL httpfs; LOAD httpfs;   -- FIRST: see below
+SET custom_extension_repository = 'https://get.anofox.com';
+INSTALL anofox_decide;
+LOAD anofox_decide;
+```
+
+Two things that are easy to hit and give unhelpful errors:
+
+* Without `-unsigned`, installing from `get.anofox.com` fails with *"Attempting to install an extension file
+  that doesn't have a valid signature"*. The community repository needs no flag.
+* `custom_extension_repository` applies to **every** install, including ones DuckDB triggers for you. If it is
+  set before `httpfs` is present, DuckDB autoloads `httpfs` from `get.anofox.com`, which does not serve it, and
+  the failure names `httpfs` rather than the setting. Install `httpfs` first.
+
+Check which build you got:
+
+```sql
+SELECT extension_version FROM duckdb_extensions() WHERE extension_name = 'anofox_decide';
+```
+
 The extension ships no model weights and calls nothing until you register a model and, for hosted
 models, opt in.
 
