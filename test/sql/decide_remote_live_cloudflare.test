@@ -1,0 +1,105 @@
+# name: test/sql/decide_remote_live_cloudflare.test
+# description: LIVE Cloudflare Clef (Workers AI) E2E. Requires CLOUDFLARE_API_TOKEN (Workers AI - Read and Edit) and
+#              CLOUDFLARE_ACCOUNT_ID in the environment and outbound HTTPS to api.cloudflare.com. NOT part of the
+#              default suite: run via `make test-live` (explicit SKIP without the variables, never fake-green).
+# group: [anofox_decide]
+
+require anofox_decide
+
+statement ok
+LOAD anofox_decide
+
+statement ok
+SET anofox_decide_allow_remote=true
+
+statement ok
+SELECT decide_register_model('clef', 'cloudflare')
+
+statement ok
+SELECT decide_register_model('clef-flash', 'cloudflare')
+
+# Both models answer through the same functions; the account id and the token come from the environment.
+query I
+SELECT (p IS NOT NULL AND p >= 0.0 AND p <= 1.0)::INTEGER FROM (
+  SELECT decide_probability('Checkout has been failing for every customer for the last hour.', 'Is this support request urgent?', model := 'clef') AS p
+)
+----
+1
+
+query I
+SELECT (p > 0.5)::INTEGER FROM (
+  SELECT decide_probability('Checkout has been failing for every customer for the last hour.', 'Is this support request urgent?', model := 'clef-flash') AS p
+)
+----
+1
+
+query I
+SELECT (team IN ('billing','technical','sales'))::INTEGER FROM (
+  SELECT decide_choice('My invoice charges twice the agreed amount.', 'Which team should handle this request?', ['billing','technical','sales'], model := 'clef-flash') AS team
+)
+----
+1
+
+# Ordinal score: the expected level lies inside the rubric, and a furious message rates above a grateful one.
+query I
+SELECT decide_score('This is the third time and I am furious, nobody answers!', 'How frustrated is the writer?', ['calm','frustrated','angry'], model := 'clef-flash')
+     > decide_score('Thanks a lot, everything works great now.', 'How frustrated is the writer?', ['calm','frustrated','angry'], model := 'clef-flash')
+----
+true
+
+# Several questions in one request: the table form and the JSON form.
+query I
+SELECT count(*) FROM decide_table('Checkout has been failing for every customer for the last hour.',
+  '[{"id":"urgent","kind":"binary","instruction":"Is this support request urgent?"},{"id":"team","kind":"choice","instruction":"Which team should handle this request?","options":["billing","technical","sales"]},{"id":"severity","kind":"score","instruction":"How severe is the customer impact?","levels":["No impact","Minor","Major","Critical"]}]',
+  model := 'clef-flash')
+----
+3
+
+query I
+SELECT (decide_many('Help!', '[{"id":"f","kind":"score","instruction":"How frustrated is the writer?","levels":["calm","frustrated","angry"]}]', model := 'clef-flash') LIKE '%"kind":"score"%')::INTEGER
+----
+1
+
+# A chunk of labelled tickets scored together (concurrently): Clef must discriminate, not merely return numbers.
+# Measured on 3 Oct 2026 with clef: refund 8/8 and team 7/8. clef-flash was weaker on these eight (refund 6/8, team 6/8:
+# it flags two defect tickets as refund requests at p 0.64 and 0.86), so the accuracy floors use clef; they leave room
+# for one miss.
+query I
+SELECT decide_accuracy(decide_probability(text, 'A refund is requested.', model := 'clef'), refund, 0.5) >= 0.85
+FROM read_csv('test/fixtures/support_tickets.csv')
+----
+true
+
+query I
+SELECT count(*) >= 6 FROM (
+  SELECT team, decide_choice(text, 'Which team owns this?', ['billing','defect','other'], model := 'clef') AS got
+  FROM read_csv('test/fixtures/support_tickets.csv')
+) WHERE got = team
+----
+true
+
+# A wrong model name is HTTP 400 "No route for that URI" at Cloudflare; the message says which models exist.
+statement ok
+SELECT decide_register_model('clef-nope', 'cloudflare')
+
+statement error
+SELECT decide_probability('x', 'y', model := 'clef-nope')
+----
+<REGEX>:.*does not know the model 'clef-nope' \(HTTP 400\).*'clef' and 'clef-flash'.*
+
+# A stored secret always overrides the environment: a bogus one gives Cloudflare's 401, and the message names both causes.
+statement ok
+CREATE SECRET cf_bogus (TYPE anofox_decide, API_KEY 'cloudflare_invalid', SCOPE 'api.cloudflare.com')
+
+statement error
+SELECT decide_probability('x', 'y', model := 'clef-flash')
+----
+<REGEX>:.*rejected the request \(HTTP 401\): "Authentication error \(code 10000\)".*Workers AI - Read and Edit.*
+
+statement ok
+DROP SECRET cf_bogus
+
+query I
+SELECT (decide_probability('Checkout has been failing for every customer for the last hour.', 'Is this support request urgent?', model := 'clef-flash') > 0.5)::INTEGER
+----
+1

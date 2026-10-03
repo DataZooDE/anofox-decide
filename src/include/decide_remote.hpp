@@ -79,12 +79,13 @@ struct DecideRemoteProfile {
 	bool criteria_names;          // true: send each choice option as its own description (servers that require
 	                              // string criteria values instead of null)
 	int default_concurrency;      // requests in flight per chunk when anofox_decide_max_concurrency is 0 (auto)
+	int max_questions;            // the provider's own cap on questions per request; 0 = none known
 };
 // nullptr when `provider` is not a remote profile.
 const DecideRemoteProfile *DecideFindRemoteProfile(const string &provider);
 // Comma-separated remote provider ids, for error messages.
 string DecideRemoteProviderList();
-// The remote provider ids (typesafe, liquid, systemone, strands).
+// The remote provider ids (typesafe, liquid, cloudflare, systemone, strands).
 vector<string> DecideRemoteProviderNames();
 
 // Per-model remote target (from decide_register_model); empty fields fall
@@ -97,6 +98,7 @@ struct DecideRemoteTarget {
 	string key_env;    // explicit env var to read the key from (any host)
 	int criteria_names = -1; // -1 follow the profile, 0 send null descriptions, 1 send the option names
 	string registered_id; // the id the model is registered under (for messages)
+	string account_id;    // cloudflare only: the Workers AI account id (else env CLOUDFLARE_ACCOUNT_ID)
 };
 
 // Limits how many HTTP requests are in flight at once and backs off when the service rate limits.
@@ -145,6 +147,10 @@ struct DecideRemoteConfig {
 	string env_key = "TYPESAFE_API_KEY";
 	// Requests this model may have in flight at once (resolved from the setting and the profile).
 	int max_concurrency = 1;
+	// The provider's own cap on questions per request (0 = none known) and, for providers whose URL carries
+	// one, the account id that was put into the path (for messages).
+	int max_questions = 0;
+	string account_id;
 	// Set by DecideRemoteRunJobs for the workers of one chunk; null = no limiting.
 	std::shared_ptr<DecideInflightGate> gate;
 };
@@ -221,6 +227,11 @@ bool DecideHostTakesEnvKey(const string &host);
 // default host (a redirected endpoint can never collect an operator's key).
 bool DecideProfileTakesEnvKey(const DecideRemoteProfile &profile, const string &host);
 bool DecideHostIsLoopback(const string &host);
+// True for a Cloudflare account id: 32 letters and digits.
+bool DecideIsCloudflareAccountId(const string &id);
+// The URL path a model would call: {model} and {account_id} are filled in where known (the account id from
+// `account_id`, else the CLOUDFLARE_ACCOUNT_ID environment variable) and kept as placeholders otherwise.
+string DecideDisplayPath(const string &path_template, const string &model, const string &account_id);
 // Validate a per-model endpoint (scheme://host[:port], https or loopback http).
 // Throws an actionable error; used at registration and at resolve time.
 void DecideValidateEndpoint(const string &endpoint, const char *what);

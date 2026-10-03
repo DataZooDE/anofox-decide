@@ -14,7 +14,7 @@ SELECT id,
 FROM tickets;
 ```
 
-**Pick the model that fits: hosted or on your machine.** Hosted: TypeSafe **Jev** and Liquid AI **D1**.
+**Pick the model that fits: hosted or on your machine.** Hosted: TypeSafe **Jev**, Liquid AI **D1** and Cloudflare **Clef**.
 Local servers: **strands-decider** and **Kev** (or any System One compatible server). In-process and
 fully offline: **Julia-1** and **Laya** on ONNX Runtime. All of them answer the same questions through
 the same functions, so you can swap the model without touching the query — and compare them on your
@@ -70,6 +70,7 @@ models, opt in.
 |---|---|
 | Nothing yet | Use the built-in `stub` to try the SQL: `model := 'stub'`. It returns constants (0.5, the first option, the middle level) so it can never pass for a real answer. |
 | A Liquid AI key ([D1](https://docs.liquid.ai/lfm/models/decision-models)) | `export LIQUID_API_KEY=...`, then register `d1:free` (below). |
+| A Cloudflare account ([Clef](https://blog.cloudflare.com/clef-decision-models/) on Workers AI) | `export CLOUDFLARE_API_TOKEN=...` and `CLOUDFLARE_ACCOUNT_ID=...`, then `decide_register_model('clef', 'cloudflare')` ([Cloudflare Clef](#cloudflare-clef)). |
 | A TypeSafe key (Jev) | `export TYPESAFE_API_KEY=...`, then `decide_register_model('jev-latest', 'typesafe')`. |
 | A machine that can run a 2B model | Run [strands-decider](https://github.com/strands-labs/strands-decider) locally, no key: [Models and providers](#models-and-providers). |
 | An exported ONNX model | Run it inside DuckDB, offline: [Local models](#local-models). |
@@ -243,6 +244,7 @@ in one session with no `SET` in between.
 |---|---|---|---|---|
 | `typesafe` | TypeSafe Jev | hosted API | `https://api.typesafe.ai` | `TYPESAFE_API_KEY` |
 | `liquid` | Liquid AI D1 | hosted API | `https://api.liquid.ai` | `LIQUID_API_KEY` |
+| `cloudflare` | Cloudflare Clef, Clef-flash | hosted API (Workers AI) | `https://api.cloudflare.com` | `CLOUDFLARE_API_TOKEN` |
 | `strands` | [strands-decider](https://github.com/strands-labs/strands-decider) 2B | local server | `http://127.0.0.1:8000` | none |
 | `systemone` | any compatible server, e.g. [Kev](https://github.com/jaredpalmer/kev) | your server | you set it | optional (`key_env`) |
 | `local` | Julia-1, Laya | in-process, offline | — | none |
@@ -252,11 +254,12 @@ in one session with no `SET` in between.
 SET anofox_decide_allow_remote = true;                       -- hosted and server models need the opt-in
 SELECT decide_register_model('jev-latest', 'typesafe');
 SELECT decide_register_model('d1:free', 'liquid');
+SELECT decide_register_model('clef', 'cloudflare');             -- Cloudflare Clef; 'clef-flash' is the smaller one
 SELECT decide_probability('...', '...', model := 'jev-latest');
 SELECT decide_probability('...', '...', model := 'd1:free');
 ```
 
-Per-model options go in a `MAP` (keys `endpoint`, `path`, `model`, `key_env`, `criteria`, `calibration`): a self-hosted
+Per-model options go in a `MAP` (keys `endpoint`, `path`, `model`, `key_env`, `criteria`, `calibration`, `account_id`): a self-hosted
 server, a different model name on the wire, an explicit key variable for a custom endpoint, or
 `criteria: 'name'` for servers whose schema wants a string description per choice option instead of `null`, or a fitted `calibration` ([Calibration](#calibration)):
 
@@ -265,6 +268,41 @@ SELECT decide_register_model('kev-latest', 'systemone', MAP {'endpoint': 'http:/
 SELECT decide_register_model('d1', 'liquid', MAP {'model': 'd1:free'});
 SELECT decide_register_model('mine', 'systemone', MAP {'endpoint': 'https://llm.internal', 'key_env': 'MY_KEY_VAR'});
 ```
+
+### Cloudflare Clef
+
+[Clef](https://blog.cloudflare.com/clef-decision-models/) is Cloudflare's open-weight family of decision models
+(Apache 2.0 weights on Hugging Face), served on Workers AI: `clef` (27B) and the smaller `clef-flash` (9B). It
+speaks the same questions as the other hosted models, so the call is the same:
+
+```bash
+export CLOUDFLARE_API_TOKEN=...      # before starting DuckDB: a token with "Workers AI - Read" and "Workers AI - Edit"
+export CLOUDFLARE_ACCOUNT_ID=...     # the 32-character account id from your Cloudflare dashboard
+```
+```sql
+SET anofox_decide_allow_remote = true;
+SELECT decide_register_model('clef', 'cloudflare');          -- or 'clef-flash'; the id is the model name in the URL
+SELECT decide_choice('Checkout has been failing for every customer.', 'Which team should handle this?',
+                     ['billing', 'technical', 'sales'], model := 'clef');
+-- the account id can also be given per model: decide_register_model('clef', 'cloudflare', MAP {'account_id': '<id>'})
+```
+
+Things worth knowing:
+
+- **Cost and speed:** $0.24 per million input tokens for `clef` and $0.09 for `clef-flash`; one call took about
+  0.3 to 1 s in our runs. A request takes at most **64 questions** (a call with more is refused before anything is
+  sent) and a 64k-token text.
+- **Quality:** on the 200-ticket evaluation `clef` is the third-best router (88%) and a solid refund detector (85%);
+  `clef-flash` is much weaker on refund (70%). `clef` errs towards "no" at the 0.5 cut-off (recall 62%, specificity
+  95%); [Calibration](#calibration) shows how to fit the cut-off to your own data. See
+  [Evaluate and compare models](#evaluate-and-compare-models).
+- **Errors:** Cloudflare answers a wrong token and a valid token of a different account with the same
+  "Authentication error", so the message names both causes. A wrong model name is an HTTP 400 "No route for
+  that URI"; the message says the models are `clef` and `clef-flash`.
+- **Not supported:** Clef also accepts images (up to four per request); the functions here take text only. The
+  27B and 9B models are too large to run in-process like Julia-1 or Laya; to run them yourself, serve them behind a
+  System One compatible endpoint (see the model card for serving options) and register that endpoint with
+  provider `systemone`.
 
 ### API keys
 
@@ -365,12 +403,16 @@ Measured on 200 labelled tickets from the public Bitext customer-support dataset
 | TypeSafe Jev (`typesafe`) | hosted API | 93.0% | 0.984 | 92.0% |
 | Laya multilingual | local, in-process | 92.0% | 0.970 | 62.0% |
 | Laya typed-decisions | local, in-process | 88.5% | 0.978 | 76.0% |
+| Cloudflare Clef (`cloudflare`) | hosted API | 85.0% | 0.951 | 88.0% |
 | strands-decider 2B (`strands`) | local server | 81.0% | 0.918 | 65.0% |
 | Liquid D1 (`liquid`) | hosted API | 77.0% | 0.970 | 91.0% |
 | Kev-0.8B (`systemone`) | local server | 70.5% | 0.850 | 44.0% |
+| Cloudflare Clef-flash (`cloudflare`) | hosted API | 70.0% | 0.769 | 78.5% |
 | Julia-1 | local, in-process | 29.5% | 0.407 | 37.5% |
 
 Always-no scores 70% on refund and always-billing 45% on routing. Jev is the most accurate overall;
+Clef is the third-best router (not significantly different from Jev) and a solid, conservative refund detector
+(recall 62% at the 0.5 cut-off), while the smaller Clef-flash is no better than always-no on refund;
 strands-decider is conservative on refund (recall 48% at the 0.5 cut-off) and a mid-table router; D1
 routes as well as Jev, but at the 0.5 cut-off over-predicts refunds (its ranking is fine, AUROC 0.970);
 Laya multilingual matches Jev on refund and is the best in-process model, with typed-decisions the best
@@ -482,6 +524,7 @@ on Linux (amd64, arm64), macOS (arm64) and Windows (amd64) against DuckDB 1.5.6.
 | `stub` | deterministic placeholder (0.5 / first option / middle level) | `binary`, `choice`, `score` | in-process, for tests and demos |
 | `typesafe` | TypeSafe Jev (`jev-latest`) | `binary`, `choice`, `score` | hosted API; opt-in via `anofox_decide_allow_remote` |
 | `liquid` | Liquid AI D1 (`d1:free`) | `binary`, `choice`, `score` | hosted API; same opt-in |
+| `cloudflare` | Cloudflare Clef (`clef`), Clef-flash (`clef-flash`) | `binary`, `choice`, `score` | hosted API (Workers AI); same opt-in |
 | `systemone` | any System One compatible server, e.g. Kev | `binary`, `choice`, `score` | your endpoint (`https://`, or `http://` on loopback) |
 | `strands` | strands-decider 2B | `binary`, `choice`, `score` | local server on loopback, no key |
 | `local` | Julia-1, Laya multilingual, Laya typed-decisions | `binary`, `choice`, `score` | in-process on CPU, offline after setup |
@@ -489,12 +532,12 @@ on Linux (amd64, arm64), macOS (arm64) and Windows (amd64) against DuckDB 1.5.6.
 `score` is verified for parity with each model's upstream implementation and against the live services;
 unlike refund and routing it has not been scored for accuracy on labelled data.
 
-**Not yet:** GPU execution for local models; the Von model (it needs order-invariant attention in the
+**Not yet:** images (Cloudflare Clef accepts them, our functions take text only); GPU execution for local models; the Von model (it needs order-invariant attention in the
 export); a built-in download for local model files (today you export them with `tools/export_julia`);
 on macOS only Apple silicon is built (ONNX Runtime ships no Intel macOS archive after v1.23.2), and
 WebAssembly, musl and MinGW are not built.
 
-**Which model?** Jev was the most accurate in the 200-ticket evaluation. Among models that run in-process,
+**Which model?** Jev was the most accurate in the 200-ticket evaluation, with Clef and D1 close behind on routing. Among models that run in-process,
 Laya multilingual matched it on refund detection and Laya typed-decisions routes best; there is no single
 best local model yet. Start with whichever you have a key or the hardware for, then compare on your own
 labelled data.
@@ -518,6 +561,9 @@ that caused it. Run `SELECT * FROM decide_doctor();` first when something does n
 | `model '<id>' is not registered (given by ...)` | the id is a typo, or never registered, or removed | the message lists the registered ids and a close match; `SELECT * FROM decide_models()` |
 | `model '<id>' is a ... model: calling it sends your text to ..., and remote calls are off` | remote models send your text to an endpoint and are off by default | `SET anofox_decide_allow_remote = true;` |
 | `no API key for ... at <host>` | no secret, setting or env var supplies a key | export the provider's variable (`LIQUID_API_KEY`, `TYPESAFE_API_KEY`) or `CREATE SECRET (TYPE anofox_decide, API_KEY '...', SCOPE '<host>')`; a keyless local server uses provider `strands` |
+| `... rejected the request (HTTP 401): "Authentication error (code 10000)"` (Cloudflare) | Cloudflare gives this answer for a wrong token and for a token that belongs to another account | check the token has Workers AI - Read and Edit and that `CLOUDFLARE_ACCOUNT_ID` is the account the token belongs to |
+| `no Cloudflare account id for model '...'` | a `cloudflare` model needs the account id for its URL | `export CLOUDFLARE_ACCOUNT_ID=<id>` or `MAP {'account_id': '<id>'}` |
+| `... accepts at most 64 questions per request` | Cloudflare Clef takes at most 64 questions in one request | split the questions across several calls |
 | `... rejected the API key (HTTP 401)` | the service refused the key; the message says where the key came from | replace it: `CREATE OR REPLACE SECRET (TYPE anofox_decide, API_KEY '<key>', SCOPE '<host>')` (a secret overrides env vars) |
 | `... does not know the model '<x>' ... (HTTP 404)` | the model name sent to the service is wrong (it is the registered id unless you set one) | `decide_register_model('<id>', '<provider>', MAP {'model': '<provider model name>'})` |
 | `... rejected the request (HTTP 422)` | the service refused the question or options; its own reason is quoted | for a `criteria` complaint register the model with `MAP {'criteria': 'name'}` |
@@ -564,6 +610,7 @@ or `DATAZOO_NO_BANNER=1`.
 |---|---|---|---|
 | Jev | TypeSafe | the provider's API terms | hosted; receives the text you score |
 | D1 | Liquid AI | the provider's API terms | hosted; receives the text you score |
+| Clef, Clef-flash | Cloudflare | Apache 2.0 weights; the hosted service under Cloudflare's terms | hosted on Workers AI; receives the text you score |
 | strands-decider | Strands Labs | Apache 2.0 | your machine, as a local server |
 | Kev | Jared Palmer | Apache 2.0 | your machine, as a local server |
 | Julia-1 | SupersonicLabs | Apache 2.0 | your machine, in-process |

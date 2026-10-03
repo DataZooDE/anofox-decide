@@ -120,7 +120,7 @@ void ValidateEndpoint(ClientContext &context, SetScope scope, Value &parameter) 
 void RegisterDecideSettings(ExtensionLoader &loader) {
 	auto &config = DBConfig::GetConfig(loader.GetDatabaseInstance());
 	config.AddExtensionOption("anofox_decide_allow_remote",
-	                          "Off by default. When on, remote models (typesafe, liquid, systemone, strands) may be "
+	                          "Off by default. When on, remote models (typesafe, liquid, cloudflare, systemone, strands) may be "
 	                          "called, which sends the text you score to their endpoints",
 	                          LogicalType::BOOLEAN, Value::BOOLEAN(false), ValidateAllowRemote);
 	config.AddExtensionOption("anofox_decide_timeout_ms",

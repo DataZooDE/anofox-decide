@@ -144,3 +144,55 @@ statement error
 SELECT decide_probability('x', 'y', model := 'strands-nowhere')
 ----
 <REGEX>:.*decide_probability: strands-decider at http://127.0.0.1:9 is not reachable: nothing is listening on 127.0.0.1:9 \(connection refused\)\. Fix: start the server on this machine.*
+
+# --- Cloudflare Clef (Workers AI) ---
+
+# The account id can be given per model; the model name is the wire model and part of the URL.
+query I
+SELECT decide_register_model('clef', 'cloudflare', MAP {'account_id': '0123456789abcdef0123456789abcdef'})
+----
+1
+
+query T
+SELECT endpoint FROM decide_models() WHERE model = 'clef'
+----
+https://api.cloudflare.com/client/v4/accounts/0123456789abcdef0123456789abcdef/ai/run/@cf/cloudflare/clef
+
+statement error
+SELECT decide_register_model('bad-account', 'cloudflare', MAP {'account_id': 'not-an-id'})
+----
+<REGEX>:.*option 'account_id' must be a 32-character Cloudflare account id, got 'not-an-id'.*
+
+statement error
+SELECT decide_register_model('wrong-provider', 'liquid', MAP {'account_id': '0123456789abcdef0123456789abcdef'})
+----
+<REGEX>:.*option 'account_id' only applies to provider 'cloudflare', but the provider is 'liquid'.*
+
+# A typo in the option name gets a suggestion.
+statement error
+SELECT decide_register_model('typo', 'cloudflare', MAP {'acount_id': '0123456789abcdef0123456789abcdef'})
+----
+<REGEX>:.*unknown option 'acount_id'\. Did you mean 'account_id'\?.*
+
+# With the account id given, the next missing piece is the token: the message names CLOUDFLARE_API_TOKEN
+# (hermetic: the offline suite runs with the Cloudflare variables unset).
+statement error
+SELECT decide_probability('x', 'y', model := 'clef')
+----
+<REGEX>:.*no API key for Cloudflare Clef at api\.cloudflare\.com.*CLOUDFLARE_API_TOKEN.*
+
+# Without an account id (no option, no CLOUDFLARE_ACCOUNT_ID) the call says exactly that, and so do the diagnostics.
+query I
+SELECT decide_register_model('clef-noacct', 'cloudflare')
+----
+1
+
+statement error
+SELECT decide_probability('x', 'y', model := 'clef-noacct')
+----
+<REGEX>:.*decide_probability: no Cloudflare account id for model 'clef-noacct'\. Fix: export CLOUDFLARE_ACCOUNT_ID=<id>.*MAP \{'account_id': '<id>'\}.*
+
+query TT
+SELECT ready, hint LIKE '%no Cloudflare account id for model ''clef-noacct''%' FROM decide_models() WHERE model = 'clef-noacct'
+----
+false	true

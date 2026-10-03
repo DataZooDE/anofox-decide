@@ -31,7 +31,7 @@ BUILD_ROOT:=$(or $(DECIDE_BUILD_ROOT),build)
 DECIDE_TEST_ENV = DATAZOO_DISABLE_TELEMETRY=1
 # The offline suite must not depend on the developer's own API keys (they hide
 # missing-key and secret-lookup bugs): unset them for everything except test-live.
-DECIDE_OFFLINE_ENV = env -u TYPESAFE_API_KEY -u LIQUID_API_KEY DATAZOO_DISABLE_TELEMETRY=1
+DECIDE_OFFLINE_ENV = env -u TYPESAFE_API_KEY -u LIQUID_API_KEY -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_ACCOUNT_ID DATAZOO_DISABLE_TELEMETRY=1
 
 # Default suite is offline-only: the live TypeSafe test runs exclusively via
 # `make test-live` (it needs TYPESAFE_API_KEY + HTTPS egress).
@@ -78,6 +78,7 @@ test_debug_internal:
 test-live:
 	if [ -z "$$TYPESAFE_API_KEY" ]; then echo "SKIP: TYPESAFE_API_KEY not set — TypeSafe live E2E not run"; else $(DECIDE_TEST_ENV) ./$(BUILD_ROOT)/release/test/unittest --test-config test/configs/live.json "test/sql/decide_remote_live.test"; fi
 	if [ -z "$$LIQUID_API_KEY" ]; then echo "SKIP: LIQUID_API_KEY not set — Liquid D1 live E2E not run"; else $(DECIDE_TEST_ENV) ./$(BUILD_ROOT)/release/test/unittest --test-config test/configs/live.json "test/sql/decide_remote_live_liquid.test"; fi
+	if [ -z "$$CLOUDFLARE_API_TOKEN" ] || [ -z "$$CLOUDFLARE_ACCOUNT_ID" ]; then echo "SKIP: CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID not set — Cloudflare Clef live E2E not run"; else $(DECIDE_TEST_ENV) ./$(BUILD_ROOT)/release/test/unittest --test-config test/configs/live.json "test/sql/decide_remote_live_cloudflare.test"; fi
 
 init:
 	git submodule add -b $(CI_TOOLS_BRANCH) https://github.com/duckdb/extension-ci-tools.git extension-ci-tools || true

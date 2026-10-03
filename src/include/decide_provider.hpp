@@ -53,6 +53,7 @@ struct DecideModelEntry {
 	// Platt scaling applied to this model's yes/no probabilities (see decide_calibration.hpp);
 	// `set` is false when the model is uncalibrated.
 	DecidePlatt calibration;
+	string account_id; // cloudflare only: the Workers AI account id ("" = the CLOUDFLARE_ACCOUNT_ID env var)
 };
 
 // Per-model remote options from decide_register_model's options MAP
@@ -64,6 +65,7 @@ struct DecideRegisterOptions {
 	string key_env;
 	string criteria;
 	string calibration; // "platt:a,b" (any provider) or ""
+	string account_id;
 };
 
 // DB-instance-level model registry (tabfm TabFMState pattern): lives in
