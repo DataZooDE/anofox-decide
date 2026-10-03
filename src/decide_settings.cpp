@@ -103,6 +103,20 @@ void ValidateHeadLength(ClientContext &context, SetScope scope, Value &parameter
 	}
 }
 
+void ValidateOnTruncate(ClientContext &context, SetScope scope, Value &parameter) {
+	ValidateNonNull("anofox_decide_on_truncate", "'error'", context, scope, parameter);
+	const auto v = StringUtil::Lower(StringValue::Get(parameter.DefaultCastAs(LogicalType::VARCHAR)));
+	if (v != "error" && v != "ignore") {
+		throw InvalidInputException(DecideMsg(
+		    "anofox_decide_on_truncate",
+		    "must be 'error' or 'ignore', got '" + StringValue::Get(parameter.DefaultCastAs(LogicalType::VARCHAR)) +
+		        "' (default 'error')",
+		    "SET anofox_decide_on_truncate = 'ignore'; to score text that does not fit the model's window (the end "
+		    "of the text is cut off), or leave it at 'error'"));
+	}
+	parameter = Value(v);
+}
+
 void ValidateEndpoint(ClientContext &context, SetScope scope, Value &parameter) {
 	ValidateNonNull("anofox_decide_endpoint", "https://api.typesafe.ai", context, scope, parameter);
 	auto v = StringValue::Get(parameter.DefaultCastAs(LogicalType::VARCHAR));
@@ -156,6 +170,11 @@ void RegisterDecideSettings(ExtensionLoader &loader) {
 	                          "Maximum tokens a julia-1 local model reads per question (default 8192); longer text is "
 	                          "cut off. Laya models use the limit in their rl_agent_config.json instead",
 	                          LogicalType::BIGINT, Value::BIGINT(8192), ValidateMaxLength);
+	config.AddExtensionOption("anofox_decide_on_truncate",
+	                          "What a local model does when the text, the question or an option does not fit its "
+	                          "window: 'error' (default) raises an error that says how much would be cut, 'ignore' "
+	                          "scores the shortened input. Check lengths with decide_token_count(text)",
+	                          LogicalType::VARCHAR, Value("error"), ValidateOnTruncate);
 	config.AddExtensionOption("anofox_decide_head_length",
 	                          "Tokens reserved for the question and its options in local models (default 512); must "
 	                          "stay below anofox_decide_max_length",

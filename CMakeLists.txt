@@ -52,6 +52,8 @@ set(EXTENSION_SOURCES
         src/decide_remote.cpp
         src/decide_tokenizer.cpp
         src/decide_local_nli.cpp
+        src/decide_ort_errors.cpp
+        src/decide_local_validate.cpp
         src/decide_metrics.cpp
         src/decide_secret.cpp
         src/decide_calibration.cpp
