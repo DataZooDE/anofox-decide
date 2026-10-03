@@ -63,7 +63,7 @@ own function names:
 
 - `decide_probability` / `decide_choice` / `decide_choice_distribution` / `decide_score` /
   `decide_decision` / `decide_many` (scoring)
-- `decide_table` (relational batch scoring)
+- `decide_table` / `decide_answers` (relational batch scoring)
 - `decide_register_model` / `decide_unregister_model` / `decide_models` (model registry)
 - `decide_doctor` (setup check)
 - `decide_brier_score` / `decide_ece` / `decide_accuracy` / `decide_fit_calibration`

@@ -292,3 +292,81 @@ TEST_CASE("a model's calibration applies to rows scored through the chunk path",
 	auto many = s.Run("SELECT decide_many('wants a refund', '[{\"id\":\"q\",\"kind\":\"binary\",\"instruction\":\"x\"}]', 'cal')");
 	REQUIRE_THAT(many->GetValue(0, 0).ToString(), Contains("0.98780"));
 }
+
+namespace {
+const char *kTwoQuestions = "'[{\"id\":\"a\",\"kind\":\"binary\",\"instruction\":\"x\"},{\"id\":\"b\",\"kind\":\"binary\","
+                            "\"instruction\":\"y\"}]'";
+} // namespace
+
+TEST_CASE("decide_answers sends one request per distinct row, concurrently, within the limit",
+          "[anofox_decide][concurrency][answers]") {
+	ConcurrencyServer server(100);
+	Session s(server, "systemone");
+	s.Run("SET anofox_decide_max_concurrency = 4");
+	const auto start = std::chrono::steady_clock::now();
+	auto result = s.Run("SELECT id, question_id, probability > 0.5 AS yes FROM (SELECT id, "
+	                    "unnest(decide_answers(text, " + string(kTwoQuestions) + ", model := 'm'), recursive := true) FROM " +
+	                    Tickets(24, 24) + ") ORDER BY id, question_id");
+	const double took = Seconds(start);
+	REQUIRE(result->RowCount() == 48); // two questions per ticket
+	for (idx_t i = 0; i < 48; i++) {
+		REQUIRE(result->GetValue(0, i).GetValue<int64_t>() == (int64_t)(i / 2));
+		REQUIRE(result->GetValue(2, i).GetValue<bool>() == ((i / 2) % 2 == 1));
+	}
+	REQUIRE(server.hits == 24); // one request per ticket, not per question
+	REQUIRE(server.peak > 1);
+	REQUIRE(server.peak <= 4);
+	REQUIRE(took < 24 * 0.1); // faster than one request after another
+}
+
+TEST_CASE("decide_answers de-duplicates identical rows and NULL rows cost nothing",
+          "[anofox_decide][concurrency][answers]") {
+	ConcurrencyServer server(10);
+	Session s(server, "systemone");
+	auto result = s.Run("SELECT count(*) FROM (SELECT unnest(decide_answers(text, " + string(kTwoQuestions) +
+	                    ", model := 'm'), recursive := true) FROM " + Tickets(60, 6) + ")");
+	REQUIRE(result->GetValue(0, 0).GetValue<int64_t>() == 120);
+	REQUIRE(server.hits == 6);
+	server.hits = 0;
+	auto nulls = s.Run("SELECT id, decide_answers(t, " + string(kTwoQuestions) + ", model := 'm') IS NULL FROM "
+	                   "(VALUES (1, 'a refund'), (2, NULL), (3, 'thanks'), (4, NULL)) v(id, t) ORDER BY id");
+	REQUIRE(nulls->RowCount() == 4);
+	REQUIRE(!nulls->GetValue(1, 0).GetValue<bool>());
+	REQUIRE(nulls->GetValue(1, 1).GetValue<bool>());
+	REQUIRE(!nulls->GetValue(1, 2).GetValue<bool>());
+	REQUIRE(nulls->GetValue(1, 3).GetValue<bool>());
+	REQUIRE(server.hits == 2);
+}
+
+TEST_CASE("decide_answers applies the model's calibration", "[anofox_decide][concurrency][answers]") {
+	ConcurrencyServer server(10);
+	Session s(server, "systemone");
+	s.Run("SELECT decide_register_model('cal', 'systemone', MAP {'endpoint': 'http://127.0.0.1:" +
+	      std::to_string(server.port) + "', 'calibration': 'platt:2,0'})");
+	auto result = s.Run("SELECT id, probability FROM (SELECT id, "
+	                    "unnest(decide_answers(text, '[{\"id\":\"q\",\"kind\":\"binary\",\"instruction\":\"x\"}]', "
+	                    "model := 'cal'), recursive := true) FROM " + Tickets(6, 6) + ") ORDER BY id");
+	REQUIRE(result->RowCount() == 6);
+	for (idx_t i = 0; i < 6; i++) {
+		const bool refund = (i % 2 == 1);
+		REQUIRE(result->GetValue(1, i).GetValue<double>() == Approx(refund ? 0.987805 : 0.012195).epsilon(1e-4));
+	}
+}
+
+TEST_CASE("LATERAL decide_table and decide_answers give the same rows", "[anofox_decide][concurrency][answers]") {
+	ConcurrencyServer server(5);
+	Session s(server, "systemone");
+	const string q = kTwoQuestions;
+	auto lateral = s.Run("SELECT t.id, dt.question_id, dt.kind, dt.probability, dt.model FROM " + Tickets(10, 10) +
+	                     " t, LATERAL (SELECT * FROM decide_table(t.text, " + q + ", 'm')) dt ORDER BY 1, 2");
+	auto scalar = s.Run("SELECT id, question_id, kind, probability, model FROM (SELECT id, "
+	                    "unnest(decide_answers(text, " + q + ", model := 'm'), recursive := true) FROM " + Tickets(10, 10) +
+	                    ") ORDER BY 1, 2");
+	REQUIRE(lateral->RowCount() == 20);
+	REQUIRE(scalar->RowCount() == 20);
+	for (idx_t r = 0; r < 20; r++) {
+		for (idx_t c = 0; c < 5; c++) {
+			REQUIRE(lateral->GetValue(c, r).ToString() == scalar->GetValue(c, r).ToString());
+		}
+	}
+}

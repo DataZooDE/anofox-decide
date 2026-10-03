@@ -14,6 +14,7 @@
 // are truncated to 200 chars and carry status codes, never secrets.
 
 #include "duckdb/common/common.hpp"
+#include "duckdb/common/types/value.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -61,6 +62,12 @@ struct DecideAnswer {
 	double expected = std::numeric_limits<double>::quiet_NaN(); // score only
 	string model;
 };
+
+// The answer row shared by decide_table and decide_answers (question_id, kind, probability, choice,
+// confidence, model, score, distribution); `fallback_model` fills `model` when the answer carries none.
+// Kinds use the public names (binary, choice, score).
+LogicalType DecideAnswerStructType();
+Value DecideAnswerStructValue(const DecideAnswer &answer, const string &fallback_model);
 
 // Validates a score rubric (2..10 unique non-empty levels); throws an
 // actionable error naming `func_name` and the question id.
