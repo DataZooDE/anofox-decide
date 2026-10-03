@@ -6,9 +6,6 @@ All notable changes to `anofox_decide` are documented here. The format follows
 
 ## [Unreleased]
 
-### Added
-- Releases are published to the anofox extension repository (`get.anofox.com`) on every `v*` tag and every push to `main`, in addition to the DuckDB community repository; the README documents installing from either.
-
 ## [2026.10.03] - 2026-10-03
 
 First public release.
@@ -57,6 +54,7 @@ First public release.
   build and the others are parsed, so they cannot drift from the extension.
 - **Anonymous usage telemetry and the feedback banner**, shared with the other anofox extensions (opt out
   with `DATAZOO_DISABLE_TELEMETRY=1` or `SET anofox_telemetry_enabled = false`; see `TELEMETRY.md`).
+- Releases are published to the anofox extension repository (`get.anofox.com`) on every `v*` tag and every push to `main`, in addition to the DuckDB community repository; the README documents installing from either.
 
 ### Changed
 - **There is no implicit model.** A call that names no model and has no `anofox_decide_model` fails with
