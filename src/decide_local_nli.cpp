@@ -1,7 +1,10 @@
 // DecideLocalNli — Julia-1 local scoring. ONLY TU including onnxruntime.
 
 #include "decide_local_nli.hpp"
+#include "decide_bundled_resources.hpp"
 #include "decide_errors.hpp"
+#include "decide_local_weights.hpp"
+#include "decide_ort_errors.hpp"
 #include "decide_provider.hpp"
 #include "decide_remote.hpp" // DecideQuestion/DecideAnswer (provider-neutral structs)
 #include "decide_tokenizer.hpp"
@@ -12,6 +15,7 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/storage/object_cache.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/file_system.hpp"
 
 #include <cmath>
 #include <map>
@@ -170,20 +174,28 @@ string LayaTempBucket(int qtype, size_t k) {
 } // namespace
 
 struct DecideLocalSession::Impl {
+	// Member DECLARATION ORDER is the destruction contract: members are destroyed in reverse order, so the
+	// session (declared last) goes first and the buffers it borrows (graph bytes, injected weights, the
+	// values wrapping them) are still alive while it shuts down. ORT keeps references to injected
+	// initializers for the whole session lifetime (anofox-tabfm learned this the hard way).
 	Ort::Env env {ORT_LOGGING_LEVEL_WARNING, "anofox_decide"};
-	Ort::Session session {nullptr};
 	Ort::MemoryInfo mem {nullptr};
 	Ort::AllocatorWithDefaultOptions alloc;
-	// Graph bytes backing the from-memory session: ORT borrows the buffer,
-	// so it must outlive the session (which outlives this handle's users
-	// via the shared session cache).
+	// Graph bytes backing the from-memory session (BYO graphs read from disk; embedded graphs point at static
+	// storage instead).
 	string model_bytes;
+	unique_ptr<DecideLoadedWeights> weights; // catalog models: the downloaded safetensors, upcast to float32
+	vector<Ort::Value> injected;
+	Ort::Session session {nullptr};
 };
 
-shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, const string &graph_path) {
+shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, const string &graph_path,
+                                                        const char *function_name) {
+	const string function = function_name;
 	if (graph_path.empty()) {
-		throw InvalidInputException("decide: local model has no graph path "
-		                            "(SELECT decide_register_model('<id>', 'local', '<julia1.onnx path>'))");
+		throw InvalidInputException(DecideMsg(function, "the local model has no graph path",
+		                                      "register it with the graph as the 3rd argument: SELECT "
+		                                      "decide_register_model('<id>', 'local', '<model.onnx path>')"));
 	}
 	auto cache = LocalCache(context);
 	std::lock_guard<std::mutex> guard(cache->lock);
@@ -195,6 +207,7 @@ shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, 
 	handle->impl = make_shared_ptr<Impl>();
 	// Read through DuckDB's filesystem (F4): same access gate as read_csv.
 	handle->impl->model_bytes = DecideReadLocalFile(context, graph_path, "graph");
+	vector<string> input_names;
 	try {
 		Ort::SessionOptions opts;
 		opts.SetIntraOpNumThreads(0);
@@ -202,22 +215,86 @@ shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, 
 		handle->impl->session =
 		    Ort::Session(handle->impl->env, (const void *)bytes.data(), bytes.size(), opts);
 		handle->impl->mem = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+		for (size_t i = 0; i < handle->impl->session.GetInputCount(); i++) {
+			input_names.push_back(handle->impl->session.GetInputNameAllocated(i, handle->impl->alloc).get());
+		}
 	} catch (const Ort::Exception &e) {
-		throw IOException("decide: failed to load local graph '%s' (%s)", graph_path, e.what());
+		DecideMapOrtError(e, function, graph_path, DecideOrtStage::LOAD);
 	}
-	// Contract check: the Julia scores graph takes exactly our 5 inputs.
-	if (handle->impl->session.GetInputCount() != 5) {
-		throw InvalidInputException("decide: graph '%s' has %d inputs, expected 5 "
-		                            "(julia1 scores graph from tools/export_julia)",
-		                            graph_path, (int)handle->impl->session.GetInputCount());
-	}
+	// Contract check: the Julia scores graph takes exactly our 5 inputs; name the difference.
+	DecideRequireGraphInputs(input_names, {"input_ids", "attention_mask", "marker_pos", "marker_mask", "qtype"},
+	                         function, graph_path);
 	cache->sessions[graph_path] = handle;
 	return handle;
 }
 
-vector<vector<float>> DecideLocalSession::Score(const DecideLocalBatch &batch) {
+shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, const DecideModelEntry &entry,
+                                                        const char *function_name) {
+	const string function = function_name;
+	if (entry.bundled_graph.empty()) {
+		return Open(context, entry.graph_path, function.c_str());
+	}
+	const string key = "weights:" + entry.bundled_graph + "|" + entry.weights_path;
+	auto cache = LocalCache(context);
+	std::lock_guard<std::mutex> guard(cache->lock);
+	auto it = cache->sessions.find(key);
+	if (it != cache->sessions.end()) {
+		return it->second;
+	}
+	auto graph = DecideLookupResource(entry.bundled_graph);
+	auto map_resource = DecideLookupResource(entry.bundled_map);
+	if (!graph.data || !map_resource.data) {
+		throw InternalException("anofox_decide: the bundled graph '%s' or map '%s' is missing from this build",
+		                        entry.bundled_graph, entry.bundled_map);
+	}
+	// The cache file is read through DuckDB's access rules first (allowed_directories / enable_external_access).
+	try {
+		FileSystem::GetFileSystem(context).OpenFile(entry.weights_path, FileOpenFlags::FILE_FLAGS_READ)->Close();
+	} catch (const PermissionException &) {
+		throw;
+	} catch (const std::exception &) {
+		// not openable: DecideLoadWeights reports it with the right fix
+	}
+	auto map = DecideParseTensorMap(map_resource.data, map_resource.size,
+	                                entry.bundled_map);
+	auto handle = shared_ptr<DecideLocalSession>(new DecideLocalSession(key));
+	handle->impl = make_shared_ptr<Impl>();
+	auto &im = *handle->impl;
+	im.weights = DecideLoadWeights(map, entry.weights_path, entry.id, function.c_str());
+	im.mem = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+	vector<string> input_names;
+	try {
+		Ort::SessionOptions opts;
+		opts.SetIntraOpNumThreads(0);
+		static auto owner_info = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
+		auto &w = *im.weights;
+		im.injected.reserve(w.names.size());
+		for (idx_t i = 0; i < w.names.size(); i++) {
+			im.injected.push_back(Ort::Value::CreateTensor(owner_info, const_cast<void *>(w.data[i]), w.bytes[i],
+			                                               w.shapes[i].data(), w.shapes[i].size(),
+			                                               ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT));
+		}
+		if (!w.names.empty()) {
+			opts.AddExternalInitializers(w.names, im.injected);
+		}
+		im.session = Ort::Session(im.env, (const void *)graph.data, graph.size, opts);
+		for (size_t i = 0; i < im.session.GetInputCount(); i++) {
+			input_names.push_back(im.session.GetInputNameAllocated(i, im.alloc).get());
+		}
+	} catch (const Ort::Exception &e) {
+		DecideMapOrtError(e, function, entry.bundled_graph, DecideOrtStage::LOAD);
+	}
+	DecideRequireGraphInputs(input_names, {"input_ids", "attention_mask", "marker_pos", "marker_mask", "qtype"},
+	                         function, entry.bundled_graph);
+	cache->sessions[key] = handle;
+	return handle;
+}
+
+vector<vector<float>> DecideLocalSession::Score(const DecideLocalBatch &batch, const char *function_name) {
+	const string function = function_name;
 	if (batch.batch <= 0 || batch.seq <= 0 || batch.markers <= 0) {
-		throw InvalidInputException("decide: refusing an empty local batch");
+		throw InvalidInputException(DecideMsg(function, "refusing an empty batch for the local model",
+		                                      "pass at least one question and a text"));
 	}
 	auto &im = impl->mem;
 	std::vector<int64_t> shape_bm {batch.batch, batch.markers};
@@ -242,15 +319,18 @@ vector<vector<float>> DecideLocalSession::Score(const DecideLocalBatch &batch) {
 	try {
 		out = impl->session.Run(Ort::RunOptions {nullptr}, in_names, inputs.data(), 5, out_names, 1);
 	} catch (const Ort::Exception &e) {
-		throw IOException("decide: local graph run failed (%s)", e.what());
+		DecideMapOrtError(e, function, graph_path, DecideOrtStage::RUN);
 	}
 	auto info = out[0].GetTensorTypeAndShapeInfo();
 	auto dims = info.GetShape();
 	if (dims.size() != 2 || dims[0] != batch.batch || dims[1] != batch.markers) {
-		throw InvalidInputException("decide: local graph returned scores shape [%lld,%lld], expected [%lld,%lld]",
-		                            (long long)(dims.size() > 0 ? dims[0] : -1),
-		                            (long long)(dims.size() > 1 ? dims[1] : -1), (long long)batch.batch,
-		                            (long long)batch.markers);
+		throw InvalidInputException(DecideMsg(
+		    function,
+		    "the graph '" + graph_path + "' returned scores of shape [" +
+		        std::to_string(dims.size() > 0 ? dims[0] : -1) + ", " + std::to_string(dims.size() > 1 ? dims[1] : -1) +
+		        "], expected [" + std::to_string(batch.batch) + ", " + std::to_string(batch.markers) + "]",
+		    "export the model again with tools/export_julia (see "
+		    "https://github.com/DataZooDE/anofox-decide#local-models) and register the .onnx file it writes"));
 	}
 	const float *scores = out[0].GetTensorData<float>();
 	vector<vector<float>> rows;
@@ -585,8 +665,8 @@ vector<DecideAnswer> DecideLocalScore(ClientContext &context, const DecideModelE
 		}
 		batch.qtype[b] = r.qtype;
 	}
-	auto session = DecideLocalSession::Open(context, entry.graph_path);
-	auto scores = session->Score(batch);
+	auto session = DecideLocalSession::Open(context, entry, function.c_str());
+	auto scores = session->Score(batch, function.c_str());
 	vector<DecideAnswer> out;
 	for (size_t b = 0; b < rows.size(); b++) {
 		const auto *q = rows[b].q;

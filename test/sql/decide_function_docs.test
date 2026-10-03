@@ -20,9 +20,9 @@ FROM duckdb_functions()
 WHERE function_name IN ('decide_probability','decide_choice','decide_score','decide_decision','decide_many',
                         'decide_register_model','decide_unregister_model','decide_models','decide_doctor','decide_table',
                         'decide_brier_score','decide_ece','decide_accuracy',
-                        'decide_choice_distribution','decide_fit_calibration','decide_answers','decide_token_count')
+                        'decide_choice_distribution','decide_fit_calibration','decide_answers','decide_token_count','decide_download')
 ----
-17
+18
 
 query I
 SELECT count(DISTINCT function_name)
@@ -31,9 +31,9 @@ WHERE function_name IN ('anofox_decide_probability','anofox_decide_choice','anof
                         'anofox_decide_many','anofox_decide_register_model','anofox_decide_unregister_model','anofox_decide_models','anofox_decide_doctor',
                         'anofox_decide_table','anofox_decide_brier_score','anofox_decide_ece',
                         'anofox_decide_accuracy','anofox_decide_choice_distribution',
-                        'anofox_decide_fit_calibration','anofox_decide_answers','anofox_decide_token_count')
+                        'anofox_decide_fit_calibration','anofox_decide_answers','anofox_decide_token_count','anofox_decide_download')
 ----
-17
+18
 
 # Every overload of every function carries a non-empty description ...
 query I
@@ -79,7 +79,7 @@ SELECT count(DISTINCT function_name)
 FROM duckdb_functions()
 WHERE function_name LIKE 'decide\_%' ESCAPE '\' AND alias_of = 'anofox_' || function_name
 ----
-17
+18
 
 # Spot-check the documented signatures.
 query T

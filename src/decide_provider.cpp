@@ -2,6 +2,7 @@
 #include "decide_errors.hpp"
 #include "decide_registration.hpp"
 #include "decide_remote.hpp"
+#include "decide_catalog.hpp"
 #include "decide_local_nli.hpp"
 #include "decide_local_validate.hpp"
 
@@ -108,6 +109,32 @@ static unique_ptr<FileHandle> DecideOpenLocalFile(ClientContext &context, const 
 			fix = hint + " " + fix;
 		}
 		throw InvalidInputException(DecideMsg(function, what, fix));
+	}
+}
+
+// "laya" out of {"profile": "laya", ...} in <graph>.meta.json; "" when the file is missing or says nothing.
+static string DecideGraphMetaProfile(ClientContext &context, const string &graph_path) {
+	try {
+		auto &fs = FileSystem::GetFileSystem(context);
+		const string meta = graph_path + ".meta.json";
+		if (!fs.FileExists(meta)) {
+			return "";
+		}
+		auto handle = fs.OpenFile(meta, FileOpenFlags::FILE_FLAGS_READ);
+		string raw;
+		raw.resize((size_t)MinValue<idx_t>(handle->GetFileSize(), 65536));
+		if (!raw.empty()) {
+			handle->Read((void *)raw.data(), raw.size(), 0);
+		}
+		auto key = raw.find("\"profile\"");
+		if (key == string::npos) {
+			return "";
+		}
+		auto open = raw.find('"', raw.find(':', key) + 1);
+		auto close = open == string::npos ? string::npos : raw.find('"', open + 1);
+		return close == string::npos ? "" : raw.substr(open + 1, close - open - 1);
+	} catch (...) {
+		return "";
 	}
 }
 
@@ -273,6 +300,21 @@ void DecideRegistry::RegisterModel(ClientContext &context, const string &id, con
 			tokenizer_hint = "No tokenizer was given, so the default '" + entry.tokenizer_path +
 			                 "' next to the graph was tried.";
 		}
+		// <graph>.meta.json (written by tools/export_julia) names the profile the graph was exported for: adopt it
+		// when none was given, refuse a different one. A graph without metadata keeps the caller's profile.
+		const string meta_profile = DecideGraphMetaProfile(context, entry.graph_path);
+		if (!meta_profile.empty()) {
+			if (!profile.empty() && profile != meta_profile) {
+				throw InvalidInputException(DecideMsg(
+				    fn, "the graph '" + entry.graph_path + "' was exported for profile '" + meta_profile +
+				            "' but you passed '" + profile + "'",
+				    "use '" + meta_profile + "' as the 5th argument, or export the checkpoint again for '" + profile +
+				        "' (tools/export_julia)"));
+			}
+			if (profile.empty()) {
+				entry.profile = meta_profile;
+			}
+		}
 		if (!profile.empty()) {
 			entry.profile = profile;
 		}
@@ -288,6 +330,13 @@ void DecideRegistry::RegisterModel(ClientContext &context, const string &id, con
 		DecideValidateLocalFiles(context, entry, fn, tokenizer_hint, !profile.empty());
 	}
 	models[id] = entry;
+}
+
+void DecideRegistry::RegisterCatalogModel(const DecideModelEntry &entry) {
+	lock_guard<mutex> guard(lock);
+	if (models.find(entry.id) == models.end()) {
+		models[entry.id] = entry;
+	}
 }
 
 vector<DecideModelEntry> DecideRegistry::List() {
@@ -386,6 +435,20 @@ DecideModelEntry DecideResolveModel(ClientContext &context, const string &functi
 	if (registry->TryLookup(model, entry)) {
 		return entry;
 	}
+	// A catalog model (decide_download): registered on the fly once its files are in the cache.
+	DecideCatalogEntry catalog_entry;
+	if (DecideCatalogFind(model, catalog_entry)) {
+		const auto cache_dir = DecideCacheDir(context, function.c_str());
+		if (!DecideCatalogCached(cache_dir, catalog_entry)) {
+			throw InvalidInputException(DecideCatalogNotDownloadedMessage(function, catalog_entry));
+		}
+		auto catalog_model = DecideCatalogModelEntry(cache_dir, catalog_entry);
+		// The downloaded tokenizer and config are parsed like a registered model's (cached for scoring).
+		DecideValidateLocalFiles(context, catalog_model, function, "", true);
+		registry->RegisterCatalogModel(catalog_model);
+		registry->TryLookup(model, entry);
+		return entry;
+	}
 	const string close = DecideDidYouMean(model, ids);
 	string what = "model '" + model + "' is not registered (given by " +
 	              (from_setting ? "the anofox_decide_model setting" : "the model argument") + ")";
@@ -467,6 +530,26 @@ DecideModelStatus DecideDescribeModel(ClientContext &context, const DecideModelE
 		} catch (const std::exception &e) {
 			status.detail = DecideCleanExceptionMessage(e);
 		}
+		return status;
+	}
+	if (entry.provider == "local" && !entry.catalog_id.empty()) {
+		DecideCatalogEntry catalog_entry;
+		if (!DecideCatalogFind(entry.catalog_id, catalog_entry)) {
+			status.detail = "catalog model '" + entry.catalog_id + "' is not in this version's catalog";
+			return status;
+		}
+		const auto slash = entry.weights_path.find_last_of("/\\");
+		const bool cached = slash != string::npos &&
+		                    DecideCatalogDirCached(entry.weights_path.substr(0, slash), catalog_entry);
+		if (!cached) {
+			status.detail = "not downloaded yet (" + DecideFormatBytes(catalog_entry.TotalBytes()) +
+			                " from Hugging Face, " + catalog_entry.note + ")";
+			status.fix = "CALL decide_download('" + entry.catalog_id + "');";
+			return status;
+		}
+		status.ready = true;
+		status.detail = "ready: downloaded (" + catalog_entry.license + "); the graph loads on the first call "
+		                "(seconds for large models)";
 		return status;
 	}
 	if (entry.provider == "local") {
