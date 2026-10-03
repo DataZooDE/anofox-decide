@@ -158,7 +158,8 @@ def load_scores_model(weights_dir: Path, head_layers: int, dropout: float,
     return model
 
 
-def export_onnx(model: nn.Module, out_path: Path, opset: int = 17) -> None:
+def export_onnx(model: nn.Module, out_path: Path, opset: int = 17,
+                constant_folding: bool = True) -> None:
     model.eval()
     b, t, m = 1, 64, 3
     args = (
@@ -183,6 +184,9 @@ def export_onnx(model: nn.Module, out_path: Path, opset: int = 17) -> None:
             "scores": {0: "batch", 1: "markers"},
         },
         opset_version=opset,
+        # False for the weight-free path: folding would rename Linear weights
+        # to anonymous onnx::MatMul_N initializers and break the name map.
+        do_constant_folding=constant_folding,
         # TorchScript path: the dynamo exporter needs onnxscript, and the
         # eager-attention graph traces cleanly. Parity test decides.
         dynamo=False,
@@ -223,6 +227,25 @@ TENSOR_MAP = {
 }
 
 
+def write_meta(graph: Path, weights: Path) -> None:
+    """<graph>.meta.json: which profile the graph was exported for and which tokenizer it expects.
+
+    Registration reads it to auto-detect or reject a mismatched profile; a graph
+    without it keeps the old behaviour (the caller's profile is trusted).
+    """
+    import hashlib
+
+    meta = {"format": 1, "profile": "laya" if (weights / "rl_agent_config.json").exists() else "julia-1"}
+    tok = weights / "tokenizer" / "tokenizer.json"
+    if tok.exists():
+        raw = tok.read_bytes()
+        meta["tokenizer_sha256"] = hashlib.sha256(raw).hexdigest()
+        vocab = json.loads(raw).get("model", {}).get("vocab")
+        if isinstance(vocab, dict):
+            meta["tokenizer_vocab_size"] = len(vocab)
+    graph.with_name(graph.name + ".meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+
+
 def export_model(spec_path: str, weights_dir: str, out_dir: str, opset: int = 17) -> dict:
     spec = json.loads(Path(spec_path).read_text())
     weights = Path(weights_dir)
@@ -234,6 +257,7 @@ def export_model(spec_path: str, weights_dir: str, out_dir: str, opset: int = 17
     graph = out / "julia1.onnx"
     export_onnx(model, graph, opset)
     (out / "julia1_tensor_map.json").write_text(json.dumps(TENSOR_MAP, indent=2) + "\n")
+    write_meta(graph, weights)
     return {"graph": str(graph), "tensor_map": str(out / "julia1_tensor_map.json")}
 
 
@@ -243,10 +267,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--weights", required=True, help="Local snapshot_download directory")
     parser.add_argument("--out", required=True, help="Output directory")
     parser.add_argument("--opset", type=int, default=17)
+    parser.add_argument("--weight-free", action="store_true",
+                        help="write graph_<arch>.onnx (checkpoint tensors externalized) + tensor_map_<arch>.json")
+    parser.add_argument("--arch", default="julia-1",
+                        help="artifact name for --weight-free (julia-1 | laya-multilingual | laya-typed-decisions)")
     args = parser.parse_args(argv)
     spec = json.loads(Path(args.spec).read_text())
     # repo_id and sha come from `inspect` (Julia-1); a hand-written spec for another checkpoint may omit them.
     print(f"exporting {spec.get('repo_id', 'unknown checkpoint')} @ {spec.get('sha', 'unknown revision')}")
+    if args.weight_free:
+        from .weight_free import export_weight_free
+
+        spec = json.loads(Path(args.spec).read_text())
+        weights = Path(args.weights)
+        model = load_scores_model(weights, int(spec.get("head", {}).get("head_layers", 2)),
+                                  float(spec.get("head", {}).get("dropout", 0.1)))
+        cfg = model.encoder.config
+        enc = {"hidden_size": cfg.hidden_size, "num_hidden_layers": cfg.num_hidden_layers,
+               "num_attention_heads": cfg.num_attention_heads, "vocab_size": cfg.vocab_size}
+        artifacts = export_weight_free(model, weights / "model.safetensors", Path(args.out), args.arch, enc, args.opset)
+        print(json.dumps(artifacts, indent=2))
+        return 0
     artifacts = export_model(args.spec, args.weights, args.out, args.opset)
     print(json.dumps(artifacts, indent=2))
     return 0

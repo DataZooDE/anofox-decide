@@ -1,0 +1,788 @@
+{
+ "arch": "julia-1",
+ "checkpoint_tensors": 170,
+ "encoder": {
+  "hidden_size": 384,
+  "num_attention_heads": 6,
+  "num_hidden_layers": 22,
+  "vocab_size": 256000
+ },
+ "format": 1,
+ "initializers": {
+  "encoder.embeddings.norm.weight": "encoder.embeddings.norm.weight",
+  "encoder.embeddings.tok_embeddings.weight": "encoder.embeddings.tok_embeddings.weight",
+  "encoder.final_norm.weight": "encoder.final_norm.weight",
+  "encoder.layers.0.attn.Wo.weight": "encoder.layers.0.attn.Wo.weight",
+  "encoder.layers.0.attn.Wqkv.weight": "encoder.layers.0.attn.Wqkv.weight",
+  "encoder.layers.0.mlp.Wi.weight": "encoder.layers.0.mlp.Wi.weight",
+  "encoder.layers.0.mlp.Wo.weight": "encoder.layers.0.mlp.Wo.weight",
+  "encoder.layers.0.mlp_norm.weight": "encoder.layers.0.mlp_norm.weight",
+  "encoder.layers.1.attn.Wo.weight": "encoder.layers.1.attn.Wo.weight",
+  "encoder.layers.1.attn.Wqkv.weight": "encoder.layers.1.attn.Wqkv.weight",
+  "encoder.layers.1.attn_norm.weight": "encoder.layers.1.attn_norm.weight",
+  "encoder.layers.1.mlp.Wi.weight": "encoder.layers.1.mlp.Wi.weight",
+  "encoder.layers.1.mlp.Wo.weight": "encoder.layers.1.mlp.Wo.weight",
+  "encoder.layers.1.mlp_norm.weight": "encoder.layers.1.mlp_norm.weight",
+  "encoder.layers.10.attn.Wo.weight": "encoder.layers.10.attn.Wo.weight",
+  "encoder.layers.10.attn.Wqkv.weight": "encoder.layers.10.attn.Wqkv.weight",
+  "encoder.layers.10.attn_norm.weight": "encoder.layers.10.attn_norm.weight",
+  "encoder.layers.10.mlp.Wi.weight": "encoder.layers.10.mlp.Wi.weight",
+  "encoder.layers.10.mlp.Wo.weight": "encoder.layers.10.mlp.Wo.weight",
+  "encoder.layers.10.mlp_norm.weight": "encoder.layers.10.mlp_norm.weight",
+  "encoder.layers.11.attn.Wo.weight": "encoder.layers.11.attn.Wo.weight",
+  "encoder.layers.11.attn.Wqkv.weight": "encoder.layers.11.attn.Wqkv.weight",
+  "encoder.layers.11.attn_norm.weight": "encoder.layers.11.attn_norm.weight",
+  "encoder.layers.11.mlp.Wi.weight": "encoder.layers.11.mlp.Wi.weight",
+  "encoder.layers.11.mlp.Wo.weight": "encoder.layers.11.mlp.Wo.weight",
+  "encoder.layers.11.mlp_norm.weight": "encoder.layers.11.mlp_norm.weight",
+  "encoder.layers.12.attn.Wo.weight": "encoder.layers.12.attn.Wo.weight",
+  "encoder.layers.12.attn.Wqkv.weight": "encoder.layers.12.attn.Wqkv.weight",
+  "encoder.layers.12.attn_norm.weight": "encoder.layers.12.attn_norm.weight",
+  "encoder.layers.12.mlp.Wi.weight": "encoder.layers.12.mlp.Wi.weight",
+  "encoder.layers.12.mlp.Wo.weight": "encoder.layers.12.mlp.Wo.weight",
+  "encoder.layers.12.mlp_norm.weight": "encoder.layers.12.mlp_norm.weight",
+  "encoder.layers.13.attn.Wo.weight": "encoder.layers.13.attn.Wo.weight",
+  "encoder.layers.13.attn.Wqkv.weight": "encoder.layers.13.attn.Wqkv.weight",
+  "encoder.layers.13.attn_norm.weight": "encoder.layers.13.attn_norm.weight",
+  "encoder.layers.13.mlp.Wi.weight": "encoder.layers.13.mlp.Wi.weight",
+  "encoder.layers.13.mlp.Wo.weight": "encoder.layers.13.mlp.Wo.weight",
+  "encoder.layers.13.mlp_norm.weight": "encoder.layers.13.mlp_norm.weight",
+  "encoder.layers.14.attn.Wo.weight": "encoder.layers.14.attn.Wo.weight",
+  "encoder.layers.14.attn.Wqkv.weight": "encoder.layers.14.attn.Wqkv.weight",
+  "encoder.layers.14.attn_norm.weight": "encoder.layers.14.attn_norm.weight",
+  "encoder.layers.14.mlp.Wi.weight": "encoder.layers.14.mlp.Wi.weight",
+  "encoder.layers.14.mlp.Wo.weight": "encoder.layers.14.mlp.Wo.weight",
+  "encoder.layers.14.mlp_norm.weight": "encoder.layers.14.mlp_norm.weight",
+  "encoder.layers.15.attn.Wo.weight": "encoder.layers.15.attn.Wo.weight",
+  "encoder.layers.15.attn.Wqkv.weight": "encoder.layers.15.attn.Wqkv.weight",
+  "encoder.layers.15.attn_norm.weight": "encoder.layers.15.attn_norm.weight",
+  "encoder.layers.15.mlp.Wi.weight": "encoder.layers.15.mlp.Wi.weight",
+  "encoder.layers.15.mlp.Wo.weight": "encoder.layers.15.mlp.Wo.weight",
+  "encoder.layers.15.mlp_norm.weight": "encoder.layers.15.mlp_norm.weight",
+  "encoder.layers.16.attn.Wo.weight": "encoder.layers.16.attn.Wo.weight",
+  "encoder.layers.16.attn.Wqkv.weight": "encoder.layers.16.attn.Wqkv.weight",
+  "encoder.layers.16.attn_norm.weight": "encoder.layers.16.attn_norm.weight",
+  "encoder.layers.16.mlp.Wi.weight": "encoder.layers.16.mlp.Wi.weight",
+  "encoder.layers.16.mlp.Wo.weight": "encoder.layers.16.mlp.Wo.weight",
+  "encoder.layers.16.mlp_norm.weight": "encoder.layers.16.mlp_norm.weight",
+  "encoder.layers.17.attn.Wo.weight": "encoder.layers.17.attn.Wo.weight",
+  "encoder.layers.17.attn.Wqkv.weight": "encoder.layers.17.attn.Wqkv.weight",
+  "encoder.layers.17.attn_norm.weight": "encoder.layers.17.attn_norm.weight",
+  "encoder.layers.17.mlp.Wi.weight": "encoder.layers.17.mlp.Wi.weight",
+  "encoder.layers.17.mlp.Wo.weight": "encoder.layers.17.mlp.Wo.weight",
+  "encoder.layers.17.mlp_norm.weight": "encoder.layers.17.mlp_norm.weight",
+  "encoder.layers.18.attn.Wo.weight": "encoder.layers.18.attn.Wo.weight",
+  "encoder.layers.18.attn.Wqkv.weight": "encoder.layers.18.attn.Wqkv.weight",
+  "encoder.layers.18.attn_norm.weight": "encoder.layers.18.attn_norm.weight",
+  "encoder.layers.18.mlp.Wi.weight": "encoder.layers.18.mlp.Wi.weight",
+  "encoder.layers.18.mlp.Wo.weight": "encoder.layers.18.mlp.Wo.weight",
+  "encoder.layers.18.mlp_norm.weight": "encoder.layers.18.mlp_norm.weight",
+  "encoder.layers.19.attn.Wo.weight": "encoder.layers.19.attn.Wo.weight",
+  "encoder.layers.19.attn.Wqkv.weight": "encoder.layers.19.attn.Wqkv.weight",
+  "encoder.layers.19.attn_norm.weight": "encoder.layers.19.attn_norm.weight",
+  "encoder.layers.19.mlp.Wi.weight": "encoder.layers.19.mlp.Wi.weight",
+  "encoder.layers.19.mlp.Wo.weight": "encoder.layers.19.mlp.Wo.weight",
+  "encoder.layers.19.mlp_norm.weight": "encoder.layers.19.mlp_norm.weight",
+  "encoder.layers.2.attn.Wo.weight": "encoder.layers.2.attn.Wo.weight",
+  "encoder.layers.2.attn.Wqkv.weight": "encoder.layers.2.attn.Wqkv.weight",
+  "encoder.layers.2.attn_norm.weight": "encoder.layers.2.attn_norm.weight",
+  "encoder.layers.2.mlp.Wi.weight": "encoder.layers.2.mlp.Wi.weight",
+  "encoder.layers.2.mlp.Wo.weight": "encoder.layers.2.mlp.Wo.weight",
+  "encoder.layers.2.mlp_norm.weight": "encoder.layers.2.mlp_norm.weight",
+  "encoder.layers.20.attn.Wo.weight": "encoder.layers.20.attn.Wo.weight",
+  "encoder.layers.20.attn.Wqkv.weight": "encoder.layers.20.attn.Wqkv.weight",
+  "encoder.layers.20.attn_norm.weight": "encoder.layers.20.attn_norm.weight",
+  "encoder.layers.20.mlp.Wi.weight": "encoder.layers.20.mlp.Wi.weight",
+  "encoder.layers.20.mlp.Wo.weight": "encoder.layers.20.mlp.Wo.weight",
+  "encoder.layers.20.mlp_norm.weight": "encoder.layers.20.mlp_norm.weight",
+  "encoder.layers.21.attn.Wo.weight": "encoder.layers.21.attn.Wo.weight",
+  "encoder.layers.21.attn.Wqkv.weight": "encoder.layers.21.attn.Wqkv.weight",
+  "encoder.layers.21.attn_norm.weight": "encoder.layers.21.attn_norm.weight",
+  "encoder.layers.21.mlp.Wi.weight": "encoder.layers.21.mlp.Wi.weight",
+  "encoder.layers.21.mlp.Wo.weight": "encoder.layers.21.mlp.Wo.weight",
+  "encoder.layers.21.mlp_norm.weight": "encoder.layers.21.mlp_norm.weight",
+  "encoder.layers.3.attn.Wo.weight": "encoder.layers.3.attn.Wo.weight",
+  "encoder.layers.3.attn.Wqkv.weight": "encoder.layers.3.attn.Wqkv.weight",
+  "encoder.layers.3.attn_norm.weight": "encoder.layers.3.attn_norm.weight",
+  "encoder.layers.3.mlp.Wi.weight": "encoder.layers.3.mlp.Wi.weight",
+  "encoder.layers.3.mlp.Wo.weight": "encoder.layers.3.mlp.Wo.weight",
+  "encoder.layers.3.mlp_norm.weight": "encoder.layers.3.mlp_norm.weight",
+  "encoder.layers.4.attn.Wo.weight": "encoder.layers.4.attn.Wo.weight",
+  "encoder.layers.4.attn.Wqkv.weight": "encoder.layers.4.attn.Wqkv.weight",
+  "encoder.layers.4.attn_norm.weight": "encoder.layers.4.attn_norm.weight",
+  "encoder.layers.4.mlp.Wi.weight": "encoder.layers.4.mlp.Wi.weight",
+  "encoder.layers.4.mlp.Wo.weight": "encoder.layers.4.mlp.Wo.weight",
+  "encoder.layers.4.mlp_norm.weight": "encoder.layers.4.mlp_norm.weight",
+  "encoder.layers.5.attn.Wo.weight": "encoder.layers.5.attn.Wo.weight",
+  "encoder.layers.5.attn.Wqkv.weight": "encoder.layers.5.attn.Wqkv.weight",
+  "encoder.layers.5.attn_norm.weight": "encoder.layers.5.attn_norm.weight",
+  "encoder.layers.5.mlp.Wi.weight": "encoder.layers.5.mlp.Wi.weight",
+  "encoder.layers.5.mlp.Wo.weight": "encoder.layers.5.mlp.Wo.weight",
+  "encoder.layers.5.mlp_norm.weight": "encoder.layers.5.mlp_norm.weight",
+  "encoder.layers.6.attn.Wo.weight": "encoder.layers.6.attn.Wo.weight",
+  "encoder.layers.6.attn.Wqkv.weight": "encoder.layers.6.attn.Wqkv.weight",
+  "encoder.layers.6.attn_norm.weight": "encoder.layers.6.attn_norm.weight",
+  "encoder.layers.6.mlp.Wi.weight": "encoder.layers.6.mlp.Wi.weight",
+  "encoder.layers.6.mlp.Wo.weight": "encoder.layers.6.mlp.Wo.weight",
+  "encoder.layers.6.mlp_norm.weight": "encoder.layers.6.mlp_norm.weight",
+  "encoder.layers.7.attn.Wo.weight": "encoder.layers.7.attn.Wo.weight",
+  "encoder.layers.7.attn.Wqkv.weight": "encoder.layers.7.attn.Wqkv.weight",
+  "encoder.layers.7.attn_norm.weight": "encoder.layers.7.attn_norm.weight",
+  "encoder.layers.7.mlp.Wi.weight": "encoder.layers.7.mlp.Wi.weight",
+  "encoder.layers.7.mlp.Wo.weight": "encoder.layers.7.mlp.Wo.weight",
+  "encoder.layers.7.mlp_norm.weight": "encoder.layers.7.mlp_norm.weight",
+  "encoder.layers.8.attn.Wo.weight": "encoder.layers.8.attn.Wo.weight",
+  "encoder.layers.8.attn.Wqkv.weight": "encoder.layers.8.attn.Wqkv.weight",
+  "encoder.layers.8.attn_norm.weight": "encoder.layers.8.attn_norm.weight",
+  "encoder.layers.8.mlp.Wi.weight": "encoder.layers.8.mlp.Wi.weight",
+  "encoder.layers.8.mlp.Wo.weight": "encoder.layers.8.mlp.Wo.weight",
+  "encoder.layers.8.mlp_norm.weight": "encoder.layers.8.mlp_norm.weight",
+  "encoder.layers.9.attn.Wo.weight": "encoder.layers.9.attn.Wo.weight",
+  "encoder.layers.9.attn.Wqkv.weight": "encoder.layers.9.attn.Wqkv.weight",
+  "encoder.layers.9.attn_norm.weight": "encoder.layers.9.attn_norm.weight",
+  "encoder.layers.9.mlp.Wi.weight": "encoder.layers.9.mlp.Wi.weight",
+  "encoder.layers.9.mlp.Wo.weight": "encoder.layers.9.mlp.Wo.weight",
+  "encoder.layers.9.mlp_norm.weight": "encoder.layers.9.mlp_norm.weight",
+  "head.layers.0.linear1.bias": "head.layers.0.linear1.bias",
+  "head.layers.0.linear1.weight": "head.layers.0.linear1.weight",
+  "head.layers.0.linear2.bias": "head.layers.0.linear2.bias",
+  "head.layers.0.linear2.weight": "head.layers.0.linear2.weight",
+  "head.layers.0.norm1.bias": "head.layers.0.norm1.bias",
+  "head.layers.0.norm1.weight": "head.layers.0.norm1.weight",
+  "head.layers.0.norm2.bias": "head.layers.0.norm2.bias",
+  "head.layers.0.norm2.weight": "head.layers.0.norm2.weight",
+  "head.layers.0.self_attn.in_proj_bias": "head.layers.0.self_attn.in_proj_bias",
+  "head.layers.0.self_attn.in_proj_weight": "head.layers.0.self_attn.in_proj_weight",
+  "head.layers.0.self_attn.out_proj.bias": "head.layers.0.self_attn.out_proj.bias",
+  "head.layers.0.self_attn.out_proj.weight": "head.layers.0.self_attn.out_proj.weight",
+  "head.layers.1.linear1.bias": "head.layers.1.linear1.bias",
+  "head.layers.1.linear1.weight": "head.layers.1.linear1.weight",
+  "head.layers.1.linear2.bias": "head.layers.1.linear2.bias",
+  "head.layers.1.linear2.weight": "head.layers.1.linear2.weight",
+  "head.layers.1.norm1.bias": "head.layers.1.norm1.bias",
+  "head.layers.1.norm1.weight": "head.layers.1.norm1.weight",
+  "head.layers.1.norm2.bias": "head.layers.1.norm2.bias",
+  "head.layers.1.norm2.weight": "head.layers.1.norm2.weight",
+  "head.layers.1.self_attn.in_proj_bias": "head.layers.1.self_attn.in_proj_bias",
+  "head.layers.1.self_attn.in_proj_weight": "head.layers.1.self_attn.in_proj_weight",
+  "head.layers.1.self_attn.out_proj.bias": "head.layers.1.self_attn.out_proj.bias",
+  "head.layers.1.self_attn.out_proj.weight": "head.layers.1.self_attn.out_proj.weight",
+  "scorer.0.bias": "scorer.0.bias",
+  "scorer.0.weight": "scorer.0.weight",
+  "scorer.1.bias": "scorer.1.bias",
+  "scorer.1.weight": "scorer.1.weight",
+  "scorer.3.bias": "scorer.3.bias",
+  "scorer.3.weight": "scorer.3.weight",
+  "type_emb.weight": "type_emb.weight"
+ },
+ "inputs": [
+  "input_ids",
+  "attention_mask",
+  "marker_pos",
+  "marker_mask",
+  "qtype"
+ ],
+ "masked_fill": -10000.0,
+ "opset": 17,
+ "outputs": [
+  "scores"
+ ],
+ "shapes": {
+  "encoder.embeddings.norm.weight": [
+   384
+  ],
+  "encoder.embeddings.tok_embeddings.weight": [
+   256000,
+   384
+  ],
+  "encoder.final_norm.weight": [
+   384
+  ],
+  "encoder.layers.0.attn.Wo.weight": [
+   384,
+   384
+  ],
+  "encoder.layers.0.attn.Wqkv.weight": [
+   1152,
+   384
+  ],
+  "encoder.layers.0.mlp.Wi.weight": [
+   2304,
+   384
+  ],
+  "encoder.layers.0.mlp.Wo.weight": [
+   384,
+   1152
+  ],
+  "encoder.layers.0.mlp_norm.weight": [
+   384
+  ],
+  "encoder.layers.1.attn.Wo.weight": [
+   384,
+   384
+  ],
+  "encoder.layers.1.attn.Wqkv.weight": [
+   1152,
+   384
+  ],
+  "encoder.layers.1.attn_norm.weight": [
+   384
+  ],
+  "encoder.layers.1.mlp.Wi.weight": [
+   2304,
+   384
+  ],
+  "encoder.layers.1.mlp.Wo.weight": [
+   384,
+   1152
+  ],
+  "encoder.layers.1.mlp_norm.weight": [
+   384
+  ],
+  "encoder.layers.10.attn.Wo.weight": [
+   384,
+   384
+  ],
+  "encoder.layers.10.attn.Wqkv.weight": [
+   1152,
+   384
+  ],
+  "encoder.layers.10.attn_norm.weight": [
+   384
+  ],
+  "encoder.layers.10.mlp.Wi.weight": [
+   2304,
+   384
+  ],
+  "encoder.layers.10.mlp.Wo.weight": [
+   384,
+   1152
+  ],
+  "encoder.layers.10.mlp_norm.weight": [
+   384
+  ],
+  "encoder.layers.11.attn.Wo.weight": [
+   384,
+   384
+  ],
+  "encoder.layers.11.attn.Wqkv.weight": [
+   1152,
+   384
+  ],
+  "encoder.layers.11.attn_norm.weight": [
+   384
+  ],
+  "encoder.layers.11.mlp.Wi.weight": [
+   2304,
+   384
+  ],
+  "encoder.layers.11.mlp.Wo.weight": [
+   384,
+   1152
+  ],
+  "encoder.layers.11.mlp_norm.weight": [
+   384
+  ],
+  "encoder.layers.12.attn.Wo.weight": [
+   384,
+   384
+  ],
+  "encoder.layers.12.attn.Wqkv.weight": [
+   1152,
+   384
+  ],
+  "encoder.layers.12.attn_norm.weight": [
+   384
+  ],
+  "encoder.layers.12.mlp.Wi.weight": [
+   2304,
+   384
+  ],
+  "encoder.layers.12.mlp.Wo.weight": [
+   384,
+   1152
+  ],
+  "encoder.layers.12.mlp_norm.weight": [
+   384
+  ],
+  "encoder.layers.13.attn.Wo.weight": [
+   384,
+   384
+  ],
+  "encoder.layers.13.attn.Wqkv.weight": [
+   1152,
+   384
+  ],
+  "encoder.layers.13.attn_norm.weight": [
+   384
+  ],
+  "encoder.layers.13.mlp.Wi.weight": [
+   2304,
+   384
+  ],
+  "encoder.layers.13.mlp.Wo.weight": [
+   384,
+   1152
+  ],
+  "encoder.layers.13.mlp_norm.weight": [
+   384
+  ],
+  "encoder.layers.14.attn.Wo.weight": [
+   384,
+   384
+  ],
+  "encoder.layers.14.attn.Wqkv.weight": [
+   1152,
+   384
+  ],
+  "encoder.layers.14.attn_norm.weight": [
+   384
+  ],
+  "encoder.layers.14.mlp.Wi.weight": [
+   2304,
+   384
+  ],
+  "encoder.layers.14.mlp.Wo.weight": [
+   384,
+   1152
+  ],
+  "encoder.layers.14.mlp_norm.weight": [
+   384
+  ],
+  "encoder.layers.15.attn.Wo.weight": [
+   384,
+   384
+  ],
+  "encoder.layers.15.attn.Wqkv.weight": [
+   1152,
+   384
+  ],
+  "encoder.layers.15.attn_norm.weight": [
+   384
+  ],
+  "encoder.layers.15.mlp.Wi.weight": [
+   2304,
+   384
+  ],
+  "encoder.layers.15.mlp.Wo.weight": [
+   384,
+   1152
+  ],
+  "encoder.layers.15.mlp_norm.weight": [
+   384
+  ],
+  "encoder.layers.16.attn.Wo.weight": [
+   384,
+   384
+  ],
+  "encoder.layers.16.attn.Wqkv.weight": [
+   1152,
+   384
+  ],
+  "encoder.layers.16.attn_norm.weight": [
+   384
+  ],
+  "encoder.layers.16.mlp.Wi.weight": [
+   2304,
+   384
+  ],
+  "encoder.layers.16.mlp.Wo.weight": [
+   384,
+   1152
+  ],
+  "encoder.layers.16.mlp_norm.weight": [
+   384
+  ],
+  "encoder.layers.17.attn.Wo.weight": [
+   384,
+   384
+  ],
+  "encoder.layers.17.attn.Wqkv.weight": [
+   1152,
+   384
+  ],
+  "encoder.layers.17.attn_norm.weight": [
+   384
+  ],
+  "encoder.layers.17.mlp.Wi.weight": [
+   2304,
+   384
+  ],
+  "encoder.layers.17.mlp.Wo.weight": [
+   384,
+   1152
+  ],
+  "encoder.layers.17.mlp_norm.weight": [
+   384
+  ],
+  "encoder.layers.18.attn.Wo.weight": [
+   384,
+   384
+  ],
+  "encoder.layers.18.attn.Wqkv.weight": [
+   1152,
+   384
+  ],
+  "encoder.layers.18.attn_norm.weight": [
+   384
+  ],
+  "encoder.layers.18.mlp.Wi.weight": [
+   2304,
+   384
+  ],
+  "encoder.layers.18.mlp.Wo.weight": [
+   384,
+   1152
+  ],
+  "encoder.layers.18.mlp_norm.weight": [
+   384
+  ],
+  "encoder.layers.19.attn.Wo.weight": [
+   384,
+   384
+  ],
+  "encoder.layers.19.attn.Wqkv.weight": [
+   1152,
+   384
+  ],
+  "encoder.layers.19.attn_norm.weight": [
+   384
+  ],
+  "encoder.layers.19.mlp.Wi.weight": [
+   2304,
+   384
+  ],
+  "encoder.layers.19.mlp.Wo.weight": [
+   384,
+   1152
+  ],
+  "encoder.layers.19.mlp_norm.weight": [
+   384
+  ],
+  "encoder.layers.2.attn.Wo.weight": [
+   384,
+   384
+  ],
+  "encoder.layers.2.attn.Wqkv.weight": [
+   1152,
+   384
+  ],
+  "encoder.layers.2.attn_norm.weight": [
+   384
+  ],
+  "encoder.layers.2.mlp.Wi.weight": [
+   2304,
+   384
+  ],
+  "encoder.layers.2.mlp.Wo.weight": [
+   384,
+   1152
+  ],
+  "encoder.layers.2.mlp_norm.weight": [
+   384
+  ],
+  "encoder.layers.20.attn.Wo.weight": [
+   384,
+   384
+  ],
+  "encoder.layers.20.attn.Wqkv.weight": [
+   1152,
+   384
+  ],
+  "encoder.layers.20.attn_norm.weight": [
+   384
+  ],
+  "encoder.layers.20.mlp.Wi.weight": [
+   2304,
+   384
+  ],
+  "encoder.layers.20.mlp.Wo.weight": [
+   384,
+   1152
+  ],
+  "encoder.layers.20.mlp_norm.weight": [
+   384
+  ],
+  "encoder.layers.21.attn.Wo.weight": [
+   384,
+   384
+  ],
+  "encoder.layers.21.attn.Wqkv.weight": [
+   1152,
+   384
+  ],
+  "encoder.layers.21.attn_norm.weight": [
+   384
+  ],
+  "encoder.layers.21.mlp.Wi.weight": [
+   2304,
+   384
+  ],
+  "encoder.layers.21.mlp.Wo.weight": [
+   384,
+   1152
+  ],
+  "encoder.layers.21.mlp_norm.weight": [
+   384
+  ],
+  "encoder.layers.3.attn.Wo.weight": [
+   384,
+   384
+  ],
+  "encoder.layers.3.attn.Wqkv.weight": [
+   1152,
+   384
+  ],
+  "encoder.layers.3.attn_norm.weight": [
+   384
+  ],
+  "encoder.layers.3.mlp.Wi.weight": [
+   2304,
+   384
+  ],
+  "encoder.layers.3.mlp.Wo.weight": [
+   384,
+   1152
+  ],
+  "encoder.layers.3.mlp_norm.weight": [
+   384
+  ],
+  "encoder.layers.4.attn.Wo.weight": [
+   384,
+   384
+  ],
+  "encoder.layers.4.attn.Wqkv.weight": [
+   1152,
+   384
+  ],
+  "encoder.layers.4.attn_norm.weight": [
+   384
+  ],
+  "encoder.layers.4.mlp.Wi.weight": [
+   2304,
+   384
+  ],
+  "encoder.layers.4.mlp.Wo.weight": [
+   384,
+   1152
+  ],
+  "encoder.layers.4.mlp_norm.weight": [
+   384
+  ],
+  "encoder.layers.5.attn.Wo.weight": [
+   384,
+   384
+  ],
+  "encoder.layers.5.attn.Wqkv.weight": [
+   1152,
+   384
+  ],
+  "encoder.layers.5.attn_norm.weight": [
+   384
+  ],
+  "encoder.layers.5.mlp.Wi.weight": [
+   2304,
+   384
+  ],
+  "encoder.layers.5.mlp.Wo.weight": [
+   384,
+   1152
+  ],
+  "encoder.layers.5.mlp_norm.weight": [
+   384
+  ],
+  "encoder.layers.6.attn.Wo.weight": [
+   384,
+   384
+  ],
+  "encoder.layers.6.attn.Wqkv.weight": [
+   1152,
+   384
+  ],
+  "encoder.layers.6.attn_norm.weight": [
+   384
+  ],
+  "encoder.layers.6.mlp.Wi.weight": [
+   2304,
+   384
+  ],
+  "encoder.layers.6.mlp.Wo.weight": [
+   384,
+   1152
+  ],
+  "encoder.layers.6.mlp_norm.weight": [
+   384
+  ],
+  "encoder.layers.7.attn.Wo.weight": [
+   384,
+   384
+  ],
+  "encoder.layers.7.attn.Wqkv.weight": [
+   1152,
+   384
+  ],
+  "encoder.layers.7.attn_norm.weight": [
+   384
+  ],
+  "encoder.layers.7.mlp.Wi.weight": [
+   2304,
+   384
+  ],
+  "encoder.layers.7.mlp.Wo.weight": [
+   384,
+   1152
+  ],
+  "encoder.layers.7.mlp_norm.weight": [
+   384
+  ],
+  "encoder.layers.8.attn.Wo.weight": [
+   384,
+   384
+  ],
+  "encoder.layers.8.attn.Wqkv.weight": [
+   1152,
+   384
+  ],
+  "encoder.layers.8.attn_norm.weight": [
+   384
+  ],
+  "encoder.layers.8.mlp.Wi.weight": [
+   2304,
+   384
+  ],
+  "encoder.layers.8.mlp.Wo.weight": [
+   384,
+   1152
+  ],
+  "encoder.layers.8.mlp_norm.weight": [
+   384
+  ],
+  "encoder.layers.9.attn.Wo.weight": [
+   384,
+   384
+  ],
+  "encoder.layers.9.attn.Wqkv.weight": [
+   1152,
+   384
+  ],
+  "encoder.layers.9.attn_norm.weight": [
+   384
+  ],
+  "encoder.layers.9.mlp.Wi.weight": [
+   2304,
+   384
+  ],
+  "encoder.layers.9.mlp.Wo.weight": [
+   384,
+   1152
+  ],
+  "encoder.layers.9.mlp_norm.weight": [
+   384
+  ],
+  "head.layers.0.linear1.bias": [
+   1536
+  ],
+  "head.layers.0.linear1.weight": [
+   1536,
+   384
+  ],
+  "head.layers.0.linear2.bias": [
+   384
+  ],
+  "head.layers.0.linear2.weight": [
+   384,
+   1536
+  ],
+  "head.layers.0.norm1.bias": [
+   384
+  ],
+  "head.layers.0.norm1.weight": [
+   384
+  ],
+  "head.layers.0.norm2.bias": [
+   384
+  ],
+  "head.layers.0.norm2.weight": [
+   384
+  ],
+  "head.layers.0.self_attn.in_proj_bias": [
+   1152
+  ],
+  "head.layers.0.self_attn.in_proj_weight": [
+   1152,
+   384
+  ],
+  "head.layers.0.self_attn.out_proj.bias": [
+   384
+  ],
+  "head.layers.0.self_attn.out_proj.weight": [
+   384,
+   384
+  ],
+  "head.layers.1.linear1.bias": [
+   1536
+  ],
+  "head.layers.1.linear1.weight": [
+   1536,
+   384
+  ],
+  "head.layers.1.linear2.bias": [
+   384
+  ],
+  "head.layers.1.linear2.weight": [
+   384,
+   1536
+  ],
+  "head.layers.1.norm1.bias": [
+   384
+  ],
+  "head.layers.1.norm1.weight": [
+   384
+  ],
+  "head.layers.1.norm2.bias": [
+   384
+  ],
+  "head.layers.1.norm2.weight": [
+   384
+  ],
+  "head.layers.1.self_attn.in_proj_bias": [
+   1152
+  ],
+  "head.layers.1.self_attn.in_proj_weight": [
+   1152,
+   384
+  ],
+  "head.layers.1.self_attn.out_proj.bias": [
+   384
+  ],
+  "head.layers.1.self_attn.out_proj.weight": [
+   384,
+   384
+  ],
+  "scorer.0.bias": [
+   384
+  ],
+  "scorer.0.weight": [
+   384
+  ],
+  "scorer.1.bias": [
+   384
+  ],
+  "scorer.1.weight": [
+   384,
+   384
+  ],
+  "scorer.3.bias": [
+   1
+  ],
+  "scorer.3.weight": [
+   1,
+   384
+  ],
+  "type_emb.weight": [
+   3,
+   384
+  ]
+ },
+ "transforms": {}
+}
