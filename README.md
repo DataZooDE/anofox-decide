@@ -617,9 +617,6 @@ that caused it. Run `SELECT * FROM decide_doctor();` first when something does n
 | `probability must be between 0 and 1` (metrics) | the first argument is not a probability | pass probabilities, not percents or logits (`p / 100.0`); NaN: `NULLIF(p, 'NaN'::DOUBLE)` |
 | `No function matches ... explicit type casts` | DuckDB's own message for argument types | cast the arguments (`x::VARCHAR`, `y = 1`); `decide_choice` options must be a list of strings `['a','b']` |
 
-Local models print many `Schema error: ... already registered` lines on stderr the first time one loads;
-they come from the bundled ONNX Runtime and are harmless.
-
 ---
 
 ## Feedback
