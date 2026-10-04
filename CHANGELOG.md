@@ -6,6 +6,11 @@ All notable changes to `anofox_decide` are documented here. The format follows
 
 ## [Unreleased]
 
+## [2026.10.04] - 2026-10-04
+
+Local models that work after `INSTALL`, Cloudflare Clef, relational scoring at scalar speed, and local models
+that no longer cut text silently.
+
 ### Added
 - **`decide_answers(state, questions[, model])`**: the rows of `decide_table` as a `LIST(STRUCT(question_id, kind,
   probability, choice, confidence, model, score, distribution))`, one list per text. `unnest(decide_answers(...),
@@ -136,5 +141,6 @@ First public release.
 - Platforms: Linux (amd64, arm64), macOS (arm64) and Windows (amd64) against DuckDB 1.5.6. Not built:
   macOS on Intel (ONNX Runtime ships no archive after v1.23.2), WebAssembly, musl and MinGW.
 
-[Unreleased]: https://github.com/DataZooDE/anofox-decide/compare/v2026.10.03...HEAD
+[Unreleased]: https://github.com/DataZooDE/anofox-decide/compare/v2026.10.04...HEAD
+[2026.10.04]: https://github.com/DataZooDE/anofox-decide/compare/v2026.10.03...v2026.10.04
 [2026.10.03]: https://github.com/DataZooDE/anofox-decide/releases/tag/v2026.10.03
