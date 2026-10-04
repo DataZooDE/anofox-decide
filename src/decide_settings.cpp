@@ -58,6 +58,17 @@ void ValidateMaxConcurrency(ClientContext &context, SetScope scope, Value &param
 	RequireRange("anofox_decide_max_concurrency", 0, 64, 0, Int(parameter), 4);
 }
 
+void ValidateBatchTokens(ClientContext &context, SetScope scope, Value &parameter) {
+	ValidateNonNull("anofox_decide_batch_tokens", "0", context, scope, parameter);
+	auto v = Int(parameter);
+	if (v != 0 && (v < 1024 || v > 131072)) {
+		throw InvalidInputException(DecideMsg(
+		    "anofox_decide_batch_tokens", "must be 0 (off) or between 1024 and 131072, got " + std::to_string(v) +
+		                                      " (default 0)",
+		    "SET anofox_decide_batch_tokens = 16384; (or 0 to score one text at a time)"));
+	}
+}
+
 void ValidateMaxRetries(ClientContext &context, SetScope scope, Value &parameter) {
 	ValidateNonNull("anofox_decide_max_retries", "3", context, scope, parameter);
 	RequireRange("anofox_decide_max_retries", 0, 10, 3, Int(parameter), 5);
@@ -175,6 +186,12 @@ void RegisterDecideSettings(ExtensionLoader &loader) {
 	                          "window: 'error' (default) raises an error that says how much would be cut, 'ignore' "
 	                          "scores the shortened input. Check lengths with decide_token_count(text)",
 	                          LogicalType::VARCHAR, Value("error"), ValidateOnTruncate);
+	config.AddExtensionOption("anofox_decide_batch_tokens",
+	                          "Local models: score the rows of a whole chunk together, in batches of at most this "
+	                          "many padded tokens (batch size times padded length; 1024 to 131072). 0 (default) scores "
+	                          "one text at a time. Results are the same either way; batching only pays on a GPU, "
+	                          "on CPU it was measured to be slower",
+	                          LogicalType::BIGINT, Value::BIGINT(0), ValidateBatchTokens);
 	config.AddExtensionOption("anofox_decide_head_length",
 	                          "Tokens reserved for the question and its options in local models (default 512); must "
 	                          "stay below anofox_decide_max_length",

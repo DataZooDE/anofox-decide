@@ -6,6 +6,19 @@ All notable changes to `anofox_decide` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **`anofox_decide_batch_tokens`** (default `0` = off): local models score the rows of a whole chunk together,
+  in batches of at most this many padded tokens (batch size times padded length, `1024` to `131072`; one row
+  always fits). Rows are collated exactly as before (so truncation behaves the same), sorted by length, padded
+  to 128/256/.../8192 (never above the model window) and run in as few ONNX Runtime calls as the budget allows;
+  answers come back in the original order. Padding is masked exactly, so answers match one-text-at-a-time scoring
+  exactly: on the 200-ticket evaluation with Laya multilingual (400 questions) the probabilities were identical
+  to the last bit, with no routing or refund-decision differences, at 16384 and at 4096. Off by default because
+  on CPU the effect is small and not consistent: wall time for the 200 tickets was 112 s and 122 s with it off,
+  98 s and 103 s at 16384 and 146 s at 4096 (one machine under heavy load, load average 58 to 69 on 32 cores,
+  so indicative only). It is the prerequisite for GPU execution, where a batch of eight rows measured about the
+  same time as one. `tools/eval/run_eval.py` gained `--batch-tokens`.
+
 ## [2026.10.04] - 2026-10-04
 
 Local models that work after `INSTALL`, Cloudflare Clef, relational scoring at scalar speed, and local models
