@@ -53,27 +53,33 @@ SELECT count(*) FROM batched_answers
 ----
 24
 
+# The gap between the best and second-best option of an answer's distribution (NULL without a distribution).
+statement ok
+CREATE MACRO top2_gap(d) AS list_sort(map_values(d), 'DESC')[1] - list_sort(map_values(d), 'DESC')[2];
+
 # Diagnostic: lists every (ticket, question) that does not agree, with the numbers that say why (probability and
-# score differences, both choices, and the gap between the best and second-best option of the serial answer, which
-# is tiny on this fixture because its weights are random). Empty when everything agrees.
+# score differences, both choices and the serial top-two gap). Empty when everything agrees. The choice is compared
+# only where the serial top-two gap is above 1e-6: this fixture has random weights, so its options are tied to
+# within rounding (gaps of 0 to 1.4e-7) and a different GEMM rounding on another platform may break a tie the other way.
 query TTTTTTTTT
 SELECT CAST(s.id AS VARCHAR), s.question_id,
        CAST(s.probability AS VARCHAR), CAST(b.probability AS VARCHAR), printf('%.3e', abs(s.probability - b.probability)),
        s.choice, b.choice, printf('%.3e', abs(coalesce(s.score, 0) - coalesce(b.score, 0))),
-       printf('%.3e', list_sort(map_values(s.distribution), 'DESC')[1] - list_sort(map_values(s.distribution), 'DESC')[2])
+       printf('%.3e', top2_gap(s.distribution))
 FROM serial_answers s JOIN batched_answers b USING (id, question_id)
 WHERE NOT (abs(s.probability - b.probability) < 1e-5
-  AND s.choice IS NOT DISTINCT FROM b.choice
+  AND (s.choice IS NOT DISTINCT FROM b.choice OR top2_gap(s.distribution) <= 1e-6)
   AND abs(coalesce(s.score, 0) - coalesce(b.score, 0)) < 1e-5
   AND (s.distribution IS NULL) = (b.distribution IS NULL))
 ORDER BY s.question_id, s.id
 ----
 
-# Every (ticket, question) agrees: same choice, probabilities and scores within 1e-5, same distribution.
+# Every (ticket, question) agrees: probabilities and scores within 1e-5, same distribution, same choice wherever
+# the options are not tied (see above).
 query I
 SELECT count(*) FROM serial_answers s JOIN batched_answers b USING (id, question_id)
 WHERE abs(s.probability - b.probability) < 1e-5
-  AND s.choice IS NOT DISTINCT FROM b.choice
+  AND (s.choice IS NOT DISTINCT FROM b.choice OR top2_gap(s.distribution) <= 1e-6)
   AND abs(coalesce(s.score, 0) - coalesce(b.score, 0)) < 1e-5
   AND (s.distribution IS NULL) = (b.distribution IS NULL)
 ----

@@ -7,9 +7,11 @@
 
 #include "duckdb.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <exception>
+#include <functional>
 
 using namespace duckdb;
 using namespace duckdb::anofox;
@@ -43,10 +45,28 @@ vector<DecideQuestion> MixedQuestions(const string &tag) {
 	        DecideQuestion {"lvl_" + tag, "score", "How urgent?", {"cd", "ab", "e"}}};
 }
 
+// Gap between the best and second-best option of an answer (infinity without two options).
+double TopTwoGap(const DecideAnswer &a) {
+	if (a.distribution.size() < 2) {
+		return INFINITY;
+	}
+	vector<double> p;
+	for (auto &kv : a.distribution) {
+		p.push_back(kv.second);
+	}
+	std::sort(p.begin(), p.end(), std::greater<double>());
+	return p[0] - p[1];
+}
+
+// `b` is the serial answer. The tiny fixture has random weights, so its options are tied to within rounding (gaps of
+// 0 to 1.4e-7) and a different GEMM rounding on another platform (macOS arm64) breaks a tie the other way: the choice
+// is compared only where the serial options are not tied. The real-weights test compares it unconditionally.
 void RequireSameAnswer(const DecideAnswer &a, const DecideAnswer &b) {
 	REQUIRE(a.id == b.id);
 	REQUIRE(a.kind == b.kind);
-	REQUIRE(a.choice == b.choice);
+	if (TopTwoGap(b) > 1e-6) {
+		REQUIRE(a.choice == b.choice);
+	}
 	REQUIRE(std::fabs(a.probability - b.probability) < 1e-5);
 	// `expected` is NaN unless the question is a score.
 	REQUIRE(std::isnan(a.expected) == std::isnan(b.expected));
