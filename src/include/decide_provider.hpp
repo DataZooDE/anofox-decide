@@ -172,7 +172,8 @@ struct DecideBatchRequest {
 // Evaluates the requests of one chunk of rows and returns one answer list per request, in input order.
 // Identical requests (same model, text and questions) are sent once and shared. Remote requests run
 // concurrently (anofox_decide_max_concurrency, connections reused, backing off on a 429); local and
-// stub requests run one after another. If a request fails, the error of the first failing request in
+// stub requests run one after another (local requests of one model are scored together when
+// anofox_decide_batch_tokens > 0, see DecideLocalScoreMany). If a request fails, the error of the first failing request in
 // input order is thrown, and requests after it are not started.
 vector<vector<DecideAnswer>> DecideEvaluateBatch(ClientContext &context, const vector<DecideBatchRequest> &requests,
                                                  const char *function);

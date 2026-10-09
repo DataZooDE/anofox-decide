@@ -715,6 +715,15 @@ vector<vector<DecideAnswer>> DecideEvaluateBatch(ClientContext &context, const v
 	vector<DecideRemoteJob> jobs;
 	vector<idx_t> job_unique;
 	std::unordered_map<string, DecideRemoteConfig> configs; // one resolved config per model
+	// Local models: with anofox_decide_batch_tokens > 0 the requests of one model are scored together after
+	// the preparation loop (rows of different requests share ORT runs); 0 keeps one request after another.
+	int64_t batch_tokens = 0;
+	Value batch_tokens_value;
+	if (context.TryGetCurrentSetting("anofox_decide_batch_tokens", batch_tokens_value) && !batch_tokens_value.IsNull()) {
+		batch_tokens = BigIntValue::Get(batch_tokens_value.DefaultCastAs(LogicalType::BIGINT));
+	}
+	vector<string> local_order;
+	std::unordered_map<string, vector<idx_t>> local_groups;
 	for (idx_t k = 0; k < u; k++) {
 		const auto &request = requests[firsts[k]];
 		try {
@@ -732,12 +741,39 @@ vector<vector<DecideAnswer>> DecideEvaluateBatch(ClientContext &context, const v
 				job.questions = &request.questions;
 				jobs.push_back(std::move(job));
 				job_unique.push_back(k);
+			} else if (batch_tokens > 0 && request.entry.provider == "local") {
+				auto group = local_groups.find(request.entry.id);
+				if (group == local_groups.end()) {
+					group = local_groups.emplace(request.entry.id, vector<idx_t> {}).first;
+					local_order.push_back(request.entry.id);
+				}
+				group->second.push_back(k);
 			} else {
 				answers[k] = DecideEvaluate(context, request.entry, request.state, request.questions, function);
 			}
 		} catch (...) {
 			errors[k] = std::current_exception();
 			break;
+		}
+	}
+	for (auto &model_id : local_order) {
+		const auto &members = local_groups[model_id];
+		vector<DecideLocalRequest> local_requests;
+		for (auto k : members) {
+			local_requests.push_back({&requests[firsts[k]].state, &requests[firsts[k]].questions});
+		}
+		const auto &entry = requests[firsts[members[0]]].entry;
+		vector<vector<DecideAnswer>> group_answers;
+		vector<std::exception_ptr> group_errors;
+		DecideLocalScoreMany(context, entry, local_requests, batch_tokens, function, group_answers, group_errors);
+		for (idx_t i = 0; i < members.size(); i++) {
+			const auto k = members[i];
+			if (group_errors[i]) {
+				errors[k] = group_errors[i];
+				continue;
+			}
+			answers[k] = std::move(group_answers[i]);
+			ApplyCalibration(entry, answers[k]);
 		}
 	}
 	DecideRemoteRunJobs(jobs);

@@ -563,45 +563,59 @@ static const DecideTokenizer &TokenizerFor(ClientContext &context, const string 
 
 //--- Full local path ---------------------------------------------------------
 
-vector<DecideAnswer> DecideLocalScore(ClientContext &context, const DecideModelEntry &entry,
-                                           const string &state, const vector<DecideQuestion> &questions,
-                                           const char *function_name) {
-	const string function = function_name;
+namespace {
+
+//! Everything one scoring call resolves once: the model profile limits, the truncation policy and the tokenizer.
+struct LocalSettings {
+	bool laya = false;
+	shared_ptr<LayaConfig> laya_cfg;
+	int64_t max_length = 8192;
+	int64_t head_length = 512;
+	bool fail_on_truncate = true;
+	const DecideTokenizer *tok = nullptr;
+};
+
+LocalSettings ResolveLocalSettings(ClientContext &context, const DecideModelEntry &entry, const string &function) {
+	LocalSettings st;
+	st.laya = entry.profile == "laya";
+	Value max_v, head_v;
+	if (st.laya) {
+		// The laya profile fixes its limits from rl_agent_config.json (the
+		// checkpoint was trained/calibrated at these); the settings apply
+		// to julia-1 only.
+		st.laya_cfg = LoadLayaConfig(context, entry.config_path, function);
+		st.max_length = st.laya_cfg->max_len;
+		st.head_length = st.laya_cfg->head_max_len;
+	} else {
+		if (context.TryGetCurrentSetting("anofox_decide_max_length", max_v) && !max_v.IsNull()) {
+			st.max_length = BigIntValue::Get(max_v.DefaultCastAs(LogicalType::BIGINT));
+		}
+		if (context.TryGetCurrentSetting("anofox_decide_head_length", head_v) && !head_v.IsNull()) {
+			st.head_length = BigIntValue::Get(head_v.DefaultCastAs(LogicalType::BIGINT));
+		}
+	}
+	Value trunc_v;
+	if (context.TryGetCurrentSetting("anofox_decide_on_truncate", trunc_v) && !trunc_v.IsNull()) {
+		st.fail_on_truncate = trunc_v.ToString() != "ignore";
+	}
+	st.tok = &TokenizerFor(context, entry.tokenizer_path, entry.id, function);
+	return st;
+}
+
+struct LocalRow {
+	DecideCollatedRow c;
+	const DecideQuestion *q;
+};
+
+//! One row per question, in question order. Throws the first question's error (kind, score levels, truncation).
+vector<LocalRow> CollateQuestions(const LocalSettings &st, const string &state, const vector<DecideQuestion> &questions,
+                                  const string &function) {
 	if (questions.empty()) {
 		throw InvalidInputException(DecideMsg(function, "no questions were given to the local model",
 		                                      "pass at least one question"));
 	}
-	const bool laya = entry.profile == "laya";
-	Value max_v, head_v;
-	int64_t max_length = 8192, head_length = 512; // spec collation defaults
-	shared_ptr<LayaConfig> laya_cfg;
-	if (laya) {
-		// The laya profile fixes its limits from rl_agent_config.json (the
-		// checkpoint was trained/calibrated at these); the settings apply
-		// to julia-1 only.
-		laya_cfg = LoadLayaConfig(context, entry.config_path, function);
-		max_length = laya_cfg->max_len;
-		head_length = laya_cfg->head_max_len;
-	} else {
-		if (context.TryGetCurrentSetting("anofox_decide_max_length", max_v) && !max_v.IsNull()) {
-			max_length = BigIntValue::Get(max_v.DefaultCastAs(LogicalType::BIGINT));
-		}
-		if (context.TryGetCurrentSetting("anofox_decide_head_length", head_v) && !head_v.IsNull()) {
-			head_length = BigIntValue::Get(head_v.DefaultCastAs(LogicalType::BIGINT));
-		}
-	}
-	bool fail_on_truncate = true;
-	Value trunc_v;
-	if (context.TryGetCurrentSetting("anofox_decide_on_truncate", trunc_v) && !trunc_v.IsNull()) {
-		fail_on_truncate = trunc_v.ToString() != "ignore";
-	}
-	const auto &tok = TokenizerFor(context, entry.tokenizer_path, entry.id, function);
-	struct Row {
-		DecideCollatedRow c;
-		const DecideQuestion *q;
-	};
-	std::vector<Row> rows;
-	int64_t T = 0, M = 0;
+	const bool laya = st.laya;
+	vector<LocalRow> rows;
 	for (auto &q : questions) {
 		vector<string> options;
 		int qtype = 0;
@@ -633,28 +647,34 @@ vector<DecideAnswer> DecideLocalScore(ClientContext &context, const DecideModelE
 			    function, "question '" + q.id + "' has the kind '" + q.kind + "', which local models do not support",
 			    "use 'binary', 'choice' or 'score'"));
 		}
-		rows.push_back({DecideCollateRow(tok, state, q.instruction, options, qtype, max_length, head_length, laya,
-		                                 function, q.id),
+		rows.push_back({DecideCollateRow(*st.tok, state, q.instruction, options, qtype, st.max_length, st.head_length,
+		                                 laya, function, q.id),
 		                &q});
-		if (fail_on_truncate && rows.back().c.truncation.Any()) {
+		if (st.fail_on_truncate && rows.back().c.truncation.Any()) {
 			throw InvalidInputException(
 			    DecideTruncationMessage(rows.back().c.truncation, function, q.id, options, laya));
 		}
-		T = std::max<int64_t>(T, rows.back().c.ids.size());
-		M = std::max<int64_t>(M, rows.back().c.markers.size());
 	}
-	const auto &sp = tok.Specials();
+	return rows;
+}
+
+//! Pads the rows to [B, T] and [B, M] (masked slots carry the pad token and zeros).
+DecideLocalBatch BuildLocalBatch(const LocalSettings &st, const vector<const LocalRow *> &rows, int64_t T) {
+	int64_t M = 0;
+	for (auto *r : rows) {
+		M = std::max<int64_t>(M, r->c.markers.size());
+	}
 	DecideLocalBatch batch;
 	batch.batch = (int64_t)rows.size();
 	batch.seq = T;
 	batch.markers = M;
-	batch.ids.assign(batch.batch * T, sp.pad);
+	batch.ids.assign(batch.batch * T, st.tok->Specials().pad);
 	batch.mask.assign(batch.batch * T, 0);
 	batch.marker_pos.assign(batch.batch * M, 0);
 	batch.marker_mask.assign(batch.batch * M, 0);
 	batch.qtype.assign(batch.batch, 0);
 	for (size_t b = 0; b < rows.size(); b++) {
-		auto &r = rows[b].c;
+		auto &r = rows[b]->c;
 		for (size_t i = 0; i < r.ids.size(); i++) {
 			batch.ids[b * T + i] = r.ids[i];
 			batch.mask[b * T + i] = 1;
@@ -665,62 +685,194 @@ vector<DecideAnswer> DecideLocalScore(ClientContext &context, const DecideModelE
 		}
 		batch.qtype[b] = r.qtype;
 	}
+	return batch;
+}
+
+//! Softmax (with the laya temperature) over one row's own markers, shaped into the answer for its question.
+DecideAnswer BuildLocalAnswer(const LocalSettings &st, const DecideModelEntry &entry, const LocalRow &row,
+                              const vector<float> &scores_b) {
+	const auto *q = row.q;
+	// Rows in a mixed batch are padded to the widest question: keep only
+	// this row's own markers (masked slots carry -1e4).
+	const std::vector<float> row_scores(scores_b.begin(), scores_b.begin() + (long)row.c.markers.size());
+	DecideAnswer a;
+	a.id = q->id;
+	a.kind = q->kind;
+	a.model = entry.id;
+	// Calibration (laya): logits / T, T by (type, option count) bucket,
+	// falling back to the per-type temperature. julia-1: raw softmax.
+	double temp = 1.0;
+	if (st.laya) {
+		int qt = q->kind == "noul" ? 2 : (q->kind == "score" ? 1 : 0);
+		auto bucket = st.laya_cfg->temperature_by_options.find(LayaTempBucket(qt, row_scores.size()));
+		temp = bucket != st.laya_cfg->temperature_by_options.end() ? bucket->second : st.laya_cfg->temperature[qt];
+		if (!(temp > 0.0)) {
+			temp = 1.0;
+		}
+	}
+	double mx = -1e30;
+	for (auto s : row_scores) {
+		mx = std::max(mx, (double)s / temp);
+	}
+	double tot = 0.0;
+	std::vector<double> probs;
+	for (auto s : row_scores) {
+		probs.push_back(std::exp((double)s / temp - mx));
+		tot += probs.back();
+	}
+	if (q->kind == "noul") {
+		a.probability = probs.size() > 1 ? probs[1] / tot : 0.0;
+	} else {
+		size_t best = 0;
+		double expected = 0.0;
+		for (size_t i = 0; i < probs.size(); i++) {
+			if (probs[i] > probs[best]) {
+				best = i;
+			}
+			a.distribution.emplace_back(q->options[i], probs[i] / tot);
+			expected += (double)i * probs[i] / tot;
+		}
+		a.probability = probs[best] / tot;
+		if (q->kind == "score") {
+			// Expected level index over the rubric; the argmax level is not exposed as a choice.
+			a.expected = expected;
+		} else {
+			a.choice = q->options[best];
+		}
+	}
+	return a;
+}
+
+//! Smallest padded length of the fixed ladder that holds `len`, never above the model window.
+int64_t PaddedLength(int64_t len, int64_t max_length) {
+	static const int64_t kLadder[] = {128, 256, 512, 1024, 2048, 4096, 8192};
+	for (auto b : kLadder) {
+		if (b >= len) {
+			return std::max<int64_t>(len, std::min(b, max_length));
+		}
+	}
+	return len;
+}
+
+} // namespace
+
+vector<DecideAnswer> DecideLocalScore(ClientContext &context, const DecideModelEntry &entry,
+                                           const string &state, const vector<DecideQuestion> &questions,
+                                           const char *function_name) {
+	const string function = function_name;
+	if (questions.empty()) {
+		throw InvalidInputException(DecideMsg(function, "no questions were given to the local model",
+		                                      "pass at least one question"));
+	}
+	const auto st = ResolveLocalSettings(context, entry, function);
+	const auto rows = CollateQuestions(st, state, questions, function);
+	vector<const LocalRow *> ptrs;
+	int64_t T = 0;
+	for (auto &r : rows) {
+		ptrs.push_back(&r);
+		T = std::max<int64_t>(T, r.c.ids.size());
+	}
+	const auto batch = BuildLocalBatch(st, ptrs, T);
 	auto session = DecideLocalSession::Open(context, entry, function.c_str());
 	auto scores = session->Score(batch, function.c_str());
 	vector<DecideAnswer> out;
 	for (size_t b = 0; b < rows.size(); b++) {
-		const auto *q = rows[b].q;
-		// Rows in a mixed batch are padded to the widest question: keep only
-		// this row's own markers (masked slots carry -1e4).
-		const std::vector<float> row_scores(scores[b].begin(), scores[b].begin() + (long)rows[b].c.markers.size());
-		DecideAnswer a;
-		a.id = q->id;
-		a.kind = q->kind;
-		a.model = entry.id;
-		// Calibration (laya): logits / T, T by (type, option count) bucket,
-		// falling back to the per-type temperature. julia-1: raw softmax.
-		double temp = 1.0;
-		if (laya) {
-			int qt = q->kind == "noul" ? 2 : (q->kind == "score" ? 1 : 0);
-			auto bucket = laya_cfg->temperature_by_options.find(LayaTempBucket(qt, row_scores.size()));
-			temp = bucket != laya_cfg->temperature_by_options.end() ? bucket->second : laya_cfg->temperature[qt];
-			if (!(temp > 0.0)) {
-				temp = 1.0;
-			}
-		}
-		double mx = -1e30;
-		for (auto s : row_scores) {
-			mx = std::max(mx, (double)s / temp);
-		}
-		double tot = 0.0;
-		std::vector<double> probs;
-		for (auto s : row_scores) {
-			probs.push_back(std::exp((double)s / temp - mx));
-			tot += probs.back();
-		}
-		if (q->kind == "noul") {
-			a.probability = probs.size() > 1 ? probs[1] / tot : 0.0;
-		} else {
-			size_t best = 0;
-			double expected = 0.0;
-			for (size_t i = 0; i < probs.size(); i++) {
-				if (probs[i] > probs[best]) {
-					best = i;
-				}
-				a.distribution.emplace_back(q->options[i], probs[i] / tot);
-				expected += (double)i * probs[i] / tot;
-			}
-			a.probability = probs[best] / tot;
-			if (q->kind == "score") {
-				// Expected level index over the rubric; the argmax level is not exposed as a choice.
-				a.expected = expected;
-			} else {
-				a.choice = q->options[best];
-			}
-		}
-		out.push_back(std::move(a));
+		out.push_back(BuildLocalAnswer(st, entry, rows[b], scores[b]));
 	}
 	return out;
+}
+
+void DecideLocalScoreMany(ClientContext &context, const DecideModelEntry &entry,
+                          const vector<DecideLocalRequest> &requests, int64_t batch_tokens, const char *function_name,
+                          vector<vector<DecideAnswer>> &answers, vector<std::exception_ptr> &errors) {
+	const string function = function_name;
+	answers.assign(requests.size(), {});
+	errors.assign(requests.size(), nullptr);
+	if (requests.empty()) {
+		return;
+	}
+	LocalSettings st;
+	try {
+		st = ResolveLocalSettings(context, entry, function);
+	} catch (...) {
+		errors[0] = std::current_exception();
+		return;
+	}
+	// Collate every request first, in input order: the first request that cannot be collated decides the error
+	// exactly as when requests ran one after another, and requests behind it are not started.
+	vector<vector<LocalRow>> collated(requests.size());
+	size_t limit = requests.size();
+	for (size_t r = 0; r < requests.size(); r++) {
+		try {
+			collated[r] = CollateQuestions(st, *requests[r].state, *requests[r].questions, function);
+		} catch (...) {
+			errors[r] = std::current_exception();
+			limit = r;
+			break;
+		}
+	}
+	struct Slot {
+		size_t request;
+		size_t question;
+		int64_t len;
+	};
+	vector<Slot> slots;
+	for (size_t r = 0; r < limit; r++) {
+		for (size_t q = 0; q < collated[r].size(); q++) {
+			slots.push_back({r, q, (int64_t)collated[r][q].c.ids.size()});
+		}
+	}
+	vector<vector<vector<float>>> scores(requests.size());
+	for (size_t r = 0; r < limit; r++) {
+		scores[r].resize(collated[r].size());
+	}
+	if (!slots.empty()) {
+		shared_ptr<DecideLocalSession> session;
+		try {
+			session = DecideLocalSession::Open(context, entry, function.c_str());
+		} catch (...) {
+			errors[slots.front().request] = std::current_exception();
+			return;
+		}
+		// Short rows share a batch with short rows: sort by length (stable, so equal lengths keep input order), then
+		// cut a new batch whenever one more row at the padded length of the longest would exceed the token budget.
+		// One row always fits, however long it is.
+		std::stable_sort(slots.begin(), slots.end(), [](const Slot &a, const Slot &b) { return a.len < b.len; });
+		size_t begin = 0;
+		while (begin < slots.size()) {
+			size_t end = begin + 1;
+			while (end < slots.size()) {
+				const int64_t padded = PaddedLength(slots[end].len, st.max_length);
+				if ((int64_t)(end - begin + 1) * padded > batch_tokens) {
+					break;
+				}
+				end++;
+			}
+			const int64_t T = PaddedLength(slots[end - 1].len, st.max_length);
+			vector<const LocalRow *> ptrs;
+			size_t first_request = slots[begin].request;
+			for (size_t i = begin; i < end; i++) {
+				ptrs.push_back(&collated[slots[i].request][slots[i].question]);
+				first_request = std::min(first_request, slots[i].request);
+			}
+			try {
+				auto batch_scores = session->Score(BuildLocalBatch(st, ptrs, T), function.c_str());
+				for (size_t i = begin; i < end; i++) {
+					scores[slots[i].request][slots[i].question] = std::move(batch_scores[i - begin]);
+				}
+			} catch (...) {
+				// A failed run belongs to the earliest request in it; every later error is moot.
+				errors[first_request] = std::current_exception();
+				return;
+			}
+			begin = end;
+		}
+	}
+	for (size_t r = 0; r < limit; r++) {
+		for (size_t q = 0; q < collated[r].size(); q++) {
+			answers[r].push_back(BuildLocalAnswer(st, entry, collated[r][q], scores[r][q]));
+		}
+	}
 }
 
 static const DecideTokenizer &TokenizerFor(ClientContext &context, const string &tokenizer_path, const string &id,

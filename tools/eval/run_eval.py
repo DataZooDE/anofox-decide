@@ -78,7 +78,7 @@ def models(env, kev_url, strands_url):
     }
 
 
-def run_model(name, spec, tickets, out, duckdb, ext, env, concurrency=None):
+def run_model(name, spec, tickets, out, duckdb, ext, env, concurrency=None, batch_tokens=None):
     display, register, model_id, keys = spec
     missing = [k for k in keys if not env.get(k)]
     if missing:
@@ -86,6 +86,8 @@ def run_model(name, spec, tickets, out, duckdb, ext, env, concurrency=None):
         return None
     res = out / f"results_{name}.csv"
     setting = f"SET anofox_decide_max_concurrency = {int(concurrency)};\n" if concurrency is not None else ""
+    if batch_tokens is not None:
+        setting += f"SET anofox_decide_batch_tokens = {int(batch_tokens)};\n"
     sql = f"""
 LOAD '{esc(str(ext))}';
 SET anofox_decide_allow_remote = true;
@@ -255,6 +257,8 @@ def main():
     ap.add_argument("--strands-url", default="http://127.0.0.1:8000")
     ap.add_argument("--concurrency", type=int, default=None,
                     help="anofox_decide_max_concurrency for hosted models (0 = automatic, the extension default)")
+    ap.add_argument("--batch-tokens", type=int, default=None,
+                    help="anofox_decide_batch_tokens for local models (0 = off, the extension default)")
     ap.add_argument("--analyse-only", action="store_true", help="skip scoring; reuse results_*.csv in --out")
     a = ap.parse_args()
     out = Path(a.out)
@@ -268,7 +272,7 @@ def main():
     times = {}
     if not a.analyse_only:
         for n in names:
-            t = run_model(n, specs[n], a.tickets, out, a.duckdb, a.extension, env, a.concurrency)
+            t = run_model(n, specs[n], a.tickets, out, a.duckdb, a.extension, env, a.concurrency, a.batch_tokens)
             if t is not None:
                 times[n] = t
     report, truth = analyse(a.tickets, out, names, {k: v[0] for k, v in specs.items()})

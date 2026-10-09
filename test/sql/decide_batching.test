@@ -1,0 +1,118 @@
+# name: test/sql/decide_batching.test
+# description: anofox_decide_batch_tokens scores the rows of a chunk together for local models. Off (0) is the
+#              default and scores one text at a time; on gives the same answers (padding is masked exactly), so a
+#              GPU can be fed large batches without changing results. Tiny fixture, random-init weights: the test
+#              compares the two modes with each other, never with specific values.
+# group: [anofox_decide]
+
+require anofox_decide
+
+statement ok
+LOAD anofox_decide
+
+query I
+SELECT decide_register_model('tiny-local', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json')
+----
+1
+
+# Off by default.
+query I
+SELECT current_setting('anofox_decide_batch_tokens')
+----
+0
+
+statement ok
+CREATE TABLE serial_answers AS
+SELECT id, unnest(decide_answers(text,
+    '[{"id":"refund","kind":"binary","instruction":"A refund is requested."},
+      {"id":"team","kind":"choice","instruction":"Owning team?","options":["billing","defect","other"]},
+      {"id":"urgency","kind":"score","instruction":"How urgent?","levels":["low","medium","high"]}]',
+    model := 'tiny-local'), recursive := true)
+FROM read_csv('test/fixtures/support_tickets.csv');
+
+# 8 tickets x 3 questions.
+query I
+SELECT count(*) FROM serial_answers
+----
+24
+
+statement ok
+SET anofox_decide_batch_tokens = 1024;
+
+statement ok
+CREATE TABLE batched_answers AS
+SELECT id, unnest(decide_answers(text,
+    '[{"id":"refund","kind":"binary","instruction":"A refund is requested."},
+      {"id":"team","kind":"choice","instruction":"Owning team?","options":["billing","defect","other"]},
+      {"id":"urgency","kind":"score","instruction":"How urgent?","levels":["low","medium","high"]}]',
+    model := 'tiny-local'), recursive := true)
+FROM read_csv('test/fixtures/support_tickets.csv');
+
+query I
+SELECT count(*) FROM batched_answers
+----
+24
+
+# The gap between the best and second-best option of an answer's distribution (NULL without a distribution).
+statement ok
+CREATE MACRO top2_gap(d) AS list_sort(map_values(d), 'DESC')[1] - list_sort(map_values(d), 'DESC')[2];
+
+# Diagnostic: lists every (ticket, question) that does not agree, with the numbers that say why (probability and
+# score differences, both choices and the serial top-two gap). Empty when everything agrees. The choice is compared
+# only where the serial top-two gap is above 1e-6: this fixture has random weights, so its options are tied to
+# within rounding (gaps of 0 to 1.4e-7) and a different GEMM rounding on another platform may break a tie the other way.
+query TTTTTTTTT
+SELECT CAST(s.id AS VARCHAR), s.question_id,
+       CAST(s.probability AS VARCHAR), CAST(b.probability AS VARCHAR), printf('%.3e', abs(s.probability - b.probability)),
+       s.choice, b.choice, printf('%.3e', abs(coalesce(s.score, 0) - coalesce(b.score, 0))),
+       printf('%.3e', top2_gap(s.distribution))
+FROM serial_answers s JOIN batched_answers b USING (id, question_id)
+WHERE NOT (abs(s.probability - b.probability) < 1e-5
+  AND (s.choice IS NOT DISTINCT FROM b.choice OR top2_gap(s.distribution) <= 1e-6)
+  AND abs(coalesce(s.score, 0) - coalesce(b.score, 0)) < 1e-5
+  AND (s.distribution IS NULL) = (b.distribution IS NULL))
+ORDER BY s.question_id, s.id
+----
+
+# Every (ticket, question) agrees: probabilities and scores within 1e-5, same distribution, same choice wherever
+# the options are not tied (see above).
+query I
+SELECT count(*) FROM serial_answers s JOIN batched_answers b USING (id, question_id)
+WHERE abs(s.probability - b.probability) < 1e-5
+  AND (s.choice IS NOT DISTINCT FROM b.choice OR top2_gap(s.distribution) <= 1e-6)
+  AND abs(coalesce(s.score, 0) - coalesce(b.score, 0)) < 1e-5
+  AND (s.distribution IS NULL) = (b.distribution IS NULL)
+----
+24
+
+# Back to one text at a time.
+statement ok
+SET anofox_decide_batch_tokens = 0;
+
+query I
+SELECT count(*) FROM serial_answers s JOIN (
+  SELECT id, unnest(decide_answers(text,
+      '[{"id":"refund","kind":"binary","instruction":"A refund is requested."},
+        {"id":"team","kind":"choice","instruction":"Owning team?","options":["billing","defect","other"]},
+        {"id":"urgency","kind":"score","instruction":"How urgent?","levels":["low","medium","high"]}]',
+      model := 'tiny-local'), recursive := true)
+  FROM read_csv('test/fixtures/support_tickets.csv')) again USING (id, question_id)
+WHERE s.probability = again.probability
+----
+24
+
+# Range: 0 (off) or 1024..131072.
+statement error
+SET anofox_decide_batch_tokens = 100;
+----
+<REGEX>:.*anofox_decide_batch_tokens: must be 0 \(off\) or between 1024 and 131072, got 100.*Fix: SET anofox_decide_batch_tokens = 16384;.*
+
+statement error
+SET anofox_decide_batch_tokens = 200000;
+----
+<REGEX>:.*anofox_decide_batch_tokens: must be 0 \(off\) or between 1024 and 131072, got 200000.*
+
+statement error
+SET anofox_decide_batch_tokens = NULL;
+----
+<REGEX>:.*anofox_decide_batch_tokens: the setting cannot be NULL.*

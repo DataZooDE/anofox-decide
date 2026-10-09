@@ -545,6 +545,15 @@ SELECT id, decide_token_count(body, model := 'julia-1') AS tokens FROM tickets O
 SET anofox_decide_on_truncate = 'ignore';  -- score the shortened text instead of failing
 ```
 
+**Batching rows.** By default a local model scores one text (with its questions) at a time.
+`SET anofox_decide_batch_tokens = 16384;` scores the rows of a whole chunk together instead: rows are sorted by
+length, padded to 128, 256, ... 8192 tokens (never above the model's window) and run in batches of at most that
+many padded tokens. Padding is masked exactly, so the answers are the same: on the 200-ticket evaluation with
+Laya multilingual the probabilities were identical to the last bit and no routing or refund decision changed.
+On CPU the effect on speed is small and inconsistent (200 tickets: 112 s and 122 s off, 98 s and 103 s at
+`16384`, 146 s at `4096`, on a machine under heavy load, so indicative only), which is why it is off. It exists
+to keep a GPU busy: with one row per call a GPU waits, with a batch it does not.
+
 See [`examples/05_local_model.sql`](examples/05_local_model.sql).
 
 ---
@@ -566,6 +575,7 @@ example.
 | `anofox_decide_cache_dir` | *(unset: `~/.cache/anofox-decide`)* | Where `decide_download` keeps the local models' weights |
 | `anofox_decide_max_length` | `8192` | Tokens a `julia-1` local model reads per question (Laya uses its own config) |
 | `anofox_decide_head_length` | `512` | Tokens reserved for the question and its options in local models |
+| `anofox_decide_batch_tokens` | `0` | Local models: score the rows of a whole chunk together, in batches of at most this many padded tokens (batch size times padded length; `1024` to `131072`). `0` scores one text at a time. Answers are the same either way (identical to the last bit on the 200-ticket evaluation); on CPU the effect on speed is small and inconsistent, it exists to feed GPUs ([Local models](#local-models)) |
 | `anofox_decide_on_truncate` | `error` | `error`: a local model refuses text, question or options that do not fit its window; `ignore`: score the shortened input |
 | `anofox_decide_api_key` | *(unset)* | Legacy key for the `typesafe` provider, kept in plain text; prefer `CREATE SECRET` or the env var |
 | `anofox_decide_endpoint` | `https://api.typesafe.ai` | Legacy endpoint for `typesafe`; other providers take a per-model `endpoint` |

@@ -10,6 +10,7 @@
 // mask tokens) and julia/typed.py question mapping: noul markers are the
 // [false, true] labels, choice markers are the options in order.
 
+#include <exception>
 #include "duckdb/common/common.hpp"
 
 #include <cstdint>
@@ -133,6 +134,23 @@ private:
 vector<DecideAnswer> DecideLocalScore(ClientContext &context, const DecideModelEntry &entry,
                                            const string &state, const vector<DecideQuestion> &questions,
                                            const char *function = "decide");
+
+// One text with its questions: the unit DecideLocalScore handles.
+struct DecideLocalRequest {
+	const string *state;
+	const vector<DecideQuestion> *questions;
+};
+
+// Scores many requests against one local model in as few ORT runs as the token budget allows: every
+// (text, question) row is collated exactly as DecideLocalScore does (so truncation behaves the same),
+// rows are sorted by length and cut into batches of at most `batch_tokens` padded tokens (batch size times
+// padded length; one row always fits), padded to the ladder 128..8192 (capped by the model window) and the
+// widest row's markers. Answers come back per request in question order. `errors[r]` holds the failure of
+// request r (the first one in input order is the one to throw; requests behind a collation failure are not
+// scored). Results match DecideLocalScore within float rounding, because padding is masked exactly.
+void DecideLocalScoreMany(ClientContext &context, const DecideModelEntry &entry,
+                          const vector<DecideLocalRequest> &requests, int64_t batch_tokens, const char *function,
+                          vector<vector<DecideAnswer>> &answers, vector<std::exception_ptr> &errors);
 
 } // namespace anofox
 } // namespace duckdb
