@@ -1,0 +1,228 @@
+# name: test/sql/decide_devices.test
+# description: GPU infrastructure surface that holds on every machine, with or without a GPU: decide_devices(),
+#              decide_backends(), the three GPU settings, the serving device in decide_models(), the GPU rows of
+#              decide_doctor(), and the platform refusals of decide_download_runtime(). Asserted structurally so it
+#              passes on a CPU-only CI runner, a GPU box with a plugin and a GPU box without one. The fake-plugin
+#              scenarios (a device that is "found", a plugin that is "installed") live in the Catch2 file
+#              test/cpp/test_decide_plugin.cpp.
+# group: [anofox_decide]
+
+require anofox_decide
+
+statement ok
+LOAD anofox_decide
+
+# --- decide_devices() ----------------------------------------------------------------------------------------
+
+# The cpu row always exists, is usable and has no VRAM semantics.
+query IIII
+SELECT device_id, backend, usable, vram_total IS NULL FROM decide_devices() WHERE device_id = 'cpu'
+----
+cpu	cpu	true	true
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM decide_devices())
+----
+device_id	VARCHAR
+backend	VARCHAR
+name	VARCHAR
+arch	VARCHAR
+vram_total	BIGINT
+vram_free	BIGINT
+driver	VARCHAR
+usable	BOOLEAN
+reason	VARCHAR
+
+# A device that is not usable says why; a usable one has no reason.
+query I
+SELECT count(*) FROM decide_devices() WHERE usable AND reason IS NOT NULL
+----
+0
+
+query I
+SELECT count(*) FROM decide_devices() WHERE NOT usable AND reason IS NULL
+----
+0
+
+# At most one cpu row; GPU rows carry an ordinal id of their backend.
+query I
+SELECT count(*) FROM decide_devices() WHERE device_id = 'cpu'
+----
+1
+
+query I
+SELECT count(*) FROM decide_devices() WHERE device_id <> 'cpu' AND device_id NOT SIMILAR TO '(cuda|rocm|mlx):[0-9]+'
+----
+0
+
+query I
+SELECT (SELECT count(*) FROM decide_devices()) = (SELECT count(*) FROM anofox_decide_devices())
+----
+true
+
+# --- the settings ---------------------------------------------------------------------------------------------
+
+query I
+SELECT current_setting('anofox_decide_device')
+----
+auto
+
+query I
+SELECT current_setting('anofox_decide_gpu_precision')
+----
+fp32
+
+query I
+SELECT current_setting('anofox_decide_plugin_dir')
+----
+(empty)
+
+statement error
+SET anofox_decide_device = 'gpu'
+----
+<REGEX>:.*anofox_decide_device: must be one of 'auto', 'cpu', 'cuda', 'rocm', 'mlx', got 'gpu'.*Fix: SET anofox_decide_device = 'auto';.*
+
+statement error
+SET anofox_decide_gpu_precision = 'bf16'
+----
+<REGEX>:.*anofox_decide_gpu_precision: 'bf16' is not available in this release.*Fix: SET anofox_decide_gpu_precision = 'fp32';.*
+
+statement error
+SET anofox_decide_gpu_precision = 'half'
+----
+<REGEX>:.*must be 'fp32', got 'half'.*
+
+statement ok
+SET anofox_decide_device = 'CPU'
+
+query I
+SELECT current_setting('anofox_decide_device')
+----
+cpu
+
+statement ok
+RESET anofox_decide_device
+
+# --- decide_backends() and the serving device: one predicate -------------------------------------------------------
+
+query I
+SELECT register FROM (SELECT decide_register_model('tiny-local', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json') AS register)
+----
+1
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM decide_backends())
+----
+model	VARCHAR
+device	VARCHAR
+supported	BOOLEAN
+reason	VARCHAR
+
+# Every local model has a cpu row, supported, with nothing to explain.
+query I
+SELECT count(*) FROM decide_backends() WHERE device = 'cpu' AND (supported IS DISTINCT FROM true OR reason IS NOT NULL)
+----
+0
+
+# The built-in catalog models and the registered local one are all listed; remote and test models are not.
+query I
+SELECT count(DISTINCT model) >= 4 FROM decide_backends()
+----
+true
+
+query I
+SELECT count(*) FROM decide_backends() WHERE model = 'stub'
+----
+0
+
+# A model registered with its own graph can only run on the CPU: every GPU row says so (or that the device is unusable).
+query I
+SELECT count(*) FROM decide_backends() WHERE model = 'tiny-local' AND device <> 'cpu' AND supported
+----
+0
+
+# A device that is not supported always explains itself.
+query I
+SELECT count(*) FROM decide_backends() WHERE supported IS NOT DISTINCT FROM false AND reason IS NULL
+----
+0
+
+# decide_models() reports the device a local model is scored on: the CPU for a ready local model.
+query I
+SELECT device FROM decide_models() WHERE model = 'tiny-local'
+----
+cpu
+
+# ... nothing for the test model, and nothing for a catalog model that is not downloaded.
+query I
+SELECT count(*) FROM decide_models() WHERE model = 'stub' AND device IS NOT NULL
+----
+0
+
+# The invariant: auto never names a device decide_backends() calls unsupported.
+query I
+SELECT count(*) FROM decide_models() m
+WHERE m.device IS NOT NULL AND m.device <> 'cpu'
+  AND NOT EXISTS (SELECT 1 FROM decide_backends() b WHERE b.model = m.model AND b.device = m.device AND b.supported)
+----
+0
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT device FROM decide_models())
+----
+device	VARCHAR
+
+# Default behaviour is unchanged: a local model scores on the CPU and says so.
+query I
+SELECT (p >= 0.0 AND p <= 1.0)::INTEGER FROM (
+  SELECT decide_probability('The bill is wrong.', 'A refund is requested.', model := 'tiny-local') AS p
+)
+----
+1
+
+# An explicit device that cannot serve the model is a hard error with the fix, never a silent CPU run.
+statement ok
+SET anofox_decide_device = 'rocm'
+
+statement error
+SELECT decide_probability('The bill is wrong.', 'A refund is requested.', model := 'tiny-local')
+----
+<REGEX>:.*decide_probability: anofox_decide_device is 'rocm' but .*(CALL decide_accelerate\(\)|own graph).*
+
+statement ok
+SET anofox_decide_device = 'cpu'
+
+query I
+SELECT (p >= 0.0 AND p <= 1.0)::INTEGER FROM (
+  SELECT decide_probability('The bill is wrong.', 'A refund is requested.', model := 'tiny-local') AS p
+)
+----
+1
+
+statement ok
+RESET anofox_decide_device
+
+# --- decide_doctor() ------------------------------------------------------------------------------------------------
+
+# The GPU device row is always there and never "fail" with the default setting.
+query I
+SELECT count(*) FROM decide_doctor() WHERE item = 'gpu device' AND status IN ('ok', 'warn')
+----
+1
+
+query I
+SELECT count(*) FROM decide_doctor() WHERE item LIKE 'gpu plugin%' AND status = 'fail'
+----
+0
+
+# --- decide_download_runtime / decide_accelerate ---------------------------------------------------------------------
+
+statement error
+CALL decide_download_runtime('vulkan')
+----
+<REGEX>:.*decide_download_runtime: unknown backend 'vulkan'.*Fix: use 'cuda', 'rocm' or 'mlx'.*
+
+statement error
+CALL decide_download_runtime(NULL)
+----
+<REGEX>:.*decide_download_runtime: the backend is NULL.*

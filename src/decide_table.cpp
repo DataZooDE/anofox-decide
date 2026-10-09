@@ -9,12 +9,15 @@
 #include "decide_remote.hpp"
 #include "decide_local_nli.hpp"
 #include "decide_catalog.hpp"
+#include "decide_devices.hpp"
+#include "decide_plugin_artifacts.hpp"
 
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/execution/execution_context.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 namespace duckdb {
@@ -28,6 +31,7 @@ struct DecideModelsData : public TableFunctionData {
 struct DecideModelsGlobalState : public GlobalTableFunctionState {
 	vector<DecideModelEntry> rows;
 	vector<DecideModelStatus> status;
+	vector<Value> device; // the serving device of each local model (NULL when it has none or cannot be resolved)
 	string default_model;
 	idx_t offset = 0;
 };
@@ -60,6 +64,11 @@ unique_ptr<FunctionData> DecideModelsBind(ClientContext &context, TableFunctionB
 	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("calibration");
 	return_types.emplace_back(LogicalType::VARCHAR);
+	// The device a local model is scored on right now ("cpu", "cuda:0", ...), from anofox_decide_device, the
+	// hardware and the installed plugins; NULL for remote and test models, and for a local model that is not
+	// ready or whose explicit device cannot serve it (decide_doctor() says why).
+	names.emplace_back("device");
+	return_types.emplace_back(LogicalType::VARCHAR);
 	return make_uniq<DecideModelsData>();
 }
 
@@ -84,6 +93,14 @@ unique_ptr<GlobalTableFunctionState> DecideModelsInitGlobal(ClientContext &conte
 	gstate->default_model = DecideDefaultModel(context);
 	for (auto &row : gstate->rows) {
 		gstate->status.push_back(DecideDescribeModel(context, row));
+		Value device(LogicalType::VARCHAR);
+		if (row.provider == "local" && gstate->status.back().ready) {
+			auto choice = DecideResolveDevice(context, row, "decide_models", false);
+			if (choice.ok) {
+				device = Value(choice.device_id);
+			}
+		}
+		gstate->device.push_back(std::move(device));
 	}
 	return gstate;
 }
@@ -112,6 +129,7 @@ void DecideModelsScan(ClientContext &context, TableFunctionInput &data, DataChun
 		output.SetValue(10, row_count,
 		                row.calibration.set ? Value(DecideFormatPlatt(row.calibration.a, row.calibration.b))
 		                                    : Value(LogicalType::VARCHAR));
+		output.SetValue(11, row_count, gstate.device[gstate.offset]);
 		gstate.offset++;
 		row_count++;
 	}
@@ -220,6 +238,75 @@ unique_ptr<GlobalTableFunctionState> DecideDoctorInitGlobal(ClientContext &conte
 			auto status = DecideDescribeModel(context, e);
 			if (!status.ready) {
 				rows.push_back({"local model '" + e.id + "'", "warn", status.detail, status.fix});
+			}
+		}
+	}
+
+	// 4c. The GPU: what was found, whether the setting can be honoured, and whether the plugin is in place.
+	{
+		const auto setting = DecideDeviceSetting(context);
+		const auto devices = DecideDiscoverDevices();
+		const auto plugin_dir = DecidePluginDir(context);
+		string found;
+		bool any_usable = false;
+		for (auto &d : devices) {
+			if (DecideBackendOfDeviceId(d.device_id) == "cpu") {
+				continue;
+			}
+			found += (found.empty() ? "" : ", ") + d.device_id + " " + d.name + (d.usable ? "" : " (not usable: " + d.reason + ")");
+			any_usable = any_usable || d.usable;
+		}
+		if (found.empty()) {
+			if (setting == "auto" || setting == "cpu") {
+				rows.push_back({"gpu device", "ok", "no GPU found; local models run on the CPU (anofox_decide_device = '" + setting + "')", ""});
+			} else {
+				rows.push_back({"gpu device", "fail", "anofox_decide_device is '" + setting + "' but no GPU was found on this machine",
+				                "SET anofox_decide_device = 'auto'; or run CALL decide_accelerate(); for what this machine can use"});
+			}
+		} else {
+			bool wanted_found = setting == "auto" || setting == "cpu";
+			for (auto &d : devices) {
+				wanted_found = wanted_found || (DecideBackendOfDeviceId(d.device_id) == setting && d.usable);
+			}
+			if (!wanted_found) {
+				rows.push_back({"gpu device", "fail",
+				                "anofox_decide_device is '" + setting + "' but no usable '" + setting + "' device exists (found " + found + ")",
+				                "SELECT * FROM decide_devices(); shows why, or SET anofox_decide_device = 'auto';"});
+			} else {
+				rows.push_back({"gpu device", any_usable ? "ok" : "warn", "found " + found + " (anofox_decide_device = '" + setting + "')",
+				                ""});
+			}
+		}
+		// The plugin of every usable GPU family.
+		vector<string> families;
+		for (auto &d : devices) {
+			const auto family = DecideBackendOfDeviceId(d.device_id);
+			if (d.usable && family != "cpu" && std::find(families.begin(), families.end(), family) == families.end()) {
+				families.push_back(family);
+			}
+		}
+		if (families.empty()) {
+			rows.push_back({"gpu plugin", "ok", "not needed: no usable GPU was found", ""});
+		}
+		for (auto &family : families) {
+			const auto path = plugin_dir.empty() ? string() : DecidePluginPath(plugin_dir, family);
+			auto state = path.empty() ? DecidePluginState() : DecideProbePlugin(path);
+			if (state.exists && state.loadable) {
+				rows.push_back({"gpu plugin '" + family + "'", "ok", path + " loads and matches this build's plugin ABI", ""});
+			} else if (state.exists) {
+				rows.push_back({"gpu plugin '" + family + "'", "fail", path + " cannot be used: " + state.problem,
+				                "CALL decide_accelerate();"});
+			} else if (!DecideUnsupportedPluginPlatform(family, DecideHostPluginOs(), DecideHostPluginArch()).empty()) {
+				rows.push_back({"gpu plugin '" + family + "'", "warn",
+				                "no '" + family + "' plugin is published for " + DecideHostPluginOs() + "/" +
+				                    (DecideHostPluginArch().empty() ? string("unknown") : DecideHostPluginArch()) +
+				                    ": local models run on the CPU",
+				                "SET anofox_decide_device = 'auto'; (the CPU serves everything)"});
+			} else {
+				rows.push_back({"gpu plugin '" + family + "'", "warn",
+				                "not installed (" + (plugin_dir.empty() ? string("no plugin directory") : plugin_dir) +
+				                    "): local models run on the CPU",
+				                "CALL decide_accelerate();"});
 			}
 		}
 	}

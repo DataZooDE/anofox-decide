@@ -2,9 +2,12 @@
 
 #include "decide_local_nli.hpp"
 #include "decide_bundled_resources.hpp"
+#include "decide_catalog.hpp"
+#include "decide_devices.hpp"
 #include "decide_errors.hpp"
 #include "decide_local_weights.hpp"
 #include "decide_ort_errors.hpp"
+#include "decide_plugin_loader.hpp"
 #include "decide_provider.hpp"
 #include "decide_remote.hpp" // DecideQuestion/DecideAnswer (provider-neutral structs)
 #include "decide_tokenizer.hpp"
@@ -18,6 +21,7 @@
 #include "duckdb/common/file_system.hpp"
 
 #include <cmath>
+#include <filesystem>
 #include <map>
 #include <mutex>
 
@@ -187,7 +191,19 @@ struct DecideLocalSession::Impl {
 	unique_ptr<DecideLoadedWeights> weights; // catalog models: the downloaded safetensors, upcast to float32
 	vector<Ort::Value> injected;
 	Ort::Session session {nullptr};
+	// GPU sessions: the plugin backend scores instead of `session`; it holds its own weights on the device.
+	unique_ptr<DecidePluginSession> plugin;
 };
+
+namespace {
+
+// The session cache is keyed by what the session runs on: the CPU session of a graph is not the CUDA session
+// of the same graph, and a different precision is a different session.
+string SessionKey(const string &base, const DecideDeviceChoice &device, const string &precision) {
+	return device.backend == "cpu" ? base + "@cpu" : base + "@" + device.device_id + "/" + precision;
+}
+
+} // namespace
 
 shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, const string &graph_path,
                                                         const char *function_name) {
@@ -199,7 +215,8 @@ shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, 
 	}
 	auto cache = LocalCache(context);
 	std::lock_guard<std::mutex> guard(cache->lock);
-	auto it = cache->sessions.find(graph_path);
+	const string key = SessionKey(graph_path, DecideDeviceChoice(), "fp32");
+	auto it = cache->sessions.find(key);
 	if (it != cache->sessions.end()) {
 		return it->second;
 	}
@@ -224,17 +241,23 @@ shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, 
 	// Contract check: the Julia scores graph takes exactly our 5 inputs; name the difference.
 	DecideRequireGraphInputs(input_names, {"input_ids", "attention_mask", "marker_pos", "marker_mask", "qtype"},
 	                         function, graph_path);
-	cache->sessions[graph_path] = handle;
+	cache->sessions[key] = handle;
 	return handle;
 }
 
 shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, const DecideModelEntry &entry,
                                                         const char *function_name) {
 	const string function = function_name;
+	// Where this call runs: anofox_decide_device, the discovered hardware and the installed plugins. An explicit
+	// device that cannot serve the model throws here, with the fix; a model registered with its own graph can
+	// only run on the CPU (the check is the shared servability predicate).
+	const auto device = DecideResolveDevice(context, entry, function.c_str());
 	if (entry.bundled_graph.empty()) {
 		return Open(context, entry.graph_path, function.c_str());
 	}
-	const string key = "weights:" + entry.bundled_graph + "|" + entry.weights_path;
+	const string precision = DecideGpuPrecision(context);
+	const string base = "weights:" + entry.bundled_graph + "|" + entry.weights_path;
+	const string key = SessionKey(base, device, precision);
 	auto cache = LocalCache(context);
 	std::lock_guard<std::mutex> guard(cache->lock);
 	auto it = cache->sessions.find(key);
@@ -255,9 +278,31 @@ shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, 
 	} catch (const std::exception &) {
 		// not openable: DecideLoadWeights reports it with the right fix
 	}
+	if (device.backend != "cpu") {
+		// GPU: the plugin gets the staged weight-free graph, the tensor map and the PATH of the safetensors file,
+		// maps and uploads the weights itself. No host float32 arena exists for this session.
+		const auto staged = DecideStageGraph(context, entry, function.c_str());
+		const auto cache_dir = (std::filesystem::path(DecideCacheDir(context, function.c_str())) / "gpu-cache").string();
+		std::error_code ec;
+		std::filesystem::create_directories(cache_dir, ec);
+		DecidePluginCreateParams params {};
+		params.graph_path = staged.graph_path.c_str();
+		params.safetensors_path = entry.weights_path.c_str();
+		params.tensor_map_path = staged.tensor_map_path.c_str();
+		params.cache_dir = cache_dir.c_str();
+		params.arch = device.arch.c_str();
+		params.precision = precision.c_str();
+		params.device_ordinal = device.ordinal;
+		auto handle = shared_ptr<DecideLocalSession>(new DecideLocalSession(base));
+		handle->impl = make_shared_ptr<Impl>();
+		handle->impl->plugin = DecideLoadPlugin(DecidePluginPath(DecidePluginDir(context), device.backend), params,
+		                                        function);
+		cache->sessions[key] = handle;
+		return handle;
+	}
 	auto map = DecideParseTensorMap(map_resource.data, map_resource.size,
 	                                entry.bundled_map);
-	auto handle = shared_ptr<DecideLocalSession>(new DecideLocalSession(key));
+	auto handle = shared_ptr<DecideLocalSession>(new DecideLocalSession(base));
 	handle->impl = make_shared_ptr<Impl>();
 	auto &im = *handle->impl;
 	im.weights = DecideLoadWeights(map, entry.weights_path, entry.id, function.c_str());
@@ -295,6 +340,9 @@ vector<vector<float>> DecideLocalSession::Score(const DecideLocalBatch &batch, c
 	if (batch.batch <= 0 || batch.seq <= 0 || batch.markers <= 0) {
 		throw InvalidInputException(DecideMsg(function, "refusing an empty batch for the local model",
 		                                      "pass at least one question and a text"));
+	}
+	if (impl->plugin) {
+		return impl->plugin->Run(batch, function);
 	}
 	auto &im = impl->mem;
 	std::vector<int64_t> shape_bm {batch.batch, batch.markers};

@@ -7,6 +7,20 @@ All notable changes to `anofox_decide` are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **GPU infrastructure (no backend yet).** The extension stays one CPU-only file; a GPU backend will be a plugin it
+  loads behind one C interface (`decide_plugin_abi.h`, ABI version 1). This release adds everything around the
+  plugins, so each backend lands as a library without touching the extension: the loader (ABI checked before the
+  library is used, `RTLD_DEEPBIND` on Linux, never unloaded), device discovery (NVML, the KFD topology with the
+  MIGraphX architecture list, the Apple SoC), `decide_devices()`, `decide_backends()` (one servability predicate
+  shared with device selection), `decide_accelerate()` and `decide_download_runtime('cuda' | 'rocm' | 'mlx')`
+  (platform refusals before any download, sha256 sidecar verification on download and on every cached hit, the
+  pinned CUDA runtime with its SONAME rename), and the settings `anofox_decide_device` (`auto` by default, which
+  uses a GPU only when its plugin is installed, the device is usable and the plugin serves the model; explicit
+  devices that cannot serve a model are hard errors naming `CALL decide_accelerate()`),
+  `anofox_decide_gpu_precision` (`fp32` only; other values are rejected) and `anofox_decide_plugin_dir`.
+  `decide_models()` gained a `device` column and `decide_doctor()` rows for the GPU and its plugin. The session
+  cache is keyed by device and precision. No plugin is published yet, so nothing changes: local models score on
+  the CPU exactly as before.
 - **`anofox_decide_batch_tokens`** (default `0` = off): local models score the rows of a whole chunk together,
   in batches of at most this many padded tokens (batch size times padded length, `1024` to `131072`; one row
   always fits). Rows are collated exactly as before (so truncation behaves the same), sorted by length, padded
