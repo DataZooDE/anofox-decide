@@ -286,6 +286,10 @@ static string Sha256File(const string &path) {
 	return out;
 }
 
+string DecideSha256FileHex(const string &path) {
+	return Sha256File(path);
+}
+
 //--- decide_download -----------------------------------------------------------
 
 namespace {

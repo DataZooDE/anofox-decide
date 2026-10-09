@@ -67,6 +67,8 @@ bool DecideCatalogDirCached(const string &model_dir, const DecideCatalogEntry &e
 DecideModelEntry DecideCatalogModelEntry(const string &cache_dir, const DecideCatalogEntry &entry);
 //! "<function>: model 'x' is not downloaded. Fix: CALL decide_download('x');"
 string DecideCatalogNotDownloadedMessage(const string &function, const DecideCatalogEntry &entry);
+//! Lower-case hex sha256 of a file (also used to verify the GPU plugins). Throws IOException when unreadable.
+string DecideSha256FileHex(const string &path);
 //! "644 MB" / "1.2 GB"
 string DecideFormatBytes(idx_t bytes);
 
