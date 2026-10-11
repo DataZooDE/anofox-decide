@@ -187,6 +187,674 @@
  "outputs": [
   "scores"
  ],
+ "pack": {
+  "alignment": 64,
+  "initializers": {
+   "encoder.embeddings.norm.weight": {
+    "length": 1536,
+    "offset": 0
+   },
+   "encoder.embeddings.tok_embeddings.weight": {
+    "length": 393216000,
+    "offset": 1536
+   },
+   "encoder.final_norm.weight": {
+    "length": 1536,
+    "offset": 393217536
+   },
+   "encoder.layers.0.attn.Wo.weight": {
+    "length": 589824,
+    "offset": 393219072
+   },
+   "encoder.layers.0.attn.Wqkv.weight": {
+    "length": 1769472,
+    "offset": 393808896
+   },
+   "encoder.layers.0.mlp.Wi.weight": {
+    "length": 3538944,
+    "offset": 395578368
+   },
+   "encoder.layers.0.mlp.Wo.weight": {
+    "length": 1769472,
+    "offset": 399117312
+   },
+   "encoder.layers.0.mlp_norm.weight": {
+    "length": 1536,
+    "offset": 400886784
+   },
+   "encoder.layers.1.attn.Wo.weight": {
+    "length": 589824,
+    "offset": 400888320
+   },
+   "encoder.layers.1.attn.Wqkv.weight": {
+    "length": 1769472,
+    "offset": 401478144
+   },
+   "encoder.layers.1.attn_norm.weight": {
+    "length": 1536,
+    "offset": 403247616
+   },
+   "encoder.layers.1.mlp.Wi.weight": {
+    "length": 3538944,
+    "offset": 403249152
+   },
+   "encoder.layers.1.mlp.Wo.weight": {
+    "length": 1769472,
+    "offset": 406788096
+   },
+   "encoder.layers.1.mlp_norm.weight": {
+    "length": 1536,
+    "offset": 408557568
+   },
+   "encoder.layers.10.attn.Wo.weight": {
+    "length": 589824,
+    "offset": 408559104
+   },
+   "encoder.layers.10.attn.Wqkv.weight": {
+    "length": 1769472,
+    "offset": 409148928
+   },
+   "encoder.layers.10.attn_norm.weight": {
+    "length": 1536,
+    "offset": 410918400
+   },
+   "encoder.layers.10.mlp.Wi.weight": {
+    "length": 3538944,
+    "offset": 410919936
+   },
+   "encoder.layers.10.mlp.Wo.weight": {
+    "length": 1769472,
+    "offset": 414458880
+   },
+   "encoder.layers.10.mlp_norm.weight": {
+    "length": 1536,
+    "offset": 416228352
+   },
+   "encoder.layers.11.attn.Wo.weight": {
+    "length": 589824,
+    "offset": 416229888
+   },
+   "encoder.layers.11.attn.Wqkv.weight": {
+    "length": 1769472,
+    "offset": 416819712
+   },
+   "encoder.layers.11.attn_norm.weight": {
+    "length": 1536,
+    "offset": 418589184
+   },
+   "encoder.layers.11.mlp.Wi.weight": {
+    "length": 3538944,
+    "offset": 418590720
+   },
+   "encoder.layers.11.mlp.Wo.weight": {
+    "length": 1769472,
+    "offset": 422129664
+   },
+   "encoder.layers.11.mlp_norm.weight": {
+    "length": 1536,
+    "offset": 423899136
+   },
+   "encoder.layers.12.attn.Wo.weight": {
+    "length": 589824,
+    "offset": 423900672
+   },
+   "encoder.layers.12.attn.Wqkv.weight": {
+    "length": 1769472,
+    "offset": 424490496
+   },
+   "encoder.layers.12.attn_norm.weight": {
+    "length": 1536,
+    "offset": 426259968
+   },
+   "encoder.layers.12.mlp.Wi.weight": {
+    "length": 3538944,
+    "offset": 426261504
+   },
+   "encoder.layers.12.mlp.Wo.weight": {
+    "length": 1769472,
+    "offset": 429800448
+   },
+   "encoder.layers.12.mlp_norm.weight": {
+    "length": 1536,
+    "offset": 431569920
+   },
+   "encoder.layers.13.attn.Wo.weight": {
+    "length": 589824,
+    "offset": 431571456
+   },
+   "encoder.layers.13.attn.Wqkv.weight": {
+    "length": 1769472,
+    "offset": 432161280
+   },
+   "encoder.layers.13.attn_norm.weight": {
+    "length": 1536,
+    "offset": 433930752
+   },
+   "encoder.layers.13.mlp.Wi.weight": {
+    "length": 3538944,
+    "offset": 433932288
+   },
+   "encoder.layers.13.mlp.Wo.weight": {
+    "length": 1769472,
+    "offset": 437471232
+   },
+   "encoder.layers.13.mlp_norm.weight": {
+    "length": 1536,
+    "offset": 439240704
+   },
+   "encoder.layers.14.attn.Wo.weight": {
+    "length": 589824,
+    "offset": 439242240
+   },
+   "encoder.layers.14.attn.Wqkv.weight": {
+    "length": 1769472,
+    "offset": 439832064
+   },
+   "encoder.layers.14.attn_norm.weight": {
+    "length": 1536,
+    "offset": 441601536
+   },
+   "encoder.layers.14.mlp.Wi.weight": {
+    "length": 3538944,
+    "offset": 441603072
+   },
+   "encoder.layers.14.mlp.Wo.weight": {
+    "length": 1769472,
+    "offset": 445142016
+   },
+   "encoder.layers.14.mlp_norm.weight": {
+    "length": 1536,
+    "offset": 446911488
+   },
+   "encoder.layers.15.attn.Wo.weight": {
+    "length": 589824,
+    "offset": 446913024
+   },
+   "encoder.layers.15.attn.Wqkv.weight": {
+    "length": 1769472,
+    "offset": 447502848
+   },
+   "encoder.layers.15.attn_norm.weight": {
+    "length": 1536,
+    "offset": 449272320
+   },
+   "encoder.layers.15.mlp.Wi.weight": {
+    "length": 3538944,
+    "offset": 449273856
+   },
+   "encoder.layers.15.mlp.Wo.weight": {
+    "length": 1769472,
+    "offset": 452812800
+   },
+   "encoder.layers.15.mlp_norm.weight": {
+    "length": 1536,
+    "offset": 454582272
+   },
+   "encoder.layers.16.attn.Wo.weight": {
+    "length": 589824,
+    "offset": 454583808
+   },
+   "encoder.layers.16.attn.Wqkv.weight": {
+    "length": 1769472,
+    "offset": 455173632
+   },
+   "encoder.layers.16.attn_norm.weight": {
+    "length": 1536,
+    "offset": 456943104
+   },
+   "encoder.layers.16.mlp.Wi.weight": {
+    "length": 3538944,
+    "offset": 456944640
+   },
+   "encoder.layers.16.mlp.Wo.weight": {
+    "length": 1769472,
+    "offset": 460483584
+   },
+   "encoder.layers.16.mlp_norm.weight": {
+    "length": 1536,
+    "offset": 462253056
+   },
+   "encoder.layers.17.attn.Wo.weight": {
+    "length": 589824,
+    "offset": 462254592
+   },
+   "encoder.layers.17.attn.Wqkv.weight": {
+    "length": 1769472,
+    "offset": 462844416
+   },
+   "encoder.layers.17.attn_norm.weight": {
+    "length": 1536,
+    "offset": 464613888
+   },
+   "encoder.layers.17.mlp.Wi.weight": {
+    "length": 3538944,
+    "offset": 464615424
+   },
+   "encoder.layers.17.mlp.Wo.weight": {
+    "length": 1769472,
+    "offset": 468154368
+   },
+   "encoder.layers.17.mlp_norm.weight": {
+    "length": 1536,
+    "offset": 469923840
+   },
+   "encoder.layers.18.attn.Wo.weight": {
+    "length": 589824,
+    "offset": 469925376
+   },
+   "encoder.layers.18.attn.Wqkv.weight": {
+    "length": 1769472,
+    "offset": 470515200
+   },
+   "encoder.layers.18.attn_norm.weight": {
+    "length": 1536,
+    "offset": 472284672
+   },
+   "encoder.layers.18.mlp.Wi.weight": {
+    "length": 3538944,
+    "offset": 472286208
+   },
+   "encoder.layers.18.mlp.Wo.weight": {
+    "length": 1769472,
+    "offset": 475825152
+   },
+   "encoder.layers.18.mlp_norm.weight": {
+    "length": 1536,
+    "offset": 477594624
+   },
+   "encoder.layers.19.attn.Wo.weight": {
+    "length": 589824,
+    "offset": 477596160
+   },
+   "encoder.layers.19.attn.Wqkv.weight": {
+    "length": 1769472,
+    "offset": 478185984
+   },
+   "encoder.layers.19.attn_norm.weight": {
+    "length": 1536,
+    "offset": 479955456
+   },
+   "encoder.layers.19.mlp.Wi.weight": {
+    "length": 3538944,
+    "offset": 479956992
+   },
+   "encoder.layers.19.mlp.Wo.weight": {
+    "length": 1769472,
+    "offset": 483495936
+   },
+   "encoder.layers.19.mlp_norm.weight": {
+    "length": 1536,
+    "offset": 485265408
+   },
+   "encoder.layers.2.attn.Wo.weight": {
+    "length": 589824,
+    "offset": 485266944
+   },
+   "encoder.layers.2.attn.Wqkv.weight": {
+    "length": 1769472,
+    "offset": 485856768
+   },
+   "encoder.layers.2.attn_norm.weight": {
+    "length": 1536,
+    "offset": 487626240
+   },
+   "encoder.layers.2.mlp.Wi.weight": {
+    "length": 3538944,
+    "offset": 487627776
+   },
+   "encoder.layers.2.mlp.Wo.weight": {
+    "length": 1769472,
+    "offset": 491166720
+   },
+   "encoder.layers.2.mlp_norm.weight": {
+    "length": 1536,
+    "offset": 492936192
+   },
+   "encoder.layers.20.attn.Wo.weight": {
+    "length": 589824,
+    "offset": 492937728
+   },
+   "encoder.layers.20.attn.Wqkv.weight": {
+    "length": 1769472,
+    "offset": 493527552
+   },
+   "encoder.layers.20.attn_norm.weight": {
+    "length": 1536,
+    "offset": 495297024
+   },
+   "encoder.layers.20.mlp.Wi.weight": {
+    "length": 3538944,
+    "offset": 495298560
+   },
+   "encoder.layers.20.mlp.Wo.weight": {
+    "length": 1769472,
+    "offset": 498837504
+   },
+   "encoder.layers.20.mlp_norm.weight": {
+    "length": 1536,
+    "offset": 500606976
+   },
+   "encoder.layers.21.attn.Wo.weight": {
+    "length": 589824,
+    "offset": 500608512
+   },
+   "encoder.layers.21.attn.Wqkv.weight": {
+    "length": 1769472,
+    "offset": 501198336
+   },
+   "encoder.layers.21.attn_norm.weight": {
+    "length": 1536,
+    "offset": 502967808
+   },
+   "encoder.layers.21.mlp.Wi.weight": {
+    "length": 3538944,
+    "offset": 502969344
+   },
+   "encoder.layers.21.mlp.Wo.weight": {
+    "length": 1769472,
+    "offset": 506508288
+   },
+   "encoder.layers.21.mlp_norm.weight": {
+    "length": 1536,
+    "offset": 508277760
+   },
+   "encoder.layers.3.attn.Wo.weight": {
+    "length": 589824,
+    "offset": 508279296
+   },
+   "encoder.layers.3.attn.Wqkv.weight": {
+    "length": 1769472,
+    "offset": 508869120
+   },
+   "encoder.layers.3.attn_norm.weight": {
+    "length": 1536,
+    "offset": 510638592
+   },
+   "encoder.layers.3.mlp.Wi.weight": {
+    "length": 3538944,
+    "offset": 510640128
+   },
+   "encoder.layers.3.mlp.Wo.weight": {
+    "length": 1769472,
+    "offset": 514179072
+   },
+   "encoder.layers.3.mlp_norm.weight": {
+    "length": 1536,
+    "offset": 515948544
+   },
+   "encoder.layers.4.attn.Wo.weight": {
+    "length": 589824,
+    "offset": 515950080
+   },
+   "encoder.layers.4.attn.Wqkv.weight": {
+    "length": 1769472,
+    "offset": 516539904
+   },
+   "encoder.layers.4.attn_norm.weight": {
+    "length": 1536,
+    "offset": 518309376
+   },
+   "encoder.layers.4.mlp.Wi.weight": {
+    "length": 3538944,
+    "offset": 518310912
+   },
+   "encoder.layers.4.mlp.Wo.weight": {
+    "length": 1769472,
+    "offset": 521849856
+   },
+   "encoder.layers.4.mlp_norm.weight": {
+    "length": 1536,
+    "offset": 523619328
+   },
+   "encoder.layers.5.attn.Wo.weight": {
+    "length": 589824,
+    "offset": 523620864
+   },
+   "encoder.layers.5.attn.Wqkv.weight": {
+    "length": 1769472,
+    "offset": 524210688
+   },
+   "encoder.layers.5.attn_norm.weight": {
+    "length": 1536,
+    "offset": 525980160
+   },
+   "encoder.layers.5.mlp.Wi.weight": {
+    "length": 3538944,
+    "offset": 525981696
+   },
+   "encoder.layers.5.mlp.Wo.weight": {
+    "length": 1769472,
+    "offset": 529520640
+   },
+   "encoder.layers.5.mlp_norm.weight": {
+    "length": 1536,
+    "offset": 531290112
+   },
+   "encoder.layers.6.attn.Wo.weight": {
+    "length": 589824,
+    "offset": 531291648
+   },
+   "encoder.layers.6.attn.Wqkv.weight": {
+    "length": 1769472,
+    "offset": 531881472
+   },
+   "encoder.layers.6.attn_norm.weight": {
+    "length": 1536,
+    "offset": 533650944
+   },
+   "encoder.layers.6.mlp.Wi.weight": {
+    "length": 3538944,
+    "offset": 533652480
+   },
+   "encoder.layers.6.mlp.Wo.weight": {
+    "length": 1769472,
+    "offset": 537191424
+   },
+   "encoder.layers.6.mlp_norm.weight": {
+    "length": 1536,
+    "offset": 538960896
+   },
+   "encoder.layers.7.attn.Wo.weight": {
+    "length": 589824,
+    "offset": 538962432
+   },
+   "encoder.layers.7.attn.Wqkv.weight": {
+    "length": 1769472,
+    "offset": 539552256
+   },
+   "encoder.layers.7.attn_norm.weight": {
+    "length": 1536,
+    "offset": 541321728
+   },
+   "encoder.layers.7.mlp.Wi.weight": {
+    "length": 3538944,
+    "offset": 541323264
+   },
+   "encoder.layers.7.mlp.Wo.weight": {
+    "length": 1769472,
+    "offset": 544862208
+   },
+   "encoder.layers.7.mlp_norm.weight": {
+    "length": 1536,
+    "offset": 546631680
+   },
+   "encoder.layers.8.attn.Wo.weight": {
+    "length": 589824,
+    "offset": 546633216
+   },
+   "encoder.layers.8.attn.Wqkv.weight": {
+    "length": 1769472,
+    "offset": 547223040
+   },
+   "encoder.layers.8.attn_norm.weight": {
+    "length": 1536,
+    "offset": 548992512
+   },
+   "encoder.layers.8.mlp.Wi.weight": {
+    "length": 3538944,
+    "offset": 548994048
+   },
+   "encoder.layers.8.mlp.Wo.weight": {
+    "length": 1769472,
+    "offset": 552532992
+   },
+   "encoder.layers.8.mlp_norm.weight": {
+    "length": 1536,
+    "offset": 554302464
+   },
+   "encoder.layers.9.attn.Wo.weight": {
+    "length": 589824,
+    "offset": 554304000
+   },
+   "encoder.layers.9.attn.Wqkv.weight": {
+    "length": 1769472,
+    "offset": 554893824
+   },
+   "encoder.layers.9.attn_norm.weight": {
+    "length": 1536,
+    "offset": 556663296
+   },
+   "encoder.layers.9.mlp.Wi.weight": {
+    "length": 3538944,
+    "offset": 556664832
+   },
+   "encoder.layers.9.mlp.Wo.weight": {
+    "length": 1769472,
+    "offset": 560203776
+   },
+   "encoder.layers.9.mlp_norm.weight": {
+    "length": 1536,
+    "offset": 561973248
+   },
+   "head.layers.0.linear1.bias": {
+    "length": 6144,
+    "offset": 561974784
+   },
+   "head.layers.0.linear1.weight": {
+    "length": 2359296,
+    "offset": 561980928
+   },
+   "head.layers.0.linear2.bias": {
+    "length": 1536,
+    "offset": 564340224
+   },
+   "head.layers.0.linear2.weight": {
+    "length": 2359296,
+    "offset": 564341760
+   },
+   "head.layers.0.norm1.bias": {
+    "length": 1536,
+    "offset": 566701056
+   },
+   "head.layers.0.norm1.weight": {
+    "length": 1536,
+    "offset": 566702592
+   },
+   "head.layers.0.norm2.bias": {
+    "length": 1536,
+    "offset": 566704128
+   },
+   "head.layers.0.norm2.weight": {
+    "length": 1536,
+    "offset": 566705664
+   },
+   "head.layers.0.self_attn.in_proj_bias": {
+    "length": 4608,
+    "offset": 566707200
+   },
+   "head.layers.0.self_attn.in_proj_weight": {
+    "length": 1769472,
+    "offset": 566711808
+   },
+   "head.layers.0.self_attn.out_proj.bias": {
+    "length": 1536,
+    "offset": 568481280
+   },
+   "head.layers.0.self_attn.out_proj.weight": {
+    "length": 589824,
+    "offset": 568482816
+   },
+   "head.layers.1.linear1.bias": {
+    "length": 6144,
+    "offset": 569072640
+   },
+   "head.layers.1.linear1.weight": {
+    "length": 2359296,
+    "offset": 569078784
+   },
+   "head.layers.1.linear2.bias": {
+    "length": 1536,
+    "offset": 571438080
+   },
+   "head.layers.1.linear2.weight": {
+    "length": 2359296,
+    "offset": 571439616
+   },
+   "head.layers.1.norm1.bias": {
+    "length": 1536,
+    "offset": 573798912
+   },
+   "head.layers.1.norm1.weight": {
+    "length": 1536,
+    "offset": 573800448
+   },
+   "head.layers.1.norm2.bias": {
+    "length": 1536,
+    "offset": 573801984
+   },
+   "head.layers.1.norm2.weight": {
+    "length": 1536,
+    "offset": 573803520
+   },
+   "head.layers.1.self_attn.in_proj_bias": {
+    "length": 4608,
+    "offset": 573805056
+   },
+   "head.layers.1.self_attn.in_proj_weight": {
+    "length": 1769472,
+    "offset": 573809664
+   },
+   "head.layers.1.self_attn.out_proj.bias": {
+    "length": 1536,
+    "offset": 575579136
+   },
+   "head.layers.1.self_attn.out_proj.weight": {
+    "length": 589824,
+    "offset": 575580672
+   },
+   "scorer.0.bias": {
+    "length": 1536,
+    "offset": 576170496
+   },
+   "scorer.0.weight": {
+    "length": 1536,
+    "offset": 576172032
+   },
+   "scorer.1.bias": {
+    "length": 1536,
+    "offset": 576173568
+   },
+   "scorer.1.weight": {
+    "length": 589824,
+    "offset": 576175104
+   },
+   "scorer.3.bias": {
+    "length": 4,
+    "offset": 576764928
+   },
+   "scorer.3.weight": {
+    "length": 1536,
+    "offset": 576764992
+   },
+   "type_emb.weight": {
+    "length": 4608,
+    "offset": 576766528
+   }
+  },
+  "itemsize": 4,
+  "location": "weights.bin",
+  "total_bytes": 576771136
+ },
  "shapes": {
   "encoder.embeddings.norm.weight": [
    384

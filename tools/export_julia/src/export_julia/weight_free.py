@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import struct
 from pathlib import Path
 
@@ -38,6 +39,13 @@ from .export import TENSOR_MAP
 SMALL_INLINE_LIMIT = 1024
 # Total inline bytes allowed in a shipped graph (checked by the invariants).
 INLINE_BUDGET = 256 * 1024
+# Packed f32 layout of the injected weights, for backends that read a real file
+# (MIGraphX reads ONNX external data only from a file with offset/length). Each
+# mapped initializer lives at a 64-byte aligned offset of ONE f32 blob, in sorted
+# name order, so a plugin can rebuild the blob from the tensor map alone.
+PACK_LOCATION = "weights.bin"
+PACK_ALIGNMENT = 64
+PACK_ITEMSIZE = 4  # float32: what the runtime injects, whatever the checkpoint dtype
 
 
 def read_safetensors_header(path: Path) -> dict:
@@ -127,8 +135,38 @@ def _strip_graph(g) -> None:
         del vi.metadata_props[:]
 
 
-def externalize(proto: onnx.ModelProto, mapped: set[str]) -> None:
-    """Replace every mapped initializer's payload by an external-data stub."""
+def _align(n: int, alignment: int = PACK_ALIGNMENT) -> int:
+    return (n + alignment - 1) // alignment * alignment
+
+
+def pack_layout(proto: onnx.ModelProto, mapped: set[str]) -> dict:
+    """Deterministic packed f32 layout of the mapped initializers.
+
+    Sorted by name, each at a 64-byte aligned offset, length = numel * 4. Depends only on
+    names and shapes, so it is reproducible from the tensor map without the graph.
+    """
+    dims = {i.name: list(i.dims) for i in proto.graph.initializer if i.name in mapped}
+    missing = sorted(mapped - set(dims))
+    if missing:
+        raise RuntimeError(f"mapped initializers missing from the graph: {missing[:5]}")
+    for i in proto.graph.initializer:
+        if i.name in mapped and i.data_type != onnx.TensorProto.FLOAT:
+            raise RuntimeError(f"mapped initializer {i.name} is not float32 (data_type {i.data_type})")
+    entries, offset = {}, 0
+    for name in sorted(dims):
+        length = math.prod(dims[name]) * PACK_ITEMSIZE
+        entries[name] = {"offset": offset, "length": length}
+        offset = _align(offset + length)
+    return {"location": PACK_LOCATION, "alignment": PACK_ALIGNMENT, "itemsize": PACK_ITEMSIZE, "total_bytes": offset,
+            "initializers": entries}
+
+
+def externalize(proto: onnx.ModelProto, mapped: set[str], pack: dict | None = None) -> None:
+    """Replace every mapped initializer's payload by an external-data stub.
+
+    `location` names the shared blob when a layout is supplied. CPU injection still
+    uses initializer names; it never opens the external file.
+    """
     for init in proto.graph.initializer:
         if init.name not in mapped:
             continue
@@ -136,8 +174,13 @@ def externalize(proto: onnx.ModelProto, mapped: set[str]) -> None:
             init.ClearField(fld)
         init.data_location = onnx.TensorProto.EXTERNAL
         del init.external_data[:]
-        e = init.external_data.add()
-        e.key, e.value = "location", init.name  # never opened: the runtime injects by name
+        entries = [("location", pack["location"] if pack is not None else init.name)]
+        if pack is not None:
+            ent = pack["initializers"][init.name]
+            entries += [("offset", str(ent["offset"])), ("length", str(ent["length"]))]
+        for k, v in entries:
+            e = init.external_data.add()
+            e.key, e.value = k, v
 
 
 def postprocess(full_graph: Path, ckpt: dict[str, np.ndarray], out_graph: Path) -> dict:
@@ -153,9 +196,46 @@ def postprocess(full_graph: Path, ckpt: dict[str, np.ndarray], out_graph: Path) 
             del node.metadata_props[:]
         del fn.metadata_props[:]
     tmap = build_tensor_map(proto, ckpt)
-    externalize(proto, set(tmap["initializers"]))
+    tmap["pack"] = pack_layout(proto, set(tmap["initializers"]))
+    externalize(proto, set(tmap["initializers"]), tmap["pack"])
     onnx.save(proto, str(out_graph))
     return tmap
+
+
+def repack(graph: Path, tmap_path: Path) -> dict:
+    """Add the packed layout to an existing weight-free graph + tensor map, in place.
+
+    Only external-data metadata and the pack section change. The result is
+    what `postprocess` + `write_tensor_map` produce for a fresh export.
+    """
+    tmap = json.loads(tmap_path.read_text())
+    proto = onnx.load(str(graph), load_external_data=False)
+    pack = pack_layout(proto, set(tmap["initializers"]))
+    externalize(proto, set(tmap["initializers"]), pack)
+    onnx.save(proto, str(graph))
+    tmap["pack"] = pack
+    tmap_path.write_text(json.dumps(tmap, indent=1, sort_keys=True) + "\n")
+    return pack
+
+
+def build_packed_blob(tmap: dict, safetensors_path: Path) -> np.ndarray:
+    """Rebuild the packed f32 blob from the tensor map's `pack` section and the checkpoint only.
+
+    Uses nothing from the graph: the python mirror of what a GPU plugin does at create time.
+    """
+    from safetensors import safe_open
+
+    pack = tmap["pack"]
+    blob = np.zeros(pack["total_bytes"], dtype=np.uint8)
+    with safe_open(str(safetensors_path), "np") as f:
+        for name, ent in pack["initializers"].items():
+            a = f.get_tensor(tmap["initializers"][name]).astype("<f4")
+            if tmap["transforms"].get(name) == "transpose":
+                a = a.T
+            if list(a.shape) != tmap["shapes"][name] or a.nbytes != ent["length"]:
+                raise RuntimeError(f"{name}: checkpoint shape {a.shape} does not fit the pack entry")
+            blob[ent["offset"]:ent["offset"] + ent["length"]] = np.frombuffer(a.tobytes(), dtype=np.uint8)
+    return blob
 
 
 def assert_weight_free(graph: Path, tmap: dict) -> None:
@@ -169,6 +249,13 @@ def assert_weight_free(graph: Path, tmap: dict) -> None:
         if init.name in mapped:
             if not external or init.raw_data or init.float_data or init.int32_data or init.int64_data:
                 raise RuntimeError(f"mapped initializer {init.name} carries weight bytes")
+            pack = tmap.get("pack")
+            if pack is not None:
+                ext = {e.key: e.value for e in init.external_data}
+                want = pack["initializers"][init.name]
+                if ext != {"location": pack["location"], "offset": str(want["offset"]),
+                           "length": str(want["length"])}:
+                    raise RuntimeError(f"stub {init.name} does not match the pack layout: {ext}")
         else:
             inline += len(init.raw_data) or 4 * len(init.float_data)
     if inline > INLINE_BUDGET:
@@ -189,6 +276,9 @@ def write_tensor_map(path: Path, tmap: dict, *, arch: str, encoder: dict, opset:
         "transforms": tmap["transforms"],
         # expected shape of every injected initializer (the loader verifies it)
         "shapes": tmap["shapes"],
+        # packed f32 layout (alignment, total_bytes, per-initializer offset/length) that the
+        # graph stubs carry too; GPU plugins build their weight blob from this alone
+        "pack": tmap["pack"],
     }
     path.write_text(json.dumps(payload, indent=1, sort_keys=True) + "\n")
 
