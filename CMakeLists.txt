@@ -64,6 +64,9 @@ set(EXTENSION_SOURCES
         src/decide_safetensors.cpp
         src/decide_local_weights.cpp
         src/decide_catalog.cpp
+        src/decide_plugin_loader.cpp
+        src/decide_devices.cpp
+        src/decide_accelerate.cpp
         ${DECIDE_BUNDLED_RESOURCES_SRC}
 )
 
@@ -120,13 +123,33 @@ set(DECIDE_CPP_TEST_SOURCES
     test/cpp/test_decide_batching.cpp
     test/cpp/test_decide_calibration.cpp
     test/cpp/test_decide_catalog.cpp
+    test/cpp/test_decide_plugin.cpp
 )
 if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.19")
+    # GPU plugin fixtures. The real backends need hardware CI does not have, which would leave the loader (the
+    # trust boundary: a wrong ABI is undefined behaviour, not a wrong answer) and everything behind it untested.
+    # These stand in for them: real shared libraries, one correct and one built with a deliberately wrong ABI.
+    add_library(anofox_decide_fake_plugin SHARED test/cpp/plugin_fixture/fake_plugin.cpp)
+    target_include_directories(anofox_decide_fake_plugin PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/include)
+    target_compile_features(anofox_decide_fake_plugin PRIVATE cxx_std_17)
+    set_target_properties(anofox_decide_fake_plugin PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+    add_library(anofox_decide_fake_plugin_bad_abi SHARED test/cpp/plugin_fixture/fake_plugin.cpp)
+    target_include_directories(anofox_decide_fake_plugin_bad_abi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/include)
+    target_compile_features(anofox_decide_fake_plugin_bad_abi PRIVATE cxx_std_17)
+    target_compile_definitions(anofox_decide_fake_plugin_bad_abi PRIVATE DECIDE_FAKE_PLUGIN_BAD_ABI=1)
+    set_target_properties(anofox_decide_fake_plugin_bad_abi PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
     add_library(anofox_decide_unittest_tests OBJECT ${DECIDE_CPP_TEST_SOURCES})
+    add_dependencies(anofox_decide_unittest_tests anofox_decide_fake_plugin anofox_decide_fake_plugin_bad_abi)
+    target_compile_definitions(anofox_decide_unittest_tests PRIVATE
+        DECIDE_FAKE_PLUGIN_PATH="$<TARGET_FILE:anofox_decide_fake_plugin>"
+        DECIDE_FAKE_PLUGIN_BAD_ABI_PATH="$<TARGET_FILE:anofox_decide_fake_plugin_bad_abi>")
     target_compile_features(anofox_decide_unittest_tests PRIVATE cxx_std_17)
     target_include_directories(anofox_decide_unittest_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/include
         ${CMAKE_SOURCE_DIR}/third_party/catch
+        ${CMAKE_SOURCE_DIR}/third_party/miniz
         ${CMAKE_SOURCE_DIR}/third_party/yyjson/include
         ${CMAKE_SOURCE_DIR}/third_party/httplib
         ${OPENSSL_INCLUDE_DIR}

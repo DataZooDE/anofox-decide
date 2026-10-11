@@ -4,6 +4,8 @@
 #include "duckdb/main/config.hpp"
 #include "duckdb/common/string_util.hpp"
 
+#include <algorithm>
+
 namespace duckdb {
 namespace anofox {
 
@@ -67,6 +69,43 @@ void ValidateBatchTokens(ClientContext &context, SetScope scope, Value &paramete
 		                                      " (default 0)",
 		    "SET anofox_decide_batch_tokens = 16384; (or 0 to score one text at a time)"));
 	}
+}
+
+void ValidateDevice(ClientContext &context, SetScope scope, Value &parameter) {
+	ValidateNonNull("anofox_decide_device", "'auto'", context, scope, parameter);
+	const auto given = StringValue::Get(parameter.DefaultCastAs(LogicalType::VARCHAR));
+	const auto v = StringUtil::Lower(given);
+	const vector<string> allowed = {"auto", "cpu", "cuda", "rocm", "mlx"};
+	if (std::find(allowed.begin(), allowed.end(), v) == allowed.end()) {
+		const auto close = DecideDidYouMean(v, allowed);
+		throw InvalidInputException(DecideMsg(
+		    "anofox_decide_device",
+		    "must be one of " + DecideJoinQuoted(allowed) + ", got '" + given + "' (default 'auto')" +
+		        (close.empty() ? string("") : ". Did you mean '" + close + "'?"),
+		    "SET anofox_decide_device = 'auto'; (a GPU is used only after CALL decide_accelerate() installed its "
+		    "plugin) or 'cpu' to always score on the CPU"));
+	}
+	parameter = Value(v);
+}
+
+void ValidateGpuPrecision(ClientContext &context, SetScope scope, Value &parameter) {
+	ValidateNonNull("anofox_decide_gpu_precision", "'fp32'", context, scope, parameter);
+	const auto given = StringValue::Get(parameter.DefaultCastAs(LogicalType::VARCHAR));
+	const auto v = StringUtil::Lower(given);
+	if (v == "fp32") {
+		parameter = Value(v);
+		return;
+	}
+	if (v == "tf32" || v == "bf16" || v == "fp16") {
+		throw InvalidInputException(DecideMsg(
+		    "anofox_decide_gpu_precision",
+		    "'" + given + "' is not available in this release: the GPU backends run in fp32 (half precision needs the "
+		    "attention mask constants re-exported first, and its accuracy has to be measured)",
+		    "SET anofox_decide_gpu_precision = 'fp32';"));
+	}
+	throw InvalidInputException(DecideMsg("anofox_decide_gpu_precision",
+	                                      "must be 'fp32', got '" + given + "' (default 'fp32')",
+	                                      "SET anofox_decide_gpu_precision = 'fp32';"));
 }
 
 void ValidateMaxRetries(ClientContext &context, SetScope scope, Value &parameter) {
@@ -192,6 +231,20 @@ void RegisterDecideSettings(ExtensionLoader &loader) {
 	                          "one text at a time. Results are the same either way; batching only pays on a GPU, "
 	                          "on CPU it was measured to be slower",
 	                          LogicalType::BIGINT, Value::BIGINT(0), ValidateBatchTokens);
+	config.AddExtensionOption("anofox_decide_device",
+	                          "Where local models run: 'auto' (default) uses a GPU only when its plugin is installed "
+	                          "(CALL decide_accelerate()), the device is usable and the plugin serves the model, "
+	                          "otherwise the CPU; 'cpu'; or 'cuda', 'rocm', 'mlx', which fail with the fix when that "
+	                          "device cannot serve the model. SELECT * FROM decide_backends() shows the choice",
+	                          LogicalType::VARCHAR, Value("auto"), ValidateDevice);
+	config.AddExtensionOption("anofox_decide_gpu_precision",
+	                          "Numeric precision of the GPU backends. Only 'fp32' in this release; other values are "
+	                          "rejected rather than silently run in fp32",
+	                          LogicalType::VARCHAR, Value("fp32"), ValidateGpuPrecision);
+	config.AddExtensionOption("anofox_decide_plugin_dir",
+	                          "Where the GPU plugins are installed and loaded from (empty: the 'plugins' folder of "
+	                          "anofox_decide_cache_dir). CALL decide_accelerate() fills it",
+	                          LogicalType::VARCHAR, Value(""));
 	config.AddExtensionOption("anofox_decide_head_length",
 	                          "Tokens reserved for the question and its options in local models (default 512); must "
 	                          "stay below anofox_decide_max_length",

@@ -240,10 +240,14 @@ Every function is available as `anofox_decide_<name>` and as the short alias `de
 | `decide_ece(p, outcome)` | `DOUBLE` | expected calibration error over ten equal-width bins (aggregate) |
 | `decide_fit_calibration(p, outcome)` | `VARCHAR` | fits Platt scaling to a model's raw probabilities and returns the `'platt:a,b'` spec for `decide_register_model` ([Calibration](#calibration)) (aggregate) |
 | `decide_download(model)` | table | download a local model's weights from Hugging Face into the cache directory, verified and resumable ([Local models](#local-models)) |
+| `decide_devices()` | table | the devices this machine can score local models on (cpu, and any NVIDIA, AMD or Apple GPU found), with `usable` and why not ([GPU](#gpu-infrastructure)) |
+| `decide_backends()` | table | which device can serve which local model, and why not: the same check `anofox_decide_device = 'auto'` uses ([GPU](#gpu-infrastructure)) |
+| `decide_accelerate()` | table | finds the GPU, downloads and verifies its plugin, activates it for this session ([GPU](#gpu-infrastructure)) |
+| `decide_download_runtime(backend)` | table | download and verify the plugin of `'cuda'`, `'rocm'` or `'mlx'` ([GPU](#gpu-infrastructure)) |
 | `decide_register_model(id[, provider[, ...]])` | `BOOLEAN` | register a model for this database instance |
 | `decide_unregister_model(id)` | `BOOLEAN` | remove a registered model so it can be registered again |
 | `decide_token_count(text[, model])` | `BIGINT` | tokens `text` has for a local model, to find rows that do not fit its window ([Local models](#local-models)) |
-| `decide_models()` | table | the registered models, whether each can be called now, and what to do if not |
+| `decide_models()` | table | the registered models, whether each can be called now, what to do if not, and the `device` a local model is scored on |
 | `decide_doctor()` | table | `item`, `status` (`ok` / `warn` / `fail`), `detail`, `fix` for the whole setup |
 
 ---
@@ -556,6 +560,29 @@ to keep a GPU busy: with one row per call a GPU waits, with a batch it does not.
 
 See [`examples/05_local_model.sql`](examples/05_local_model.sql).
 
+### GPU infrastructure
+
+The extension stays one CPU-only file. A GPU backend (CUDA, ROCm/MIGraphX, Apple MLX) is a separate plugin the
+extension loads when asked, behind one C interface (`src/include/decide_plugin_abi.h`); the plugins are built and
+attached to the releases separately, and **this release ships the infrastructure only**: no plugin is published
+yet, so `decide_accelerate()` finds nothing to download and everything keeps running on the CPU. What is in place:
+
+```sql
+SELECT * FROM decide_devices();     -- cpu, plus any NVIDIA / AMD / Apple GPU found, usable or not and why
+SELECT * FROM decide_backends();    -- per local model and device: supported, or the reason and the fix
+CALL decide_accelerate();           -- find the GPU, download and verify its plugin, use it from now on
+SELECT model, device FROM decide_models();   -- where each local model is scored right now
+```
+
+`anofox_decide_device` is `auto` by default: a GPU is used only when its plugin is installed, the device is usable
+and the plugin serves the model, and `decide_backends()` is the same check, so `auto` never names a device that
+table calls unsupported. `cpu` always scores on the CPU. `cuda`, `rocm` or `mlx` are hard errors naming
+`CALL decide_accelerate()` when that device is missing, unusable or cannot serve the model: never a silent CPU run.
+Only the models from `decide_download` can run on a GPU (the plugin loads their safetensors file itself); a model
+registered with its own `.onnx` graph stays on the CPU. Plugins are native code, so every download is checked
+against the sha256 published with the release, on download and on every later call, and a plugin built against
+another interface version is refused with the fix. `anofox_decide_gpu_precision` accepts only `fp32` for now.
+
 ---
 
 ## Settings
@@ -576,6 +603,9 @@ example.
 | `anofox_decide_max_length` | `8192` | Tokens a `julia-1` local model reads per question (Laya uses its own config) |
 | `anofox_decide_head_length` | `512` | Tokens reserved for the question and its options in local models |
 | `anofox_decide_batch_tokens` | `0` | Local models: score the rows of a whole chunk together, in batches of at most this many padded tokens (batch size times padded length; `1024` to `131072`). `0` scores one text at a time. Answers are the same either way (identical to the last bit on the 200-ticket evaluation); on CPU the effect on speed is small and inconsistent, it exists to feed GPUs ([Local models](#local-models)) |
+| `anofox_decide_device` | `auto` | Where local models run: `auto` (a GPU only when its plugin is installed, the device is usable and the plugin serves the model; else the CPU), `cpu`, or `cuda` / `rocm` / `mlx`, which fail with the fix when that device cannot serve the model ([GPU](#gpu-infrastructure)) |
+| `anofox_decide_gpu_precision` | `fp32` | Numeric precision of the GPU backends. Only `fp32`; other values are rejected, never silently run in fp32 |
+| `anofox_decide_plugin_dir` | *(unset: `plugins` inside the cache directory)* | Where the GPU plugins are installed and loaded from; `decide_accelerate()` fills it |
 | `anofox_decide_on_truncate` | `error` | `error`: a local model refuses text, question or options that do not fit its window; `ignore`: score the shortened input |
 | `anofox_decide_api_key` | *(unset)* | Legacy key for the `typesafe` provider, kept in plain text; prefer `CREATE SECRET` or the env var |
 | `anofox_decide_endpoint` | `https://api.typesafe.ai` | Legacy endpoint for `typesafe`; other providers take a per-model `endpoint` |

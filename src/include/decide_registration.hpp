@@ -15,6 +15,8 @@ void RegisterDecideMetrics(ExtensionLoader &loader);         // decide_metrics.c
 void RegisterDecideSecret(ExtensionLoader &loader);          // decide_secret.cpp
 void RegisterDecideTokenCount(ExtensionLoader &loader);      // decide_local_validate.cpp
 void RegisterDecideCatalog(ExtensionLoader &loader);         // decide_catalog.cpp (cache dir setting, decide_download)
+void RegisterDecideDevices(ExtensionLoader &loader);         // decide_devices.cpp (decide_devices, decide_backends)
+void RegisterDecideAccelerate(ExtensionLoader &loader);      // decide_accelerate.cpp (decide_accelerate, decide_download_runtime)
 
 } // namespace anofox
 } // namespace duckdb

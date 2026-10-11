@@ -67,6 +67,7 @@ own function names:
 - `decide_register_model` / `decide_unregister_model` / `decide_models` (model registry)
 - `decide_token_count` (token count of a text for a local model)
 - `decide_download` (local model download)
+- `decide_devices` / `decide_backends` / `decide_accelerate` / `decide_download_runtime` (GPU setup)
 - `decide_doctor` (setup check)
 - `decide_brier_score` / `decide_ece` / `decide_accuracy` / `decide_fit_calibration`
   (calibration metrics)
