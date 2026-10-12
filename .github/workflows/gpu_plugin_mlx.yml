@@ -1,0 +1,78 @@
+# Build the Apple MLX backend plugin (plugins/mlx). It needs no GPU to BUILD, which is the point of building it
+# on a plain macOS runner; a GPU is needed to RUN it, and GitHub's macOS runners have none, so CI proves the
+# artifact builds, exports exactly the ABI entry symbol, depends only on libmlx/libmlxc, and dlopens and refuses
+# cleanly. Scoring on real models is validated by hand on an Apple-silicon Mac (see the PR description).
+#
+# Deliberately separate from MainDistributionPipeline.yml (scaffold-owned): the plugin versions independently
+# of the extension binary and needs none of the DuckDB platform matrix.
+name: MLX plugin
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths: ['plugins/mlx/**', 'src/include/decide_plugin_abi.h', '.github/workflows/gpu_plugin_mlx.yml']
+  pull_request:
+    paths: ['plugins/mlx/**', 'src/include/decide_plugin_abi.h', '.github/workflows/gpu_plugin_mlx.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  mlx-plugin:
+    name: MLX plugin (Apple silicon; links libmlx/libmlxc, no ORT)
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MLX
+        # The plugin links Apple's runtime, installed on the machine rather than shipped by us.
+        run: brew install mlx mlx-c
+
+      - name: Build the plugin
+        run: |
+          cmake -S plugins/mlx -B build-mlx -DCMAKE_BUILD_TYPE=Release -DDECIDE_MLX_DIR="$(brew --prefix)"
+          cmake --build build-mlx --parallel
+          ls -l build-mlx
+
+      - name: Sanity - one exported symbol, and only the expected dependencies
+        run: |
+          LIB=build-mlx/libanofox_decide_mlx_plugin.dylib
+          nm -gU "$LIB" | grep -q "_DecideGetPluginApi" || { echo "ABI symbol missing"; exit 1; }
+          # -fvisibility=hidden: the entry point is the ONLY export.
+          test "$(nm -gU "$LIB" | wc -l)" -eq 1 || { echo "unexpected extra exports:"; nm -gU "$LIB"; exit 1; }
+          otool -L "$LIB"
+          # Guard the design decision: no ONNX Runtime or protobuf (the plugin parses the ONNX wire format
+          # itself), and no DuckDB.
+          ! otool -L "$LIB" | grep -qE "libonnx|libprotobuf|libduckdb" || { echo "plugin linked onnx/protobuf/duckdb"; exit 1; }
+          shasum -a 256 "$LIB" | tee mlx_plugin.sha256
+
+      # A GitHub macOS runner has Apple silicon but no model cache and no Metal GPU, so this proves the
+      # artifact RESOLVES, answers the ABI and refuses to create without hardware instead of crashing.
+      - name: Load check - dlopen answers, ABI matches, create fails gracefully
+        run: ./build-mlx/anofox_decide_mlx_plugin_load_check ./build-mlx/libanofox_decide_mlx_plugin.dylib mlx
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: anofox-decide-mlx-plugin
+          path: |
+            build-mlx/libanofox_decide_mlx_plugin.dylib
+            mlx_plugin.sha256
+          if-no-files-found: error
+
+  skips-elsewhere:
+    name: MLX plugin configure skips cleanly off Apple silicon
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Standalone configure on Linux builds nothing and succeeds
+        run: |
+          cmake -S plugins/mlx -B build-mlx 2>&1 | tee configure.log
+          grep -q "Apple-silicon only, skipping" configure.log

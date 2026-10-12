@@ -173,6 +173,12 @@ if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.
     cmake_language(DEFER DIRECTORY ${CMAKE_SOURCE_DIR} CALL anofox_decide_register_cpp_tests)
 endif()
 
+# --- GPU backend plugins (separate shared libraries, never linked into the extension) ---
+# MLX: Apple silicon only, needs `brew install mlx mlx-c`; plugins/mlx/CMakeLists.txt skips itself cleanly elsewhere.
+if(APPLE)
+    add_subdirectory(plugins/mlx)
+endif()
+
 # --- Installation ---
 
 install(
