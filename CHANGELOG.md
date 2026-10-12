@@ -33,6 +33,16 @@ All notable changes to `anofox_decide` are documented here. The format follows
   so indicative only). It is the prerequisite for GPU execution, where a batch of eight rows measured about the
   same time as one. `tools/eval/run_eval.py` gained `--batch-tokens`.
 
+### Changed
+- **The committed weight-free graphs carry a packed weight layout** (groundwork for the GPU backends). Every
+  external-data stub now has an `offset` and a `length`, and each `tensor_map_*.json` has a `pack` section: the
+  injected float32 weights in one blob, initializers in sorted name order, 64-byte aligned (0.58 / 1.29 / 1.68 GB
+  for Julia-1 / Laya multilingual / Laya typed-decisions). A GPU plugin builds its blob from the downloaded
+  safetensors and the map alone. Nothing else in the graphs or maps changed and CPU scores are bit-identical;
+  all stubs use the shared `weights.bin` location. `tools/export_julia/scripts/repack_offsets.py` upgrades older graphs,
+  `verify_pack.py` checks a blob against a checkpoint, and `check_graph_invariants.py` (CI) now requires and
+  verifies the layout.
+
 ## [2026.10.04] - 2026-10-04
 
 Local models that work after `INSTALL`, Cloudflare Clef, relational scoring at scalar speed, and local models

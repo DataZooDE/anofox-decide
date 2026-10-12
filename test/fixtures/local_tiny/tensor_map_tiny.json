@@ -38,6 +38,90 @@
  "outputs": [
   "scores"
  ],
+ "pack": {
+  "alignment": 64,
+  "initializers": {
+   "encoder.embeddings.norm.weight": {
+    "length": 128,
+    "offset": 0
+   },
+   "encoder.embeddings.tok_embeddings.weight": {
+    "length": 128000,
+    "offset": 128
+   },
+   "encoder.layers.0.attn.Wo.weight": {
+    "length": 4096,
+    "offset": 128128
+   },
+   "encoder.layers.0.attn.Wqkv.weight": {
+    "length": 12288,
+    "offset": 132224
+   },
+   "encoder.layers.0.mlp.Wi.weight": {
+    "length": 16384,
+    "offset": 144512
+   },
+   "encoder.layers.0.mlp.Wo.weight": {
+    "length": 8192,
+    "offset": 160896
+   },
+   "head.layers.0.linear1.bias": {
+    "length": 512,
+    "offset": 169088
+   },
+   "head.layers.0.linear1.weight": {
+    "length": 16384,
+    "offset": 169600
+   },
+   "head.layers.0.linear2.bias": {
+    "length": 128,
+    "offset": 185984
+   },
+   "head.layers.0.linear2.weight": {
+    "length": 16384,
+    "offset": 186112
+   },
+   "head.layers.0.self_attn.in_proj_bias": {
+    "length": 384,
+    "offset": 202496
+   },
+   "head.layers.0.self_attn.in_proj_weight": {
+    "length": 12288,
+    "offset": 202880
+   },
+   "head.layers.0.self_attn.out_proj.bias": {
+    "length": 128,
+    "offset": 215168
+   },
+   "head.layers.0.self_attn.out_proj.weight": {
+    "length": 4096,
+    "offset": 215296
+   },
+   "scorer.1.bias": {
+    "length": 128,
+    "offset": 219392
+   },
+   "scorer.1.weight": {
+    "length": 4096,
+    "offset": 219520
+   },
+   "scorer.3.bias": {
+    "length": 4,
+    "offset": 223616
+   },
+   "scorer.3.weight": {
+    "length": 128,
+    "offset": 223680
+   },
+   "type_emb.weight": {
+    "length": 384,
+    "offset": 223808
+   }
+  },
+  "itemsize": 4,
+  "location": "weights.bin",
+  "total_bytes": 224192
+ },
  "shapes": {
   "encoder.embeddings.norm.weight": [
    32

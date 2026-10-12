@@ -305,6 +305,32 @@ TEST_CASE("the built-in catalog is complete and its graphs are embedded", "[anof
 	}
 }
 
+TEST_CASE("packed weight-free graph loads through CPU injection without a blob", "[anofox_decide][catalog][local]") {
+	CatalogGuard guard({});
+	InstallTinyGraph();
+	DecideModelEntry model;
+	model.id = "packed-tiny";
+	model.provider = "local";
+	model.mode = "local";
+	model.profile = "julia-1";
+	model.bundled_graph = "graph_test_tiny";
+	model.bundled_map = "tensor_map_test_tiny.json";
+	model.weights_path = "test/fixtures/local_tiny/tiny.safetensors";
+	model.tokenizer_path = "test/fixtures/tiny_tokenizer.json";
+	REQUIRE_FALSE(fs::exists("test/fixtures/local_tiny/weights.bin"));
+
+	DuckDB db(nullptr);
+	Connection con(db);
+	DecideQuestion q;
+	q.id = "refund";
+	q.kind = "noul";
+	q.instruction = "A refund is requested.";
+	auto result = DecideLocalScore(*con.context, model, "I want my money back.", {q});
+	REQUIRE(result.size() == 1);
+	REQUIRE(result[0].probability > 0.0);
+	REQUIRE(result[0].probability < 1.0);
+}
+
 TEST_CASE("decide_download fetches, verifies and caches", "[anofox_decide][catalog]") {
 	FileServer server(TinyFiles());
 	auto entry = TestEntry(server);

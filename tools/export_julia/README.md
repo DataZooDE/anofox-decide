@@ -50,6 +50,24 @@ produced this way (165 / 165 / 201 mapped initializers, all by exact name, no tr
 graph on real tickets; `scripts/check_graph_invariants.py` is the CI check that committed graphs carry no
 weight bytes; `scripts/make_tiny_fixture.py` regenerates the random-init test fixture.
 
+### Packed layout for GPU backends
+
+Every stub also carries an `offset` and a `length`, and the tensor map has a `pack` section with the same
+numbers: the injected weights, as little-endian float32, laid out in one blob with the initializers in sorted name order,
+each at a 64-byte aligned offset (`length = numel * 4`; `pack` also holds `alignment`, `itemsize` and
+`total_bytes`, and `location = weights.bin`). The layout depends only on names and shapes, so a GPU plugin can build the blob from the
+safetensors and the tensor map alone (`export_julia.weight_free.build_packed_blob` is the reference). Every stub names the same
+`weights.bin` file, which a plugin stages beside its cached graph. Use a separate directory per model/checkpoint.
+The CPU path injects by initializer name and never opens that file. The blob contains checkpoint tensors upcast
+to float32 (and transposed where mapped), plus zero alignment padding; it is not a copy of the safetensors container.
+
+`scripts/repack_offsets.py GRAPH...` adds the layout to an existing weight-free graph and map in place, touching
+only external-data metadata and the map's `pack` section (this is how the committed graphs were upgraded).
+Repacking is deterministic and idempotent; tiny-model tests compare it byte-for-byte with a fresh export.
+`scripts/verify_pack.py GRAPH CHECKPOINT.safetensors` rebuilds the blob from the `pack` section only and checks
+each tensor byte-for-byte against the stubs and the independently loaded, converted checkpoint; `check_graph_invariants.py` now also requires the layout and checks
+every stub against it.
+
 ## Use it
 
 ```sql
