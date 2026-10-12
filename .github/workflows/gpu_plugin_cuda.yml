@@ -1,0 +1,106 @@
+#
+# Build and check the CUDA backend plugin (plugins/cuda).
+#
+# The plugin needs no GPU to BUILD, and everything that does not need one is tested here: the artifact's ABI
+# symbol and DT_NEEDED (it names the RENAMED ORT core and never upstream's SONAME, and links no CUDA library),
+# a real dlopen with the loader's flags (an artifact that does not resolve passes nm and fails here), create()
+# refusing cleanly with no CUDA provider, the weight-feeding code (safetensors + tensor map, F16 upcast, in
+# place / copied / transposed, AddExternalInitializers) run on ORT's CPU provider against reference scores
+# computed by Python onnxruntime, and survival of a host that already loaded an upstream-SONAME core. A GPU is
+# needed to RUN the plugin for real: that is plugins/cuda/gpu_test (a RunPod harness, by hand).
+#
+# Deliberately separate from MainDistributionPipeline.yml (scaffold-owned): the plugin versions independently
+# of the extension binary and needs none of the DuckDB platform matrix. A version tag attaches the plugin and
+# its sha256 sidecar to the GitHub release, which is what decide_download_runtime('cuda') fetches. (The ORT
+# core and providers are NOT release assets: the extension pulls them from Microsoft's feed, size- and
+# sha256-pinned.)
+#
+name: CUDA plugin
+
+# `main` and release tags on push; every branch through pull_request. Without the branch filter a same-repo PR
+# matches both events and the whole workflow runs twice for identical trees.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write # release-asset upload on tags; read is enough elsewhere
+
+env:
+  ORT_VERSION: "1.29.0"
+
+jobs:
+  cuda-plugin:
+    name: CUDA plugin (links its own renamed ONNX Runtime core)
+    timeout-minutes: 20
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # The CPU release archive carries the same public headers and the same exported C API as the GPU
+      # distribution, which is all the plugin is linked against. CMake downloads it, renames its core with the
+      # extension's own SONAME routine (src/include/decide_soname_patch.hpp) and builds against that.
+      - name: Configure
+        run: cmake -S plugins/cuda -B build-cuda-plugin -DCMAKE_BUILD_TYPE=Release -DDECIDE_CUDA_ORT_VERSION="${ORT_VERSION}"
+
+      - name: Build
+        run: cmake --build build-cuda-plugin -j"$(nproc)"
+
+      - name: Test (no GPU needed)
+        run: ctest --test-dir build-cuda-plugin --output-on-failure
+
+      - name: Checksum sidecar
+        run: |
+          cd build-cuda-plugin
+          # Named by the file, because decide_download_runtime matches the sidecar line by filename.
+          sha256sum libanofox_decide_cuda_plugin.so | tee cuda_plugin.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: anofox-decide-cuda-plugin
+          path: |
+            build-cuda-plugin/libanofox_decide_cuda_plugin.so
+            build-cuda-plugin/cuda_plugin.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Attach the plugin to the release (tags only)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [cuda-plugin]
+    timeout-minutes: 15
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: The pinned plugin release must be the one being published
+        run: |
+          # DECIDE_PLUGIN_RELEASE_TAG is what decide_download_runtime fetches from. A release that ships without
+          # it pointing at itself would hand every user the PREVIOUS release's plugin, which the loader accepts
+          # whenever the ABI version still matches, so nothing would tell them.
+          pinned="$(sed -n 's/.*DECIDE_PLUGIN_RELEASE_TAG = "\(.*\)".*/\1/p' src/include/decide_plugin_artifacts.hpp)"
+          echo "pinned in source: ${pinned}"
+          echo "tag being built:  ${GITHUB_REF_NAME}"
+          if [ "${pinned}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::DECIDE_PLUGIN_RELEASE_TAG is '${pinned}' but this is '${GITHUB_REF_NAME}'." \
+                 "Bump it in src/include/decide_plugin_artifacts.hpp before tagging, so the release contains" \
+                 "code that points at itself."
+            exit 1
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          name: anofox-decide-cuda-plugin
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # `gh release upload` does not create the release object: create it when a human has not yet.
+          gh release create "${GITHUB_REF_NAME}" --verify-tag --generate-notes \
+            --repo "${GITHUB_REPOSITORY}" 2>/dev/null || true
+          gh release upload "${GITHUB_REF_NAME}" libanofox_decide_cuda_plugin.so cuda_plugin.sha256 \
+            --repo "${GITHUB_REPOSITORY}" --clobber

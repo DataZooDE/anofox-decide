@@ -32,6 +32,16 @@ All notable changes to `anofox_decide` are documented here. The format follows
   98 s and 103 s at 16384 and 146 s at 4096 (one machine under heavy load, load average 58 to 69 on 32 cores,
   so indicative only). It is the prerequisite for GPU execution, where a batch of eight rows measured about the
   same time as one. `tools/eval/run_eval.py` gained `--batch-tokens`.
+- **CUDA plugin (`plugins/cuda`), not yet published.** The first GPU backend behind the plugin interface:
+  `libanofox_decide_cuda_plugin.so`, built as its own CMake project with its own workflow
+  (`gpu_plugin_cuda.yml`). It links a private ONNX Runtime core with the SONAME renamed to `libanofoxort_gpu.so`
+  (the core and the CUDA provider come from the pinned Microsoft wheel that `decide_download_runtime('cuda')`
+  fetches; CUDA 12.8+ and cuDNN 9 stay the user's), opens the staged graph with the weights injected from its own
+  mapping of the safetensors file (float32 tensors in place, F16/BF16 upcast), and runs the CUDA provider with TF32
+  switched off so `fp32` means strict fp32. Shapes are dynamic, so `precompile` does nothing. Tested without a GPU:
+  the artifact's symbols and `DT_NEEDED`, a real `dlopen` with the loader's flags, clean refusals, the weight
+  feeding on ORT's CPU provider against reference scores from Python onnxruntime, and a host that already holds an
+  upstream-named ORT core. Hardware validation (`plugins/cuda/gpu_test`) is a separate, manual step.
 
 ### Changed
 - **The committed weight-free graphs carry a packed weight layout** (groundwork for the GPU backends). Every
