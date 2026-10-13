@@ -113,6 +113,9 @@ def main():
                         f"CALL decide_download('{args.model}');"], check=True, env=env)
         cpu_probe, cpu_csv, cpu_s, cpu_dev = run_session(args, "cpu", work, pairs)
         gpu_probe, gpu_csv, gpu_s, gpu_dev = run_session(args, "cuda", work, pairs)
+        # The result files live in the temporary directory: read them before it is removed.
+        cpu_refund, cpu_route = load_results(cpu_csv)
+        gpu_refund, gpu_route = load_results(gpu_csv)
 
     check(cpu_dev == "cpu", f"the cpu session was served by '{cpu_dev}'")
     check(gpu_dev.startswith("cuda"), f"the cuda session was served by '{gpu_dev}' (decide_models().device)")
@@ -124,8 +127,6 @@ def main():
         if recorded is not None:
             check(abs(gpu_p - recorded) <= RECORDED_TOL, f"cuda within {RECORDED_TOL:g} of the recorded {recorded} for {text!r}")
 
-    cpu_refund, cpu_route = load_results(cpu_csv)
-    gpu_refund, gpu_route = load_results(gpu_csv)
     ids = sorted(cpu_refund)
     check(len(ids) > 0 and set(ids) == set(gpu_refund) == set(cpu_route) == set(gpu_route),
           f"both devices answered every ticket ({len(ids)})")
