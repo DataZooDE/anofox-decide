@@ -582,6 +582,7 @@ Only the models from `decide_download` can run on a GPU (the plugin loads their 
 registered with its own `.onnx` graph stays on the CPU. Plugins are native code, so every download is checked
 against the sha256 published with the release, on download and on every later call, and a plugin built against
 another interface version is refused with the fix. `anofox_decide_gpu_precision` accepts only `fp32` for now.
+The CUDA plugin's source and build are in [`plugins/cuda`](plugins/cuda/README.md).
 
 ---
 
