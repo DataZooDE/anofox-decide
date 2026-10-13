@@ -27,13 +27,13 @@ if(NOT (DECIDE_MLX_C_LIB AND DECIDE_MLX_LIB AND EXISTS "${DECIDE_MLX_DIR}/includ
 endif()
 message(STATUS "anofox_decide: building the MLX plugin against ${DECIDE_MLX_DIR}")
 
-# mlx-c 0.7 changed the cumulative-op signatures (axis variants renamed, optional dtype added). Detect it by
+# mlx-c 0.7 changed the cumulative-op signatures (mlx_cumsum_axis plus an optional dtype). Detect it by
 # compiling, not by version, so the plugin builds against either Homebrew generation.
 include(CheckCXXSourceCompiles)
 set(CMAKE_REQUIRED_INCLUDES "${DECIDE_MLX_DIR}/include")
 check_cxx_source_compiles("
-#include \"mlx/c/optional.h\"
-int main() { mlx_optional_dtype d; d.has_value = false; return d.has_value; }" DECIDE_MLXC_HAS_OPTIONAL_DTYPE)
+#include \"mlx/c/ops.h\"
+int main() { mlx_optional_dtype d; d.has_value = false; return mlx_cumsum_axis(nullptr, mlx_array_new(), 0, false, true, d, mlx_default_gpu_stream_new()); }" DECIDE_MLXC_HAS_OPTIONAL_DTYPE)
 unset(CMAKE_REQUIRED_INCLUDES)
 
 # The file name is the one decide_accelerate / the loader look for: libanofox_decide_mlx_plugin.dylib.
