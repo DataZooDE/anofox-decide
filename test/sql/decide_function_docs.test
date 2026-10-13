@@ -21,9 +21,9 @@ WHERE function_name IN ('decide_probability','decide_choice','decide_score','dec
                         'decide_register_model','decide_unregister_model','decide_models','decide_doctor','decide_table',
                         'decide_brier_score','decide_ece','decide_accuracy',
                         'decide_choice_distribution','decide_fit_calibration','decide_answers','decide_token_count','decide_download',
-                        'decide_devices','decide_backends','decide_accelerate','decide_download_runtime')
+                        'decide_devices','decide_backends','decide_accelerate','decide_download_runtime','decide_gpu_precompile')
 ----
-22
+23
 
 query I
 SELECT count(DISTINCT function_name)
@@ -33,9 +33,9 @@ WHERE function_name IN ('anofox_decide_probability','anofox_decide_choice','anof
                         'anofox_decide_table','anofox_decide_brier_score','anofox_decide_ece',
                         'anofox_decide_accuracy','anofox_decide_choice_distribution',
                         'anofox_decide_fit_calibration','anofox_decide_answers','anofox_decide_token_count','anofox_decide_download',
-                        'anofox_decide_devices','anofox_decide_backends','anofox_decide_accelerate','anofox_decide_download_runtime')
+                        'anofox_decide_devices','anofox_decide_backends','anofox_decide_accelerate','anofox_decide_download_runtime','anofox_decide_gpu_precompile')
 ----
-22
+23
 
 # Every overload of every function carries a non-empty description ...
 query I
@@ -83,7 +83,7 @@ SELECT count(DISTINCT function_name)
 FROM duckdb_functions()
 WHERE function_name LIKE 'decide\_%' ESCAPE '\' AND alias_of = 'anofox_' || function_name
 ----
-22
+23
 
 # Spot-check the documented signatures.
 query T
