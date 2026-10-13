@@ -116,6 +116,12 @@ public:
 	//! Raw scores [B][M] in marker order.
 	vector<vector<float>> Score(const DecideLocalBatch &batch, const char *function = "decide");
 
+	//! Warms a shape bucket of a GPU backend that compiles per shape (a no-op on the CPU and on backends that do
+	//! not). Compiling can take minutes; the backend reports its progress itself.
+	void Precompile(int64_t batch, int64_t seq, int64_t markers, const char *function = "decide");
+	//! The GPU backend serving this session ("migraphx", "cuda", ...), "" on the CPU.
+	string PluginBackend() const;
+
 	const string &GraphPath() const {
 		return graph_path;
 	}

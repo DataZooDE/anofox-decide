@@ -7,6 +7,16 @@ All notable changes to `anofox_decide` are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **ROCm backend (MIGraphX plugin).** `plugins/migraphx/decide_migraphx_plugin.cpp` builds
+  `libanofox_decide_migraphx_plugin.so`, which drives MIGraphX directly through `libmigraphx_c` (no ONNX Runtime) and
+  scores the catalog models on AMD GPUs. Fixed shapes through buckets (20 markers; Laya 256 or 1024 tokens, Julia-1
+  256 to 8192; one row or a full batch of at most 8192 padded tokens), a compiled-program cache
+  (`<cache dir>/gpu-cache/migraphx/*.mxr`, keyed by graph, tensor map, every byte of the checkpoint, GPU
+  architecture and shape; a damaged file is rebuilt), weights from the packed blob it builds from the safetensors
+  and the tensor map while compiling, fp32 only, compile progress on stderr. New `decide_gpu_precompile(model[,
+  seq := N])` compiles the buckets ahead of time and reports the seconds each took. A separate workflow
+  (`gpu_plugin_migraphx.yml`) builds the plugin and checks the exported ABI symbol, its dynamic dependencies and a
+  real dlopen with refusal cases. Measurements and limits: `docs/GPU_ROCM.md`.
 - **GPU infrastructure (no backend yet).** The extension stays one CPU-only file; a GPU backend will be a plugin it
   loads behind one C interface (`decide_plugin_abi.h`, ABI version 1). This release adds everything around the
   plugins, so each backend lands as a library without touching the extension: the loader (ABI checked before the
