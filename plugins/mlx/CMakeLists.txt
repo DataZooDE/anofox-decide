@@ -31,10 +31,12 @@ message(STATUS "anofox_decide: building the MLX plugin against ${DECIDE_MLX_DIR}
 # compiling, not by version, so the plugin builds against either Homebrew generation.
 include(CheckCXXSourceCompiles)
 set(CMAKE_REQUIRED_INCLUDES "${DECIDE_MLX_DIR}/include")
+set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY) # compile only: the probe needs the declaration, not the library
 check_cxx_source_compiles("
 #include \"mlx/c/ops.h\"
 int main() { mlx_optional_dtype d; d.has_value = false; return mlx_cumsum_axis(nullptr, mlx_array_new(), 0, false, true, d, mlx_default_gpu_stream_new()); }" DECIDE_MLXC_HAS_OPTIONAL_DTYPE)
 unset(CMAKE_REQUIRED_INCLUDES)
+unset(CMAKE_TRY_COMPILE_TARGET_TYPE)
 
 # The file name is the one decide_accelerate / the loader look for: libanofox_decide_mlx_plugin.dylib.
 add_library(anofox_decide_mlx_plugin SHARED
