@@ -244,6 +244,7 @@ Every function is available as `anofox_decide_<name>` and as the short alias `de
 | `decide_backends()` | table | which device can serve which local model, and why not: the same check `anofox_decide_device = 'auto'` uses ([GPU](#gpu-infrastructure)) |
 | `decide_accelerate()` | table | finds the GPU, downloads and verifies its plugin, activates it for this session ([GPU](#gpu-infrastructure)) |
 | `decide_download_runtime(backend)` | table | download and verify the plugin of `'cuda'`, `'rocm'` or `'mlx'` ([GPU](#gpu-infrastructure)) |
+| `decide_gpu_precompile(model[, seq := N])` | table | compile a local model's shape buckets ahead of time on the ROCm backend, with the seconds each took ([ROCm](docs/GPU_ROCM.md)) |
 | `decide_register_model(id[, provider[, ...]])` | `BOOLEAN` | register a model for this database instance |
 | `decide_unregister_model(id)` | `BOOLEAN` | remove a registered model so it can be registered again |
 | `decide_token_count(text[, model])` | `BIGINT` | tokens `text` has for a local model, to find rows that do not fit its window ([Local models](#local-models)) |
@@ -582,6 +583,13 @@ Only the models from `decide_download` can run on a GPU (the plugin loads their 
 registered with its own `.onnx` graph stays on the CPU. Plugins are native code, so every download is checked
 against the sha256 published with the release, on download and on every later call, and a plugin built against
 another interface version is refused with the fix. `anofox_decide_gpu_precision` accepts only `fp32` for now.
+
+**ROCm (AMD).** The first backend is a plugin for AMD GPUs that drives MIGraphX directly
+(`plugins/migraphx/`, `libanofox_decide_migraphx_plugin.so`). MIGraphX compiles one program per tensor shape, so
+the plugin serves a few fixed shapes (20 markers; Laya 256 or 1024 tokens, Julia-1 256 to 8192; one row or a
+full batch) and caches each compiled program under `<cache dir>/gpu-cache/migraphx/`. A compile takes
+2 to 4 minutes once per shape and leaves 0.6 to 1.7 GB; `CALL decide_gpu_precompile('laya-multilingual');` does
+them up front with progress. Details, limits and measured numbers: [docs/GPU_ROCM.md](docs/GPU_ROCM.md).
 
 ---
 

@@ -335,6 +335,16 @@ shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, 
 	return handle;
 }
 
+void DecideLocalSession::Precompile(int64_t batch, int64_t seq, int64_t markers, const char *function_name) {
+	if (impl->plugin) {
+		impl->plugin->Precompile(batch, seq, markers, function_name);
+	}
+}
+
+string DecideLocalSession::PluginBackend() const {
+	return impl->plugin ? impl->plugin->Backend() : string();
+}
+
 vector<vector<float>> DecideLocalSession::Score(const DecideLocalBatch &batch, const char *function_name) {
 	const string function = function_name;
 	if (batch.batch <= 0 || batch.seq <= 0 || batch.markers <= 0) {

@@ -17,6 +17,7 @@ void RegisterDecideTokenCount(ExtensionLoader &loader);      // decide_local_val
 void RegisterDecideCatalog(ExtensionLoader &loader);         // decide_catalog.cpp (cache dir setting, decide_download)
 void RegisterDecideDevices(ExtensionLoader &loader);         // decide_devices.cpp (decide_devices, decide_backends)
 void RegisterDecideAccelerate(ExtensionLoader &loader);      // decide_accelerate.cpp (decide_accelerate, decide_download_runtime)
+void RegisterDecideGpuPrecompile(ExtensionLoader &loader);   // decide_gpu_precompile.cpp (decide_gpu_precompile)
 
 } // namespace anofox
 } // namespace duckdb

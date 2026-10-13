@@ -67,6 +67,7 @@ set(EXTENSION_SOURCES
         src/decide_plugin_loader.cpp
         src/decide_devices.cpp
         src/decide_accelerate.cpp
+        src/decide_gpu_precompile.cpp
         ${DECIDE_BUNDLED_RESOURCES_SRC}
 )
 
@@ -124,7 +125,10 @@ set(DECIDE_CPP_TEST_SOURCES
     test/cpp/test_decide_calibration.cpp
     test/cpp/test_decide_catalog.cpp
     test/cpp/test_decide_plugin.cpp
+    test/cpp/test_decide_migraphx.cpp
 )
+# GPU backend plugins build from their own directories (each only where its SDK exists).
+add_subdirectory(plugins/migraphx)
 if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.19")
     # GPU plugin fixtures. The real backends need hardware CI does not have, which would leave the loader (the
     # trust boundary: a wrong ABI is undefined behaviour, not a wrong answer) and everything behind it untested.
@@ -142,6 +146,11 @@ if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.
 
     add_library(anofox_decide_unittest_tests OBJECT ${DECIDE_CPP_TEST_SOURCES})
     add_dependencies(anofox_decide_unittest_tests anofox_decide_fake_plugin anofox_decide_fake_plugin_bad_abi)
+    if(DECIDE_MIGRAPHX_PLUGIN_BUILT)
+        add_dependencies(anofox_decide_unittest_tests anofox_decide_migraphx_plugin)
+        target_compile_definitions(anofox_decide_unittest_tests PRIVATE
+            DECIDE_MIGRAPHX_PLUGIN_PATH="$<TARGET_FILE:anofox_decide_migraphx_plugin>")
+    endif()
     target_compile_definitions(anofox_decide_unittest_tests PRIVATE
         DECIDE_FAKE_PLUGIN_PATH="$<TARGET_FILE:anofox_decide_fake_plugin>"
         DECIDE_FAKE_PLUGIN_BAD_ABI_PATH="$<TARGET_FILE:anofox_decide_fake_plugin_bad_abi>")

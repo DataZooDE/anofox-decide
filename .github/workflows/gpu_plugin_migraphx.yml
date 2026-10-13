@@ -1,0 +1,80 @@
+# Build and check the ROCm backend plugin (plugins/migraphx). It needs no GPU to BUILD: it links only
+# libmigraphx_c from the ROCm apt repo. A GPU is needed to RUN it, which the manual hardware validation covers
+# (docs/GPU_BACKENDS.md). Separate from the extension pipeline on purpose: the plugin versions independently and
+# needs none of the DuckDB platform matrix.
+#
+# Gates: the ABI symbol is exported, the dynamic dependencies are exactly libmigraphx_c plus the C/C++ runtime
+# (never ONNX Runtime, DuckDB or a CUDA library), and a real dlopen resolves it, speaks the ABI version of this
+# tree and refuses bad input cleanly (plugins/migraphx/plugin_load_check.c). Attaching it to a release is the
+# job of the release workflow.
+name: GPU plugin - MIGraphX
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  migraphx-plugin:
+    name: MIGraphX plugin (links libmigraphx_c only)
+    timeout-minutes: 25
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MIGraphX dev from the ROCm apt repo
+        run: |
+          sudo mkdir -p /etc/apt/keyrings
+          wget -qO- https://repo.radeon.com/rocm/rocm.gpg.key | gpg --dearmor | \
+            sudo tee /etc/apt/keyrings/rocm.gpg > /dev/null
+          # 7.2.4 is the ROCm generation the hardware validation ran against (gfx1201).
+          echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/7.2.4 jammy main" | \
+            sudo tee /etc/apt/sources.list.d/rocm.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq migraphx-dev half
+
+      - name: Build the plugin
+        run: |
+          g++ -O2 -std=c++17 -Wall -Wextra -shared -fPIC -fvisibility=hidden \
+            -o libanofox_decide_migraphx_plugin.so \
+            plugins/migraphx/decide_migraphx_plugin.cpp \
+            -Isrc/include -I/opt/rocm/include \
+            -L/opt/rocm/lib -lmigraphx_c -Wl,-rpath,'$ORIGIN'
+
+      - name: ABI symbol is exported
+        run: |
+          nm -D --defined-only libanofox_decide_migraphx_plugin.so | grep -q " T DecideGetPluginApi" \
+            || { echo "ABI symbol DecideGetPluginApi missing"; exit 1; }
+
+      - name: DT_NEEDED is libmigraphx_c and the C/C++ runtime only
+        run: |
+          readelf -d libanofox_decide_migraphx_plugin.so | grep NEEDED
+          needed=$(readelf -d libanofox_decide_migraphx_plugin.so | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p')
+          echo "$needed" | grep -q '^libmigraphx_c\.so' || { echo "libmigraphx_c is not a dependency"; exit 1; }
+          unexpected=$(echo "$needed" | grep -v -E '^(libmigraphx_c\.so.*|libstdc\+\+\.so.*|libm\.so.*|libgcc_s\.so.*|libc\.so.*|ld-linux.*|libpthread\.so.*|libdl\.so.*)$' || true)
+          if [ -n "$unexpected" ]; then echo "unexpected dependencies: $unexpected"; exit 1; fi
+
+      - name: Load check - dlopen resolves, the ABI matches, bad input is refused cleanly
+        run: |
+          gcc -O2 -Wall -o plugin_load_check plugins/migraphx/plugin_load_check.c -ldl
+          LD_LIBRARY_PATH=/opt/rocm/lib ./plugin_load_check ./libanofox_decide_migraphx_plugin.so test/fixtures
+
+      - name: Checksum
+        run: sha256sum libanofox_decide_migraphx_plugin.so | tee migraphx_plugin.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: anofox-decide-migraphx-plugin
+          path: |
+            libanofox_decide_migraphx_plugin.so
+            migraphx_plugin.sha256
+          if-no-files-found: error
