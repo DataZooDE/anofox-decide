@@ -521,9 +521,17 @@ const std::unordered_map<std::string, Handler> &Handlers() {
 	    {"CumSum",
 	     [](const Node &n, const Args &in, const Ctx &c) {
 		     Arr r;
+#ifdef DECIDE_MLXC_OPTIONAL_DTYPE
+		     // mlx-c 0.7 renamed the axis variant and added an optional output dtype (none: keep the input's).
+		     mlx_optional_dtype keep_dtype = {MLX_FLOAT32, false};
+		     Ok(mlx_cumsum_axis(r.out(), in[0]->get(), static_cast<int>(ToScalar(*in[1], c.s)),
+		                        AttrInt(n, "reverse", 0) != 0, AttrInt(n, "exclusive", 0) == 0, keep_dtype, c.s),
+		        "cumsum");
+#else
 		     Ok(mlx_cumsum(r.out(), in[0]->get(), static_cast<int>(ToScalar(*in[1], c.s)),
 		                   AttrInt(n, "reverse", 0) != 0, AttrInt(n, "exclusive", 0) == 0, c.s),
 		        "cumsum");
+#endif
 		     return Wrap(std::move(r));
 	     }},
 	    {"Softmax",
