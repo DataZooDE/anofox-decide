@@ -17,6 +17,14 @@ All notable changes to `anofox_decide` are documented here. The format follows
   seq := N])` compiles the buckets ahead of time and reports the seconds each took. A separate workflow
   (`gpu_plugin_migraphx.yml`) builds the plugin and checks the exported ABI symbol, its dynamic dependencies and a
   real dlopen with refusal cases. Measurements and limits: `docs/GPU_ROCM.md`.
+- **MLX plugin source (`plugins/mlx`, macOS arm64 only).** The Apple GPU backend of the plugin ABI: an
+  interpreter that runs the shipped ONNX graphs over Apple's `libmlx`/`libmlxc` (no ONNX Runtime, no protobuf),
+  weights uploaded once from the safetensors file through the tensor map (F16 and BF16 checkpoints cast to fp32 on
+  the device), last-use eviction of intermediates, and a token budget derived from the machine's RAM that splits
+  a batch into chunks and always scores at least one row (Julia-1 at 8192 tokens runs as one row on a 16 GB Mac).
+  Built by its own CMake target and the `MLX plugin` workflow (build, exported-symbol and dependency checks,
+  dlopen and refusal smoke test; CI has no Apple GPU); Linux and Windows configures skip it. Not published as a
+  release asset yet.
 - **GPU infrastructure (no backend yet).** The extension stays one CPU-only file; a GPU backend will be a plugin it
   loads behind one C interface (`decide_plugin_abi.h`, ABI version 1). This release adds everything around the
   plugins, so each backend lands as a library without touching the extension: the loader (ABI checked before the
