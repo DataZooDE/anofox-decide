@@ -4,12 +4,18 @@
 
 #include "decide_plugin_loader.hpp"
 
+#include "decide_catalog.hpp" // DecideSha256FileHex
 #include "decide_errors.hpp"
+#include "decide_plugin_artifacts.hpp" // DecideSha256FromSidecar
 
 #include "duckdb/common/exception.hpp"
 
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
+#include <fstream>
+#include <map>
+#include <mutex>
 
 // Is this translation unit built with AddressSanitizer? GCC defines the macro directly; Clang answers through
 // __has_feature. Used only to drop RTLD_DEEPBIND below, which the sanitizer runtime cannot tolerate.
@@ -219,12 +225,94 @@ string DecidePluginErrorMessage(const string &backend, const string &plugin_mess
 	                     "https://github.com/DataZooDE/anofox-decide/issues");
 }
 
+//===----------------------------------------------------------------------===//
+// Verification before a plugin is loaded
+//===----------------------------------------------------------------------===//
+
+namespace {
+
+std::mutex verified_lock;
+std::map<string, string> verified_identity; // plugin path -> identity of the bytes that passed
+
+} // namespace
+
+string DecidePluginFileIdentity(const string &path) {
+	std::error_code ec;
+	const auto size = std::filesystem::file_size(path, ec);
+	if (ec) {
+		return "";
+	}
+	const auto mtime = std::filesystem::last_write_time(path, ec);
+	if (ec) {
+		return "";
+	}
+	// A cast: libc++ counts file time in __int128, which std::to_string has no overload for.
+	return std::to_string(size) + ":" + std::to_string(static_cast<long long>(mtime.time_since_epoch().count()));
+}
+
+bool DecideVerifyPluginBeforeLoad(const string &library_path, string &problem) {
+	namespace fs = std::filesystem;
+	problem.clear();
+	const auto sidecar_path = library_path + ".sha256";
+	std::error_code ec;
+	if (!fs::exists(sidecar_path, ec)) {
+		return true; // a plugin placed by hand has nothing to be checked against: trusted (documented)
+	}
+	const auto identity = DecidePluginFileIdentity(library_path);
+	if (identity.empty()) {
+		return true; // missing or unreadable: the loader reports it with its own text
+	}
+	{
+		std::lock_guard<std::mutex> guard(verified_lock);
+		auto it = verified_identity.find(library_path);
+		if (it != verified_identity.end() && it->second == identity) {
+			return true; // these exact bytes (path, size, mtime) already matched their sidecar
+		}
+	}
+	string sidecar;
+	{
+		std::ifstream in(sidecar_path, std::ios::binary);
+		sidecar.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+	}
+	const auto listed = DecideSha256FromSidecar(sidecar, fs::path(library_path).filename().string());
+	string actual;
+	if (!listed.empty()) {
+		actual = DecideSha256FileHex(library_path);
+	}
+	// The file must not have been swapped while it was hashed. This narrows, but does not close, the window
+	// between hashing and the dlopen that follows: the loader opens by path, which a process that can write to
+	// the plugin directory can still race. An fd or memfd would close it but breaks the $ORIGIN lookup of the
+	// plugin's own libraries, so the plugin directory is part of the trust boundary (and a mtime can be reset
+	// by whoever can write there; this is integrity against damage and casual replacement, not a defence
+	// against a local attacker).
+	if (!listed.empty() && DecidePluginFileIdentity(library_path) != identity) {
+		problem = "the file changed while its checksum was being verified";
+		return false;
+	}
+	if (listed.empty() || actual != listed) {
+		fs::remove(library_path, ec);
+		fs::remove(sidecar_path, ec);
+		problem = listed.empty() ? "its checksum file does not name it, so it vouches for nothing"
+		                         : "it does not match its published checksum (expected " + listed + ", got " + actual + ")";
+		problem += "; the plugin and the checksum file have been deleted";
+		return false;
+	}
+	std::lock_guard<std::mutex> guard(verified_lock);
+	verified_identity[library_path] = identity;
+	return true;
+}
+
 bool DecidePluginLoadable(const string &library_path, string *error) {
 	auto set_error = [&](string message) {
 		if (error) {
 			*error = std::move(message);
 		}
 	};
+	string unverified;
+	if (!DecideVerifyPluginBeforeLoad(library_path, unverified)) {
+		set_error(unverified);
+		return false;
+	}
 	auto library = OpenLibrary(library_path);
 	if (!library) {
 		// The loader's own text is the useful part: a plugin present but unloadable almost always names the
@@ -262,6 +350,11 @@ bool DecidePluginLoadable(const string &library_path, string *error) {
 
 unique_ptr<DecidePluginSession> DecideLoadPlugin(const string &library_path, const DecidePluginCreateParams &params,
                                                  const string &function) {
+	string unverified;
+	if (!DecideVerifyPluginBeforeLoad(library_path, unverified)) {
+		throw IOException(DecideMsg(function, "the GPU plugin '" + library_path + "' was not loaded: " + unverified,
+		                            "CALL decide_accelerate(); fetches a verified copy"));
+	}
 	auto library = OpenLibrary(library_path);
 	if (!library) {
 		throw IOException(DecideMsg(function,

@@ -113,6 +113,10 @@ public:
 	static shared_ptr<DecideLocalSession> Open(ClientContext &context, const DecideModelEntry &entry,
 	                                           const char *function = "decide");
 
+	//! Drops this database's cached GPU sessions (those built from a plugin). Called after a plugin was installed
+	//! or replaced, so the next call builds its session from the new one; sessions already handed out finish.
+	static void InvalidateGpuSessions(ClientContext &context);
+
 	//! Raw scores [B][M] in marker order.
 	vector<vector<float>> Score(const DecideLocalBatch &batch, const char *function = "decide");
 

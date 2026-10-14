@@ -29,7 +29,7 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install MLX
         # The plugin links Apple's runtime, installed on the machine rather than shipped by us.
@@ -61,7 +61,7 @@ jobs:
       - name: Load check - dlopen answers, ABI matches, create fails gracefully
         run: ./build-mlx/anofox_decide_mlx_plugin_load_check ./build-mlx/libanofox_decide_mlx_plugin.dylib mlx
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: anofox-decide-mlx-plugin
           path: |
@@ -71,7 +71,7 @@ jobs:
 
   publish:
     name: Attach the plugin to the release (tags only)
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: [mlx-plugin]
     permissions:
       contents: write
@@ -80,13 +80,14 @@ jobs:
       artifact: anofox-decide-mlx-plugin
       plugin: libanofox_decide_mlx_plugin.dylib
       sidecar: mlx_plugin.sha256
+      dry_run: ${{ github.event_name == 'workflow_dispatch' }} # a manual run verifies only; a tag publishes
 
   skips-elsewhere:
     name: MLX plugin configure skips cleanly off Apple silicon
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Standalone configure on Linux builds nothing and succeeds
         run: |
           cmake -S plugins/mlx -B build-mlx 2>&1 | tee configure.log

@@ -6,9 +6,10 @@ device never falls back: if CUDA cannot serve, the query fails and so does this 
 
   1. the two recorded reference probabilities of Laya multilingual, within 2e-4 of 0.98209638 and 0.0012388999
      ('I want my money back.' / 'Thanks, everything works now!', question 'A refund is requested.');
-  2. every probability of the 200-ticket evaluation (two questions per ticket, as tools/eval/run_eval.py asks
-     them), CPU versus CUDA: maximum absolute difference <= 1e-4, identical argmax (the routing choice, and the
-     refund decision at 0.5) on every ticket;
+  2. over the 200-ticket evaluation (two questions per ticket, as tools/eval/run_eval.py asks them), CPU versus
+     CUDA: the REFUND probability of every ticket, maximum absolute difference <= 1e-4, and the refund decision
+     (at 0.5) and the routing CHOICE (the argmax of the four options; the routing probabilities themselves are
+     not compared) identical on every ticket;
   3. accuracy against the labels, identical between the devices;
   4. that the CUDA session really was served by cuda: decide_models().device says so after scoring.
 

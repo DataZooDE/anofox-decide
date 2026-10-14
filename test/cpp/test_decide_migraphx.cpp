@@ -157,7 +157,7 @@ TEST_CASE("the MIGraphX plugin loads, speaks this ABI and refuses what it cannot
 TEST_CASE("the MIGraphX plugin compiles and scores the tiny fixture on a GPU", "[anofox_decide][migraphx][gpu]") {
 	const char *enabled = std::getenv("DECIDE_TEST_MIGRAPHX");
 	if (!enabled || string(enabled) != "1") {
-		SUCCEED("skipped: set DECIDE_TEST_MIGRAPHX=1 on a machine with a supported Radeon");
+		SKIP_TEST("set DECIDE_TEST_MIGRAPHX=1 on a machine with a supported Radeon"); // reported as skipped, not as passed
 		return;
 	}
 	const auto cache = (fs::temp_directory_path() / "decide_migraphx_gpu_test_cache").string();

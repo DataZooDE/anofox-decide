@@ -748,8 +748,13 @@ struct Backend {
 			     std::to_string(need >> 20) + " MB for the packed weights and the cached program, " +
 			     std::to_string(space.available >> 20) + " MB free)");
 		}
-		const std::string tmp_path = cache_dir + "/build-" + std::to_string(::getpid()) + "-" + std::to_string(b.batch) +
-		                             "x" + std::to_string(b.seq);
+		// Unique per compile: two models (or two handles of one model) compiling the same bucket in one process
+		// must not share, remove or overwrite each other's graph.onnx and weights.bin. Named like the .mxr (model
+		// key, rows, tokens, markers) so a leftover is attributable, plus a per-process counter.
+		static std::atomic<uint64_t> compile_counter {0};
+		const std::string tmp_path = cache_dir + "/build-" + std::to_string(::getpid()) + "-" + Key() + "-" +
+		                             std::to_string(b.batch) + "x" + std::to_string(b.seq) + "x" +
+		                             std::to_string(b.markers) + "-" + std::to_string(compile_counter++);
 		TempDir tmp(tmp_path);
 		fs::remove_all(tmp_path, ec);
 		fs::create_directories(tmp_path, ec);
@@ -976,6 +981,10 @@ DecidePluginStatus PluginRun(void *handle, const DecidePluginRunInput *input, De
 	output->scores = nullptr;
 	output->batch = 0;
 	output->markers = 0;
+	if (!input->input_ids || !input->attention_mask || !input->marker_pos || !input->marker_mask || !input->qtype) {
+		SetError(err, err_len, "empty or incomplete batch");
+		return DECIDE_PLUGIN_ERROR;
+	}
 	try {
 		if (input->batch < 1 || input->seq < 1 || input->markers < 1) {
 			Fail("empty batch");

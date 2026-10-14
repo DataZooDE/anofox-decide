@@ -6,13 +6,35 @@ All notable changes to `anofox_decide` are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+- **Plugin verification no longer fails open.** A plugin is downloaded under a temporary name and moved into place
+  only after its sha256 matches the checksum file published with the release; every failure (a mismatch, a
+  checksum file that is missing, unreadable or does not name the plugin) deletes the plugin, and `decide_accelerate()`
+  does not probe a plugin whose download failed. The extension also checks a plugin against the `.sha256` file beside
+  it once per process before it first loads it (cached by path, size and modification time; a plugin placed by hand
+  with no `.sha256` file is trusted, and the docs say so). The extracted CUDA runtime files have their sha256 pinned
+  and are checked on every install call. Downloads refuse redirects off https (and, for GitHub release assets, off
+  GitHub's hosts), scratch files are private to the process, and installing into a plugin directory that other users
+  can write to is refused (POSIX). The checksum is integrity from the same release, not authenticity: see
+  `docs/GPU_BACKENDS.md` ("What is verified, and what is trusted").
+
+### Fixed
+- The plugin probe and the GPU session cache are keyed by the plugin file's identity and directory, and sessions are
+  dropped when a plugin is installed, so a plugin replaced by `decide_accelerate()` or by hand is used at once.
+- MIGraphX compiles in a temporary directory unique per model and shape (two models compiling the same bucket in one
+  process could overwrite each other's inputs), and the plugin refuses null input buffers.
+- `decide_gpu_precompile` is refused on backends that do not compile per shape instead of listing buckets it did not
+  compile, and a `seq` longer than every bucket is an error naming the largest bucket.
+
 ### Added
 - **GPU release assets, evaluation by device, GPU documentation.** A `v*` tag now attaches all three plugins
   (`libanofox_decide_cuda_plugin.so`, `libanofox_decide_migraphx_plugin.so`, `libanofox_decide_mlx_plugin.dylib`)
   and their `cuda_plugin.sha256` / `migraphx_plugin.sha256` / `mlx_plugin.sha256` sidecars to the release, under the
   names `decide_accelerate()` and `decide_download_runtime()` ask for. The three plugin workflows share one reusable
   publish workflow (`_gpu_release_assets.yml`) that checks the file names, that the sidecar lists the plugin and
-  its digest, and that `DECIDE_PLUGIN_RELEASE_TAG` equals the tag; the new `GPU release gate` workflow
+  its digest, and that `DECIDE_PLUGIN_RELEASE_TAG` equals the tag, uploads to a draft release and publishes it only
+  when all six assets are attached (`tools/ci/release_assets_complete.sh`); a manual run verifies without
+  releasing; the new `GPU release gate` workflow
   (`tools/ci/check_plugin_pin.sh`) fails a tag build at once when it does not. `tools/eval/run_eval.py` gained
   `--device auto|cpu|cuda|rocm|mlx`: it sets `anofox_decide_device`, refuses to report (exit status 2, no report,
   results deleted) any model that `decide_models().device` shows was not served on the requested device, and records
@@ -39,22 +61,22 @@ All notable changes to `anofox_decide` are documented here. The format follows
   the device), last-use eviction of intermediates, and a token budget derived from the machine's RAM that splits
   a batch into chunks and always scores at least one row (Julia-1 at 8192 tokens runs as one row on a 16 GB Mac).
   Built by its own CMake target and the `MLX plugin` workflow (build, exported-symbol and dependency checks,
-  dlopen and refusal smoke test; CI has no Apple GPU); Linux and Windows configures skip it. Not published as a
-  release asset yet.
-- **GPU infrastructure (no backend yet).** The extension stays one CPU-only file; a GPU backend will be a plugin it
-  loads behind one C interface (`decide_plugin_abi.h`, ABI version 1). This release adds everything around the
-  plugins, so each backend lands as a library without touching the extension: the loader (ABI checked before the
+  dlopen and refusal smoke test; CI has no Apple GPU); Linux and Windows configures skip it. Its release asset is
+  `libanofox_decide_mlx_plugin.dylib` with `mlx_plugin.sha256`, fetched by `decide_download_runtime('mlx')`.
+- **GPU infrastructure.** The extension stays one CPU-only file; a GPU backend is a plugin it loads behind one C
+  interface (`decide_plugin_abi.h`, ABI version 1). Everything around the plugins lives in the extension, so each
+  backend is a library that needs no change to it: the loader (ABI checked before the
   library is used, `RTLD_DEEPBIND` on Linux, never unloaded), device discovery (NVML, the KFD topology with the
   MIGraphX architecture list, the Apple SoC), `decide_devices()`, `decide_backends()` (one servability predicate
   shared with device selection), `decide_accelerate()` and `decide_download_runtime('cuda' | 'rocm' | 'mlx')`
-  (platform refusals before any download, sha256 sidecar verification on download and on every cached hit, the
-  pinned CUDA runtime with its SONAME rename), and the settings `anofox_decide_device` (`auto` by default, which
+  (platform refusals before any download, sha256 sidecar verification of every plugin before it is moved into place
+  and again on every later install call, the pinned CUDA runtime with its SONAME rename), and the settings `anofox_decide_device` (`auto` by default, which
   uses a GPU only when its plugin is installed, the device is usable and the plugin serves the model; explicit
   devices that cannot serve a model are hard errors naming `CALL decide_accelerate()`),
   `anofox_decide_gpu_precision` (`fp32` only; other values are rejected) and `anofox_decide_plugin_dir`.
   `decide_models()` gained a `device` column and `decide_doctor()` rows for the GPU and its plugin. The session
-  cache is keyed by device and precision. No plugin is published yet, so nothing changes: local models score on
-  the CPU exactly as before.
+  cache is keyed by device and precision. Without a plugin installed nothing changes: local models score on the
+  CPU exactly as before.
 - **`anofox_decide_batch_tokens`** (default `0` = off): local models score the rows of a whole chunk together,
   in batches of at most this many padded tokens (batch size times padded length, `1024` to `131072`; one row
   always fits). Rows are collated exactly as before (so truncation behaves the same), sorted by length, padded
@@ -66,7 +88,7 @@ All notable changes to `anofox_decide` are documented here. The format follows
   98 s and 103 s at 16384 and 146 s at 4096 (one machine under heavy load, load average 58 to 69 on 32 cores,
   so indicative only). It is the prerequisite for GPU execution, where a batch of eight rows measured about the
   same time as one. `tools/eval/run_eval.py` gained `--batch-tokens`.
-- **CUDA plugin (`plugins/cuda`), not yet published.** The first GPU backend behind the plugin interface:
+- **CUDA plugin (`plugins/cuda`).** The NVIDIA backend behind the plugin interface:
   `libanofox_decide_cuda_plugin.so`, built as its own CMake project with its own workflow
   (`gpu_plugin_cuda.yml`). It links a private ONNX Runtime core with the SONAME renamed to `libanofoxort_gpu.so`
   (the core and the CUDA provider come from the pinned Microsoft wheel that `decide_download_runtime('cuda')`

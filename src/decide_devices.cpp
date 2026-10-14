@@ -596,13 +596,16 @@ DecidePluginState DecideProbePlugin(const string &plugin_path) {
 	if (!state.exists) {
 		return state;
 	}
+	// Keyed by the file's identity as well as its path: a plugin copied over by hand (the docs allow it) is a
+	// different file and must be probed again, not answered from the memo of the one it replaced.
+	const auto key = plugin_path + "|" + DecidePluginFileIdentity(plugin_path);
 	std::lock_guard<std::mutex> guard(probe_lock);
-	auto it = probe_cache.find(plugin_path);
+	auto it = probe_cache.find(key);
 	if (it != probe_cache.end()) {
 		return it->second;
 	}
 	state.loadable = DecidePluginLoadable(plugin_path, &state.problem);
-	probe_cache[plugin_path] = state;
+	probe_cache[key] = state;
 	return state;
 }
 

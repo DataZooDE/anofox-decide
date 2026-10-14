@@ -584,19 +584,31 @@ and the plugin serves the model, and `decide_backends()` is the same check, so `
 table calls unsupported. `cpu` always scores on the CPU. `cuda`, `rocm` or `mlx` are hard errors naming
 `CALL decide_accelerate()` when that device is missing, unusable or cannot serve the model: never a silent CPU run.
 Only the models from `decide_download` can run on a GPU (the plugin loads their safetensors file itself); a model
-registered with its own `.onnx` graph stays on the CPU. Plugins are native code, so every download is checked
-against the sha256 published with the release, on download and on every later call, and a plugin built against
-another interface version is refused with the fix. `anofox_decide_gpu_precision` accepts only `fp32`;
+registered with its own `.onnx` graph stays on the CPU. `anofox_decide_gpu_precision` accepts only `fp32`;
 `anofox_decide_plugin_dir` is where plugins are installed and loaded from.
 
+**What is verified.** Plugins are native code. A download lands under a temporary name and moves into place only
+after its sha256 matches the `.sha256` file published next to it in the release; any failure on the way (a
+mismatch, a missing or unreadable checksum file) deletes the plugin. `decide_accelerate()` and
+`decide_download_runtime()` check the installed plugin against that file again on every call, and the extension
+checks a plugin against the `.sha256` file beside it once per process (by path, size and modification time) before
+it first loads it, which scoring and `decide_backends()` do not repeat. The checksum comes from the same release as
+the plugin, so this catches damage and a swapped asset, not a compromised release. **A plugin you copy into
+`anofox_decide_plugin_dir` yourself, with no `.sha256` file beside it, is trusted and loaded as it is.** Treat the
+directory like any directory you load code from: the extension refuses to install into one that other users can
+write to. A plugin built against another interface version is refused with the fix.
+
 **ROCm needs a compile.** MIGraphX compiles one program per tensor shape: 2 to 5 minutes once per shape, and
-0.6 to 1.75 GB of cache each, under `<cache dir>/gpu-cache/migraphx/`. `CALL decide_gpu_precompile('laya-multilingual');`
-does it up front with progress; otherwise the first query that meets a shape pays for it.
+0.6 to 1.75 GB of cache each, under `<cache dir>/gpu-cache/migraphx/`. Run `CALL decide_gpu_precompile('laya-multilingual');`
+once before a batch job: it compiles every shape up front with progress (on CUDA and MLX it is refused, there is
+nothing to compile); otherwise the first query that meets a shape pays for it, minutes at a time.
 
 **Measured** (the 200-ticket evaluation, two questions per ticket, wall time including session start and model
 load, each CPU number from the same machine as its GPU number, so they are not comparable across machines):
 Laya multilingual took 97.0 s on a CPU and 11.8 s on an RTX 4090 (CUDA); 51-81 s against 9 s on an RX 9070 XT
-(ROCm, batched); 80.8 s against 9.5 s on an Apple M3 (MLX, batched). The largest probability difference to the CPU
+(ROCm, 9 s with `batch_tokens = 8192`); 80.8 s against 17.4 s on an Apple M3 (MLX; 9.5 s at `batch_tokens = 16384`).
+The CPU baselines came from a slow shared pod and a heavily loaded machine, so these ratios are upper bounds, not
+what a quiet machine would show. The largest probability difference to the CPU
 was 4e-5 or less on every device and model, no routing or refund decision changed, and accuracy is identical.
 Not every model gains as much (Julia-1 on the M3: 24.1 s against 14.2 s unbatched), and the gains depend on the
 machine. All numbers, the requirements, the limits and troubleshooting: [docs/GPU_BACKENDS.md](docs/GPU_BACKENDS.md);
@@ -705,7 +717,11 @@ that caused it. Run `SELECT * FROM decide_doctor();` first when something does n
 | `'.../rl_agent_config.json' sits next to the graph ..., so it comes from a Laya checkpoint` | a Laya graph registered without the profile would be scored as `julia-1` | add the 5th argument: `decide_register_model('<id>', 'local', '<graph>', '<tokenizer>', 'laya')` |
 | `provider '<x>' takes no file paths` | a remote provider was given a path argument | remote providers take an options `MAP`: `decide_register_model('m', 'typesafe', MAP {'endpoint': 'https://host'})` |
 | `model '<id>' is already registered` | ids are unique per database instance | `decide_unregister_model('<id>')`, then register again |
-| `anofox_decide_device is 'cuda' but no 'cuda' plugin ...` (also `rocm`, `mlx`) | an explicit GPU device with no plugin installed, or a device that cannot serve the model | `CALL decide_accelerate();` (see `decide_backends()` for the reason), or `SET anofox_decide_device = 'auto';` |
+| `anofox_decide_device is 'cuda' but no 'cuda' device was found on this machine` (also `rocm`, `mlx`) | an explicit GPU device on a machine where none was discovered | `CALL decide_accelerate();` shows what this machine can use, or `SET anofox_decide_device = 'auto';` |
+| `anofox_decide_device is 'cuda' but model '<id>' cannot run on cuda:0: ... its plugin is not installed in <dir>` (also `rocm`, `mlx`) | an explicit GPU device whose plugin is missing, unusable, or cannot serve that model; the reason follows the colon | `CALL decide_accelerate();` (see `decide_backends()` for the reason), or `SET anofox_decide_device = 'auto';` |
+| `anofox_decide_device is 'cuda' but loading a GPU plugin is not allowed because enable_external_access is off` | DuckDB's own setting forbids loading plugins | `SET enable_external_access = true;` or `SET anofox_decide_device = 'cpu';` |
+| `decide_download_runtime: the '<backend>' plugin does not match its published checksum (expected ..., got ...)` and `... was not loaded: it does not match its published checksum` | a damaged download, or the file was replaced after it was installed; the plugin **and** its `.sha256` file have been deleted | retry `CALL decide_download_runtime('<backend>');` (or `CALL decide_accelerate();`), which fetches a verified copy; report it if it recurs |
+| `could not fetch the published checksum for the '<backend>' plugin` / `the published checksum file ... does not mention '<file>'` | the release has no usable `.sha256` asset, or the network failed; the plugin was deleted rather than used unverified | retry the call; if it persists the release is incomplete: update the extension (`FORCE INSTALL anofox_decide FROM community;`) |
 | `the 'cuda' backend ... a runtime library it needs is missing` / `ran out of device memory` | CUDA 12.8+ with cuDNN 9, the ROCm MIGraphX runtime or Apple MLX is not installed; or the batch does not fit the card | install it and `CALL decide_download_runtime('cuda');`; for memory `SET anofox_decide_batch_tokens = 4096;` or `SET anofox_decide_device = 'cpu';`. More in [docs/GPU_BACKENDS.md](docs/GPU_BACKENDS.md#troubleshooting) |
 | `<setting>: must be between A and B, got X` | a setting is out of range | the message shows the default and an example `SET` |
 | `threshold must be between 0 and 1, got 70` | thresholds are fractions, not percents | use `0.7` for 70% |

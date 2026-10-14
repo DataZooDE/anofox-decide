@@ -633,7 +633,7 @@ TEST_CASE("an unusable device is reported with its reason, preferring a usable d
 	REQUIRE_THAT(choice.error, Contains("cannot run on cuda:1: plugin missing"));
 }
 
-TEST_CASE("the probe of a plugin file is memoised until a plugin is installed", "[anofox_decide][plugin]") {
+TEST_CASE("the probe of a plugin file is memoised per file identity", "[anofox_decide][plugin]") {
 	const auto dir = TempDir("probe");
 	const auto path = DecidePluginPath(dir, "cuda");
 	DecideBumpPluginProbeGeneration();
@@ -641,9 +641,8 @@ TEST_CASE("the probe of a plugin file is memoised until a plugin is installed", 
 	REQUIRE_FALSE(state.exists);
 	REQUIRE_FALSE(state.loadable);
 #ifdef DECIDE_FAKE_PLUGIN_PATH
-	// A plugin of another ABI is probed and closed again; replacing it with the right one is invisible to this
-	// session until the memo is bumped, which is what decide_accelerate() and decide_download_runtime() do after
-	// installing. (Starting from the bad one matters: a plugin that loaded stays mapped for the process lifetime,
+	// A plugin of another ABI is probed and closed again; replacing it with the right one is seen at once, because
+	// the memo is keyed by the file's identity. (Starting from the bad one matters: a plugin that loaded stays mapped for the process lifetime,
 	// and a later dlopen of the same path returns that mapping whatever the file now holds.)
 	InstallPlugin(kBadAbiPlugin, dir, "cuda");
 	state = DecideProbePlugin(path);
@@ -652,7 +651,9 @@ TEST_CASE("the probe of a plugin file is memoised until a plugin is installed", 
 	REQUIRE_THAT(state.problem, Contains("ABI version 1001"));
 	fs::remove(path);
 	fs::copy_file(kFakePlugin, path); // unlink, never truncate: a library mapped into this process would crash it
-	REQUIRE_FALSE(DecideProbePlugin(path).loadable);
+	// The memo is keyed by the file's identity (path, size, mtime), so a plugin copied over by hand is probed
+	// afresh without any bump; the bump only drops what is memoised.
+	REQUIRE(DecideProbePlugin(path).loadable);
 	DecideBumpPluginProbeGeneration();
 	state = DecideProbePlugin(path);
 	REQUIRE(state.exists);
@@ -674,6 +675,11 @@ public:
 		svr.Get(R"(/dl/.+)", [this](const duckdb_httplib_openssl::Request &req, duckdb_httplib_openssl::Response &res) {
 			Count(req.path);
 			const string name = req.path.substr(req.path.find_last_of('/') + 1);
+			if (!redirect_to.empty()) {
+				res.status = 302;
+				res.set_header("Location", redirect_to);
+				return;
+			}
 			if (redirect && files.count(name)) {
 				res.status = 302;
 				res.set_header("Location", "/cdn/" + name);
@@ -712,6 +718,7 @@ public:
 	}
 	std::map<string, string> files;
 	bool redirect = true;
+	string redirect_to; // when set, every release asset answers with a redirect to this URL
 
 private:
 	void Serve(const string &name, duckdb_httplib_openssl::Response &res) {
@@ -830,7 +837,139 @@ TEST_CASE("a sidecar that vouches for nothing, a wrong digest and a missing asse
 		auto msg = Message([&] { DecideInstallRuntime(*con.context, artifact, dir, 5000); });
 		REQUIRE_THAT(msg, Contains("could not fetch the published checksum"));
 		REQUIRE_THAT(msg, Contains("not used unverified"));
+		// ... and that is true: neither the plugin nor any scratch file is left in the directory to be loaded.
+		REQUIRE_FALSE(fs::exists(dir + "/" + artifact.plugin_name));
+		for (auto &entry : fs::directory_iterator(dir)) {
+			FAIL("left behind after a failed verification: " + entry.path().string());
+		}
 	}
+	{ // an installed plugin whose checksum can no longer be fetched is removed as well
+		const auto dir = TempDir("nosidecar2") + "/plugins";
+		Publish(server, artifact, bytes, Sha256(bytes));
+		REQUIRE_NOTHROW(DecideInstallRuntime(*con.context, artifact, dir, 5000));
+		fs::remove(dir + "/" + artifact.plugin_name + ".sha256");
+		server.files.erase(DecidePluginSha256AssetName(artifact.backend));
+		auto msg = Message([&] { DecideInstallRuntime(*con.context, artifact, dir, 5000); });
+		REQUIRE_THAT(msg, Contains("could not fetch the published checksum"));
+		REQUIRE_FALSE(fs::exists(dir + "/" + artifact.plugin_name));
+	}
+}
+
+TEST_CASE("a redirect off https, off GitHub or to another scheme is refused", "[anofox_decide][plugin][download]") {
+	ReleaseServer server;
+	const auto artifact = RocmArtifact();
+	DuckDB db(nullptr);
+	Connection con(db);
+	const auto dir = TempDir("redirect") + "/plugins";
+	Publish(server, artifact, "bytes", Sha256("bytes"));
+	server.redirect_to = "ftp://127.0.0.1/evil.so";
+	auto msg = Message([&] { DecideInstallRuntime(*con.context, artifact, dir, 5000); });
+	REQUIRE_THAT(msg, Contains("refusing to follow a redirect from 127.0.0.1"));
+	REQUIRE_THAT(msg, Contains("(not https)"));
+	REQUIRE_FALSE(fs::exists(dir + "/" + artifact.plugin_name));
+}
+
+TEST_CASE("a plugin with a sidecar is checked against it once before it is loaded; one without is trusted", "[anofox_decide][plugin][download]") {
+#ifdef DECIDE_FAKE_PLUGIN_PATH
+	const string bytes = ReadFile(kFakePlugin);
+	{ // matching sidecar: loads, and is not rehashed while the file is unchanged
+		const auto dir = TempDir("loadverify");
+		const auto path = DecidePluginPath(dir, "cuda");
+		InstallPlugin(kFakePlugin, dir, "cuda");
+		WriteFile(path + ".sha256", Sha256(bytes) + "  " + fs::path(path).filename().string() + "\n");
+		string problem;
+		REQUIRE(DecideVerifyPluginBeforeLoad(path, problem));
+		REQUIRE(DecidePluginLoadable(path));
+		// Same identity: the sidecar is not consulted again, so a now-wrong sidecar does not change the answer.
+		WriteFile(path + ".sha256", string(64, '0') + "  " + fs::path(path).filename().string() + "\n");
+		REQUIRE(DecideVerifyPluginBeforeLoad(path, problem));
+	}
+	{ // wrong sidecar: refused before dlopen, and both files are deleted
+		const auto dir = TempDir("loadverify_bad");
+		const auto path = DecidePluginPath(dir, "cuda");
+		InstallPlugin(kFakePlugin, dir, "cuda");
+		WriteFile(path + ".sha256", string(64, '0') + "  " + fs::path(path).filename().string() + "\n");
+		string error;
+		REQUIRE_FALSE(DecidePluginLoadable(path, &error));
+		REQUIRE_THAT(error, Contains("does not match its published checksum"));
+		REQUIRE_FALSE(fs::exists(path));
+		REQUIRE_FALSE(fs::exists(path + ".sha256"));
+	}
+	{ // the sidecar does not name the plugin
+		const auto dir = TempDir("loadverify_unnamed");
+		const auto path = DecidePluginPath(dir, "cuda");
+		InstallPlugin(kFakePlugin, dir, "cuda");
+		WriteFile(path + ".sha256", Sha256(bytes) + "  some_other_file.so\n");
+		auto msg = Message([&] {
+			DecideLoadPlugin(path, DecidePluginCreateParams {}, "decide_probability");
+		});
+		REQUIRE_THAT(msg, Contains("was not loaded: its checksum file does not name it"));
+		REQUIRE_THAT(msg, Contains("Fix: CALL decide_accelerate();"));
+		REQUIRE_FALSE(fs::exists(path));
+	}
+	{ // no sidecar: a plugin placed by hand is trusted
+		const auto dir = TempDir("loadverify_hand");
+		InstallPlugin(kFakePlugin, dir, "cuda");
+		REQUIRE(DecidePluginLoadable(DecidePluginPath(dir, "cuda")));
+	}
+#endif
+}
+
+TEST_CASE("the extracted runtime files are checked on every install call", "[anofox_decide][plugin][download]") {
+	auto build_zip = [](const std::vector<std::pair<string, string>> &entries) {
+		duckdb_miniz::mz_zip_archive zip {};
+		REQUIRE(duckdb_miniz::mz_zip_writer_init_heap(&zip, 0, 0));
+		for (auto &e : entries) {
+			REQUIRE(duckdb_miniz::mz_zip_writer_add_mem(&zip, e.first.c_str(), e.second.data(), e.second.size(),
+			                                            duckdb_miniz::MZ_DEFAULT_LEVEL));
+		}
+		void *buffer = nullptr;
+		size_t size = 0;
+		REQUIRE(duckdb_miniz::mz_zip_writer_finalize_heap_archive(&zip, &buffer, &size));
+		string out(static_cast<const char *>(buffer), size);
+		duckdb_miniz::mz_free(buffer);
+		duckdb_miniz::mz_zip_writer_end(&zip);
+		return out;
+	};
+	ReleaseServer server;
+	auto artifact = RocmArtifact();
+	const string provider = "provider bytes of some length";
+	const string plugin = "plugin bytes";
+	const auto wheel = build_zip({{"onnxruntime/capi/libprovider.so", provider}});
+	server.files["runtime.whl"] = wheel;
+	Publish(server, artifact, plugin, Sha256(plugin));
+	artifact.wheel_url = server.Base() + "/dl/runtime.whl";
+	artifact.wheel_bytes = (int64_t)wheel.size();
+	artifact.wheel_sha256 = Sha256(wheel);
+	artifact.wheel_entries = {{"onnxruntime/capi/libprovider.so", "libprovider.so", false, Sha256(provider)}};
+	DuckDB db(nullptr);
+	Connection con(db);
+	const auto dir = TempDir("runtimefiles") + "/plugins";
+
+	auto files = DecideInstallRuntime(*con.context, artifact, dir, 5000);
+	REQUIRE(files.size() == 2);
+	REQUIRE(ReadFile(dir + "/libprovider.so") == provider);
+	const int wheel_hits = server.Hits("runtime.whl");
+
+	// Intact: nothing is fetched again.
+	files = DecideInstallRuntime(*con.context, artifact, dir, 5000);
+	REQUIRE(files[0].status == "cached");
+	REQUIRE(server.Hits("runtime.whl") == wheel_hits);
+
+	// A truncated or replaced file is not trusted on existence: it is deleted and fetched again.
+	WriteFile(dir + "/libprovider.so", "truncat");
+	files = DecideInstallRuntime(*con.context, artifact, dir, 5000);
+	REQUIRE(files[0].status == "downloaded");
+	REQUIRE(server.Hits("runtime.whl") > wheel_hits); // fetched again (each fetch is two hits: the redirect and the asset)
+	REQUIRE(ReadFile(dir + "/libprovider.so") == provider);
+
+	// A wheel whose entry is not the pinned bytes leaves no extracted file behind.
+	fs::remove(dir + "/libprovider.so");
+	artifact.wheel_entries[0].sha256 = string(64, '1');
+	auto msg = Message([&] { DecideInstallRuntime(*con.context, artifact, dir, 5000); });
+	REQUIRE_THAT(msg, Contains("'libprovider.so' extracted from the ONNX Runtime GPU runtime does not match its pinned sha256"));
+	REQUIRE_FALSE(fs::exists(dir + "/libprovider.so"));
+	REQUIRE_FALSE(fs::exists(dir + "/.onnxruntime_gpu.whl"));
 }
 
 TEST_CASE("an unreachable release is explained with the network fix", "[anofox_decide][plugin][download]") {
@@ -1295,6 +1434,76 @@ TEST_CASE("decide_accelerate on a machine with no usable GPU says the CPU serves
 	REQUIRE_NO_FAIL(*u);
 	REQUIRE(u->GetValue(0, 0).ToString() == "none");
 	REQUIRE_THAT(u->GetValue(1, 0).ToString(), Contains("found Fake Radeon (rocm:0) but it is not usable on this machine: MIGraphX does not support"));
+}
+
+TEST_CASE("decide_accelerate with no checksum asset leaves nothing to load and does not probe", "[anofox_decide][plugin][sql][download]") {
+	if (DecideUnsupportedPluginPlatform("rocm", DecideHostPluginOs(), DecideHostPluginArch()).size() || kFakePlugin.empty()) {
+		return;
+	}
+	DeviceGuard devices({Dev("rocm:0", "Fake Radeon", "gfx1201", true)});
+	ReleaseServer server;
+	const auto artifact = RocmArtifact();
+	server.files[artifact.plugin_name] = ReadFile(kFakePlugin); // the plugin asset, but no sidecar
+	TinyCatalog catalog;
+	DuckDB db(nullptr);
+	db.LoadStaticExtension<AnofoxDecideExtension>();
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("SET anofox_decide_cache_dir = '" + catalog.cache + "'"));
+	auto r = con.Query("SELECT step, status, detail FROM decide_accelerate()");
+	REQUIRE_NO_FAIL(*r);
+	std::map<string, string> status;
+	std::map<string, string> detail;
+	for (idx_t i = 0; i < r->RowCount(); i++) {
+		status[r->GetValue(0, i).ToString()] = r->GetValue(1, i).ToString();
+		detail[r->GetValue(0, i).ToString()] = r->GetValue(2, i).ToString();
+	}
+	REQUIRE(status["download"] == "failed");
+	REQUIRE_THAT(detail["download"], Contains("not used unverified"));
+	REQUIRE(status["verify"] == "skipped");
+	REQUIRE(status.count("device") == 0);
+	REQUIRE_FALSE(fs::exists(DecidePluginPath(catalog.cache + "/plugins", "rocm")));
+	auto model = con.Query("SELECT device FROM decide_models() WHERE model = 'test-tiny'");
+	REQUIRE(model->GetValue(0, 0).ToString() == "cpu");
+}
+
+TEST_CASE("decide_gpu_precompile warms the buckets on a compile-per-shape backend only", "[anofox_decide][plugin][sql]") {
+	if (kFakePlugin.empty()) {
+		return;
+	}
+	DeviceGuard devices({Dev("cuda:0", "Fake RTX", "sm_89", true), Dev("rocm:0", "Fake Radeon", "gfx1201", true)});
+	TinyCatalog catalog;
+	DuckDB db(nullptr);
+	db.LoadStaticExtension<AnofoxDecideExtension>();
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("SET anofox_decide_cache_dir = '" + catalog.cache + "'"));
+	const auto plugin_dir = catalog.cache + "/plugins";
+	InstallPlugin(kFakePlugin, plugin_dir, "cuda");
+	InstallPlugin(kFakePlugin, plugin_dir, "rocm");
+
+	// CUDA does not compile per shape: refused, not reported as compiled.
+	REQUIRE_NO_FAIL(con.Query("SET anofox_decide_device = 'cuda'"));
+	auto cuda = con.Query("SELECT * FROM decide_gpu_precompile('test-tiny')");
+	REQUIRE(cuda->HasError());
+	REQUIRE_THAT(cuda->GetError(), Contains("decide_gpu_precompile: the 'cuda' backend does not compile per shape"));
+	REQUIRE_THAT(cuda->GetError(), Contains("Fix: only ROCm (MIGraphX) needs it"));
+
+	// ROCm: every bucket, or the one that holds seq.
+	REQUIRE_NO_FAIL(con.Query("SET anofox_decide_device = 'rocm'"));
+	auto all = con.Query("SELECT count(*), min(seq), max(seq) FROM decide_gpu_precompile('test-tiny')");
+	REQUIRE_NO_FAIL(*all);
+	REQUIRE(all->GetValue(0, 0) == Value::BIGINT(9)); // 3 + 3 + 2 + 1 row rungs over 256, 1024, 4096, 8192
+	REQUIRE(all->GetValue(1, 0) == Value::BIGINT(256));
+	REQUIRE(all->GetValue(2, 0) == Value::BIGINT(8192));
+	auto one = con.Query("SELECT DISTINCT seq FROM decide_gpu_precompile('test-tiny', seq := 300)");
+	REQUIRE_NO_FAIL(*one);
+	REQUIRE(one->RowCount() == 1);
+	REQUIRE(one->GetValue(0, 0) == Value::BIGINT(1024));
+
+	// A seq no bucket holds is an error naming the largest bucket, not zero rows.
+	auto big = con.Query("SELECT * FROM decide_gpu_precompile('test-tiny', seq := 5000000)");
+	REQUIRE(big->HasError());
+	REQUIRE_THAT(big->GetError(), Contains("seq = 5000000 is longer than the largest bucket of 'test-tiny' (8192 tokens)"));
+	REQUIRE_THAT(big->GetError(), Contains("Fix: CALL decide_gpu_precompile('test-tiny', seq := 8192);"));
 }
 
 TEST_CASE("decide_accelerate downloads, verifies and activates a plugin end to end", "[anofox_decide][plugin][sql][download]") {

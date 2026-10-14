@@ -2,14 +2,24 @@
 # Reusable: attach one GPU plugin and its sha256 sidecar to the GitHub release of the tag being built.
 #
 # Called by gpu_plugin_cuda.yml, gpu_plugin_migraphx.yml and gpu_plugin_mlx.yml from a job that `needs` the build
-# job and runs on `v*` tags only. The asset names are what decide_download_runtime asks for
-# (src/include/decide_plugin_artifacts.hpp: DecidePluginFileNameFor and DecidePluginSha256AssetName), so they are
-# passed in by the caller and checked here against the files that were built, instead of trusting a typo to fail
-# at a user's machine months later.
+# job and runs on `v*` tags (or, as a dry run, from workflow_dispatch). The asset names are what
+# decide_download_runtime asks for (src/include/decide_plugin_artifacts.hpp: DecidePluginFileNameFor and
+# DecidePluginSha256AssetName), so they are passed in by the caller and checked here against the files that were
+# built, instead of trusting a typo to fail at a user's machine months later.
 #
-# Gates, in order: DECIDE_PLUGIN_RELEASE_TAG must equal the tag; both files must exist under exactly the expected
-# names; the sidecar must list the plugin under its own file name (the loader matches the line by name, and a
-# sidecar that does not mention the file proves nothing about it); the digest must match the file.
+# Jobs, in order:
+#   verify    DECIDE_PLUGIN_RELEASE_TAG must equal the tag; both files must exist under exactly the expected
+#             names; the sidecar must list the plugin under its own file name (the loader matches the line by
+#             name, and a sidecar that does not mention the file proves nothing about it); the digest must match.
+#   draft     the release is created as a DRAFT. The three plugin workflows race here; only "already exists" is
+#             accepted from a losing racer, every other failure fails the job.
+#   upload    the plugin and its sidecar are attached to the draft.
+#   publish   when all six assets (three plugins, three sidecars) are on the draft, it is published; until then
+#             it stays a draft, so nobody can fetch a plugin without its sidecar or a release with half the
+#             plugins. If one plugin build fails the release simply never publishes.
+#
+# `dry_run` (workflow_dispatch) runs verify only, against the pinned tag instead of a pushed one, and touches no
+# release. It is the way to exercise the gates without cutting a tag.
 #
 name: GPU release assets
 
@@ -28,19 +38,37 @@ on:
         description: "sha256 sidecar name, e.g. cuda_plugin.sha256"
         required: true
         type: string
+      dry_run:
+        description: "verify the built files and the pin only; create and change no release"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
 
 jobs:
-  publish:
-    name: Attach ${{ inputs.plugin }} to the release
+  verify:
+    name: Verify ${{ inputs.plugin }}
     runs-on: ubuntu-22.04
-    timeout-minutes: 15
+    timeout-minutes: 10
     permissions:
-      contents: write
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: The pinned plugin release must be the one being published
-        run: tools/ci/check_plugin_pin.sh "${GITHUB_REF_NAME}"
-      - uses: actions/download-artifact@v4
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [ "${DRY_RUN}" = "true" ]; then
+            # No tag was pushed: check the pin against itself (well-formed) and that the gate still rejects a wrong tag.
+            pinned="$(sed -n 's/.*DECIDE_PLUGIN_RELEASE_TAG = "\(.*\)".*/\1/p' src/include/decide_plugin_artifacts.hpp)"
+            tools/ci/check_plugin_pin.sh "${pinned}"
+            if tools/ci/check_plugin_pin.sh v1999.01.01; then echo "::error::the gate accepted a wrong tag"; exit 1; fi
+          else
+            tools/ci/check_plugin_pin.sh "${GITHUB_REF_NAME}"
+          fi
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: ${{ inputs.artifact }}
           path: assets
@@ -65,15 +93,73 @@ jobs:
             exit 1
           fi
           echo "sha256 ${actual} verified for ${PLUGIN}"
-      - name: Upload release assets
+
+  draft:
+    name: Create the draft release
+    if: ${{ !inputs.dry_run }}
+    needs: [verify]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Create the release as a draft (an existing one is fine, any other failure is not)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # `gh release upload` does not create the release object. The three plugin workflows race here: the
+          # loser finds it already there, which is the only error that passes.
+          if out="$(gh release create "${GITHUB_REF_NAME}" --draft --verify-tag --generate-notes \
+                      --repo "${GITHUB_REPOSITORY}" 2>&1)"; then
+            echo "${out}"
+          elif grep -qiE 'already exists|already_exists' <<<"${out}"; then
+            echo "release ${GITHUB_REF_NAME} already exists: attaching to it"
+          else
+            echo "::error::could not create the release: ${out}"
+            exit 1
+          fi
+
+  upload:
+    name: Attach ${{ inputs.plugin }} to the draft
+    if: ${{ !inputs.dry_run }}
+    needs: [draft]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ inputs.artifact }}
+          path: assets
+      - name: Upload the plugin and its sidecar
         env:
           GH_TOKEN: ${{ github.token }}
           PLUGIN: ${{ inputs.plugin }}
           SIDECAR: ${{ inputs.sidecar }}
         run: |
-          # `gh release upload` does not create the release object: create it when a human has not yet. Three
-          # plugin workflows can race here; whoever loses finds the release already there.
-          gh release create "${GITHUB_REF_NAME}" --verify-tag --generate-notes \
-            --repo "${GITHUB_REPOSITORY}" 2>/dev/null || true
           gh release upload "${GITHUB_REF_NAME}" "assets/${PLUGIN}" "assets/${SIDECAR}" \
             --repo "${GITHUB_REPOSITORY}" --clobber
+
+  publish:
+    name: Publish the release when all six assets are attached
+    if: ${{ !inputs.dry_run }}
+    needs: [upload]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Publish once complete, otherwise leave the draft for the other plugin workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if missing="$(tools/ci/release_assets_complete.sh "${GITHUB_REF_NAME}")"; then
+            # Idempotent: the last of the three workflows to get here publishes, an earlier racer may too.
+            gh release edit "${GITHUB_REF_NAME}" --draft=false --repo "${GITHUB_REPOSITORY}"
+            echo "published ${GITHUB_REF_NAME} with all six GPU assets"
+          else
+            echo "still missing, so ${GITHUB_REF_NAME} stays a draft for now:"
+            echo "${missing}"
+          fi
