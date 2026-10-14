@@ -246,7 +246,8 @@ string DecidePluginFileIdentity(const string &path) {
 	if (ec) {
 		return "";
 	}
-	return std::to_string(size) + ":" + std::to_string(mtime.time_since_epoch().count());
+	// A cast: libc++ counts file time in __int128, which std::to_string has no overload for.
+	return std::to_string(size) + ":" + std::to_string(static_cast<long long>(mtime.time_since_epoch().count()));
 }
 
 bool DecideVerifyPluginBeforeLoad(const string &library_path, string &problem) {
