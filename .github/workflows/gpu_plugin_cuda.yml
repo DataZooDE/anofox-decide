@@ -43,7 +43,7 @@ jobs:
     timeout-minutes: 20
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # The CPU release archive carries the same public headers and the same exported C API as the GPU
       # distribution, which is all the plugin is linked against. CMake downloads it, renames its core with the
@@ -63,7 +63,7 @@ jobs:
           # Named by the file, because decide_download_runtime matches the sidecar line by filename.
           sha256sum libanofox_decide_cuda_plugin.so | tee cuda_plugin.sha256
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: anofox-decide-cuda-plugin
           path: |
@@ -73,7 +73,7 @@ jobs:
 
   publish:
     name: Attach the plugin to the release (tags only)
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: [cuda-plugin]
     permissions:
       contents: write
@@ -82,3 +82,4 @@ jobs:
       artifact: anofox-decide-cuda-plugin
       plugin: libanofox_decide_cuda_plugin.so
       sidecar: cuda_plugin.sha256
+      dry_run: ${{ github.event_name == 'workflow_dispatch' }} # a manual run verifies only; a tag publishes

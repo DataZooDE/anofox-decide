@@ -129,7 +129,8 @@ string DecidePluginDir(ClientContext &context);
 string DecidePluginPath(const string &plugin_dir, const string &backend);
 
 //! What is known about a plugin file: whether it exists and, if so, whether it loads and speaks our ABI. The
-//! load result is memoised per path (probing dlopens the library) until DecideBumpPluginProbeGeneration().
+//! load result is memoised per path AND file identity (size, mtime; probing dlopens the library), so a replaced
+//! file is probed again; DecideBumpPluginProbeGeneration() also drops the memo.
 struct DecidePluginState {
 	bool exists = false;
 	bool loadable = false;

@@ -199,8 +199,16 @@ namespace {
 
 // The session cache is keyed by what the session runs on: the CPU session of a graph is not the CUDA session
 // of the same graph, and a different precision is a different session.
-string SessionKey(const string &base, const DecideDeviceChoice &device, const string &precision) {
-	return device.backend == "cpu" ? base + "@cpu" : base + "@" + device.device_id + "/" + precision;
+// A GPU session also names the plugin it was created from (path and file identity): a plugin replaced by
+// decide_accelerate(), or copied over by hand, must not be answered by a session built from the old one, and a
+// different anofox_decide_plugin_dir is a different plugin.
+string SessionKey(const string &base, const DecideDeviceChoice &device, const string &precision,
+                  const string &plugin_path = "") {
+	if (device.backend == "cpu") {
+		return base + "@cpu";
+	}
+	return base + "@" + device.device_id + "/" + precision + "|" + plugin_path + "#" +
+	       DecidePluginFileIdentity(plugin_path);
 }
 
 } // namespace
@@ -245,6 +253,19 @@ shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, 
 	return handle;
 }
 
+void DecideLocalSession::InvalidateGpuSessions(ClientContext &context) {
+	auto cache = LocalCache(context);
+	std::lock_guard<std::mutex> guard(cache->lock);
+	for (auto it = cache->sessions.begin(); it != cache->sessions.end();) {
+		// Sessions already handed out keep their own reference and finish; new calls build from the new plugin.
+		if (it->second->impl && it->second->impl->plugin) {
+			it = cache->sessions.erase(it);
+		} else {
+			++it;
+		}
+	}
+}
+
 shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, const DecideModelEntry &entry,
                                                         const char *function_name) {
 	const string function = function_name;
@@ -257,7 +278,9 @@ shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, 
 	}
 	const string precision = DecideGpuPrecision(context);
 	const string base = "weights:" + entry.bundled_graph + "|" + entry.weights_path;
-	const string key = SessionKey(base, device, precision);
+	const string plugin_path =
+	    device.backend == "cpu" ? string() : DecidePluginPath(DecidePluginDir(context), device.backend);
+	const string key = SessionKey(base, device, precision, plugin_path);
 	auto cache = LocalCache(context);
 	std::lock_guard<std::mutex> guard(cache->lock);
 	auto it = cache->sessions.find(key);
@@ -295,8 +318,7 @@ shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, 
 		params.device_ordinal = device.ordinal;
 		auto handle = shared_ptr<DecideLocalSession>(new DecideLocalSession(base));
 		handle->impl = make_shared_ptr<Impl>();
-		handle->impl->plugin = DecideLoadPlugin(DecidePluginPath(DecidePluginDir(context), device.backend), params,
-		                                        function);
+		handle->impl->plugin = DecideLoadPlugin(plugin_path, params, function);
 		cache->sessions[key] = handle;
 		return handle;
 	}

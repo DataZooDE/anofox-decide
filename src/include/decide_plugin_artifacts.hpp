@@ -23,8 +23,10 @@ namespace anofox {
 //! so a release always contains code that points at itself (never at the previous release's plugins). The CI
 //! workflow that attaches the plugins to a release checks the same pin.
 //!
-//! A stale tag is safe by construction: the loader checks the plugin's abi_version against
-//! DECIDE_PLUGIN_ABI_VERSION and refuses a mismatch, so an older plugin cannot silently misbehave.
+//! A stale tag is NOT made safe by the loader: its abi_version check refuses only a plugin of a DIFFERENT ABI
+//! version, so an older plugin of the same ABI loads and runs (and a release without plugin assets 404s for
+//! decide_accelerate()). What prevents a stale pin is the release gate (tools/ci/check_plugin_pin.sh, run by
+//! gpu_release_gate.yml), which fails any tag that does not equal this constant.
 static constexpr const char *DECIDE_PLUGIN_RELEASE_TAG = "v2026.10.04";
 
 //! Shared-library suffix for plugins on the platform being asked about.

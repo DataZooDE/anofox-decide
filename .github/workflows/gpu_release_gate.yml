@@ -15,6 +15,7 @@ on:
   pull_request:
     paths:
       - 'tools/ci/check_plugin_pin.sh'
+      - 'tools/ci/release_assets_complete.sh'
       - 'src/include/decide_plugin_artifacts.hpp'
       - '.github/workflows/gpu_release_gate.yml'
       - '.github/workflows/_gpu_release_assets.yml'
@@ -29,7 +30,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Tag build - the pin must equal the tag
         if: startsWith(github.ref, 'refs/tags/v')
         run: tools/ci/check_plugin_pin.sh "${GITHUB_REF_NAME}"
@@ -41,3 +42,11 @@ jobs:
           echo "${pinned}" | grep -Eq '^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}$' || { echo "::error::malformed pin '${pinned}'"; exit 1; }
           tools/ci/check_plugin_pin.sh "${pinned}"
           if tools/ci/check_plugin_pin.sh v1999.01.01; then echo "::error::the gate accepted a wrong tag"; exit 1; fi
+      - name: The completeness check names what is missing, and passes only with all six assets
+        run: |
+          all='libanofox_decide_cuda_plugin.so cuda_plugin.sha256 libanofox_decide_migraphx_plugin.so migraphx_plugin.sha256 libanofox_decide_mlx_plugin.dylib mlx_plugin.sha256'
+          printf '%s\n' ${all} | tools/ci/release_assets_complete.sh v2026.10.14 -
+          if out="$(printf '%s\n' ${all} | grep -v '^mlx_plugin.sha256$' | tools/ci/release_assets_complete.sh v2026.10.14 -)"; then
+            echo "::error::five assets were accepted as complete"; exit 1
+          fi
+          test "${out}" = "mlx_plugin.sha256" || { echo "::error::wrong missing list: ${out}"; exit 1; }

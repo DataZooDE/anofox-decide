@@ -10,6 +10,8 @@
 #include "decide_errors.hpp"
 #include "decide_function_docs.hpp"
 #include "decide_guard.hpp"
+#include "decide_local_nli.hpp"
+#include "decide_plugin_loader.hpp"
 #include "decide_plugin_artifacts.hpp"
 #include "decide_registration.hpp"
 #include "decide_remote.hpp"
@@ -27,6 +29,11 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <random>
+
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
 
 namespace duckdb {
 namespace anofox {
@@ -71,12 +78,52 @@ string Origin(const string &url) {
 	return slash == string::npos ? url : url.substr(0, slash);
 }
 
+//! A name unique to this process, for scratch files two sessions sharing a plugin directory must not share.
+string ProcessSuffix() {
+	static const string suffix = [] {
+		std::random_device rd;
+		return std::to_string(rd()) + std::to_string(rd());
+	}();
+	return suffix;
+}
+
+string Scheme(const string &url) {
+	auto scheme_end = url.find("://");
+	return scheme_end == string::npos ? string() : StringUtil::Lower(url.substr(0, scheme_end));
+}
+
+//! Is it acceptable to follow a redirect from `from` to `to`, given the URL the fetch started at? Never from
+//! https to anything else (a downgrade would hand the bytes to a network attacker), and a release asset on
+//! github.com may only be redirected within GitHub's own hosts. Other origins (the ONNX Runtime wheel's feed
+//! signs a link on a storage host of its own) are held to https only.
+bool RedirectAllowed(const string &start, const string &from, const string &to) {
+	const auto target = Scheme(to);
+	if (target != "https" && target != "http") {
+		return false;
+	}
+	if (Scheme(from) == "https" && target != "https") {
+		return false;
+	}
+	if (HostOf(start) == "github.com") {
+		const auto host = StringUtil::Lower(HostOf(to));
+		auto ends = [&](const string &suffix) {
+			return host.size() >= suffix.size() && host.compare(host.size() - suffix.size(), suffix.size(), suffix) == 0;
+		};
+		return host == "github.com" || ends(".github.com") || ends(".githubusercontent.com");
+	}
+	return true;
+}
+
 //! Atomic .part-then-rename fetch. With a known size a partial file resumes with a Range request and the result
 //! must have exactly that many bytes; with -1 the file is fetched whole. Redirects are followed (a release
 //! asset is a 302 to a signed CDN URL, sent byte for byte). `not_found` is the message for a 404.
-void FetchFile(const string &url0, const string &dest, int64_t expected_size, int timeout_ms, const string &function,
-               const string &what, const string &not_found, const string &not_found_fix) {
-	const fs::path part = dest + ".part";
+//!
+//! Only the large known-size download (the ONNX Runtime wheel) keeps a fixed .part name, because resuming it
+//! across sessions is the point; its sha256 is checked afterwards, so two sessions racing on it can only fail an
+//! attempt. Everything else is written to a name private to this process.
+void FetchFileImpl(const string &url0, const string &dest, int64_t expected_size, int timeout_ms, const string &function,
+                   const string &what, const string &not_found, const string &not_found_fix) {
+	const fs::path part = expected_size > 0 ? dest + ".part" : dest + ".part." + ProcessSuffix();
 	std::error_code ec;
 	const string retry = "CALL " + function + "(...); again (a partial download resumes where it stopped)";
 	idx_t have = 0;
@@ -160,7 +207,15 @@ void FetchFile(const string &url0, const string &dest, int64_t expected_size, in
 				Fail(function, "too many redirects (or none with a Location) while fetching " + what + " from " + HostOf(url),
 				     retry);
 			}
-			url = res.location[0] == '/' ? Origin(url) + res.location : res.location;
+			const auto next = res.location[0] == '/' ? Origin(url) + res.location : res.location;
+			if (!RedirectAllowed(url0, url, next)) {
+				fs::remove(part, ec);
+				Fail(function,
+				     "refusing to follow a redirect from " + HostOf(url) + " to " + HostOf(next) + " while fetching " + what +
+				         (Scheme(next) != "https" ? " (not https)" : " (not a GitHub host)"),
+				     "check the network or proxy (something is redirecting the download); " + retry);
+			}
+			url = next;
 			continue;
 		}
 		if (res.status == 416 && !restarted) {
@@ -195,6 +250,21 @@ void FetchFile(const string &url0, const string &dest, int64_t expected_size, in
 	if (ec) {
 		Fail(function, "cannot move '" + part.string() + "' to '" + dest + "' (" + ec.message() + ")",
 		     "check the permissions of the plugin directory (anofox_decide_plugin_dir)");
+	}
+}
+
+//! FetchFileImpl, minus the leftovers: a failed fetch that wrote to a name private to this process (everything
+//! but the resumable wheel) removes it, so a failure leaves no junk next to the plugins.
+void FetchFile(const string &url0, const string &dest, int64_t expected_size, int timeout_ms, const string &function,
+               const string &what, const string &not_found, const string &not_found_fix) {
+	try {
+		FetchFileImpl(url0, dest, expected_size, timeout_ms, function, what, not_found, not_found_fix);
+	} catch (...) {
+		if (expected_size <= 0) {
+			std::error_code ec;
+			fs::remove(dest + ".part." + ProcessSuffix(), ec);
+		}
+		throw;
 	}
 }
 
@@ -236,10 +306,14 @@ bool DecideResolveRuntimeArtifact(const string &backend, const string &os, const
 		out.wheel_url = kOrtCudaWheelUrl;
 		out.wheel_bytes = kOrtCudaWheelBytes;
 		out.wheel_sha256 = kOrtCudaWheelSha256;
-		out.wheel_entries = {{"onnxruntime/capi/libonnxruntime.so.1.29.0", DECIDE_ORT_RENAMED_SONAME, true},
-		                     {"onnxruntime/capi/libonnxruntime_providers_cuda.so", "libonnxruntime_providers_cuda.so", false},
-		                     {"onnxruntime/capi/libonnxruntime_providers_shared.so",
-		                      "libonnxruntime_providers_shared.so", false}};
+		// The digests are of the files as written (the core after its SONAME rename), which is deterministic for
+		// the pinned wheel: they are checked on every install call, not just at extraction.
+		out.wheel_entries = {{"onnxruntime/capi/libonnxruntime.so.1.29.0", DECIDE_ORT_RENAMED_SONAME, true,
+		                      "62463add533442416078f7d96223d0acb562bfbc1fa16b9d7a32e6dfe458e9ef"},
+		                     {"onnxruntime/capi/libonnxruntime_providers_cuda.so", "libonnxruntime_providers_cuda.so", false,
+		                      "a4d61cc78e6d8f78c0c7fca09de7af7cd2f5f97b0db8defe64f13e8164a9534c"},
+		                     {"onnxruntime/capi/libonnxruntime_providers_shared.so", "libonnxruntime_providers_shared.so", false,
+		                      "086ec1d5388f64153d9c63470d126693db9a182c8ce236d3a1119068471b8a0d"}};
 	}
 	// ROCm ships only its plugin (it drives libmigraphx_c from the user's ROCm install); MLX only its plugin
 	// (it links the Apple libmlx/libmlxc installed on the machine and needs no ORT).
@@ -284,7 +358,7 @@ vector<string> DecideExtractWheelEntries(const string &wheel_path, const vector<
 		if (!entry.patch_soname) {
 			// The CUDA provider library is hundreds of MB: stream it to disk instead of holding it in memory.
 			const auto target = (fs::path(dest_dir) / entry.dest_name).string();
-			const auto tmp = target + ".part";
+			const auto tmp = target + ".part." + ProcessSuffix();
 			std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
 			auto sink = [](void *opaque, duckdb_miniz::mz_uint64, const void *buffer, size_t n) -> size_t {
 				auto *o = static_cast<std::ofstream *>(opaque);
@@ -334,7 +408,7 @@ vector<string> DecideExtractWheelEntries(const string &wheel_path, const vector<
 			}
 		}
 		const auto target = (fs::path(dest_dir) / entry.dest_name).string();
-		const auto tmp = target + ".part";
+		const auto tmp = target + ".part." + ProcessSuffix();
 		{
 			std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
 			out.write(static_cast<const char *>(extracted), (std::streamsize)extracted_size);
@@ -358,7 +432,12 @@ vector<string> DecideExtractWheelEntries(const string &wheel_path, const vector<
 	return written;
 }
 
-void DecideVerifyPluginDigest(const DecideRuntimeArtifact &artifact, const string &plugin_path, int timeout_ms) {
+namespace {
+
+//! The body of DecideVerifyPluginDigest. `candidate` holds the bytes being vouched for (the quarantined download,
+//! or the installed plugin itself); the sidecar and the name it must list belong to `plugin_path`.
+void VerifyAgainstSidecar(const DecideRuntimeArtifact &artifact, const string &candidate, const string &plugin_path,
+                          int timeout_ms) {
 	const string function = "decide_download_runtime";
 	if (artifact.sidecar_url.empty()) {
 		return;
@@ -384,7 +463,8 @@ void DecideVerifyPluginDigest(const DecideRuntimeArtifact &artifact, const strin
 				throw IOException(DecideMsg(function,
 				                            "could not fetch the published checksum for the '" + artifact.backend +
 				                                "' plugin (" + DecideCleanExceptionMessage(e) +
-				                                "); the plugin is native code this process would load, so it is not used unverified",
+				                                "); the plugin is native code this process would load, so it is not used "
+				                                "unverified and has been deleted",
 				                            "retry CALL decide_download_runtime('" + artifact.backend + "');"));
 			}
 		}
@@ -395,21 +475,19 @@ void DecideVerifyPluginDigest(const DecideRuntimeArtifact &artifact, const strin
 			if (!cached) {
 				Fail(function,
 				     "the published checksum file for the '" + artifact.backend + "' plugin does not mention '" + file_name +
-				         "', so it vouches for nothing; refusing to load it",
+				         "', so it vouches for nothing; refusing to load it (the plugin was deleted)",
 				     "update the extension (FORCE INSTALL anofox_decide FROM community;) or report it at "
 				     "https://github.com/DataZooDE/anofox-decide/issues");
 			}
 			continue;
 		}
-		const auto actual = DecideSha256FileHex(plugin_path);
+		const auto actual = DecideSha256FileHex(candidate);
 		if (actual == listed) {
 			expected = listed;
 			break;
 		}
 		if (!cached) {
-			// Delete both: the plugin so it cannot be loaded, the sidecar so the next attempt re-fetches rather
-			// than re-reading a stale pair.
-			fs::remove(plugin_path, ec);
+			// The sidecar goes too, so the next attempt re-fetches rather than re-reading a stale pair.
 			fs::remove(sidecar_path, ec);
 			Fail(function,
 			     "the '" + artifact.backend + "' plugin does not match its published checksum (expected " + listed +
@@ -419,22 +497,66 @@ void DecideVerifyPluginDigest(const DecideRuntimeArtifact &artifact, const strin
 		fs::remove(sidecar_path, ec); // stale: fetch the current one
 	}
 	if (expected.empty()) {
-		fs::remove(plugin_path, ec);
 		Fail(function, "the '" + artifact.backend + "' plugin could not be verified against the published checksum",
 		     "retry CALL decide_download_runtime('" + artifact.backend + "');");
 	}
 }
 
+//! Is the extracted file there and, when its digest is pinned, the one that was pinned?
+bool EntryIntact(const DecideRuntimeEntry &entry, const string &path) {
+	std::error_code ec;
+	if (!fs::exists(path, ec)) {
+		return false;
+	}
+	return entry.sha256.empty() || DecideSha256FileHex(path) == entry.sha256;
+}
+
+} // namespace
+
+void DecideVerifyPluginDigest(const DecideRuntimeArtifact &artifact, const string &plugin_path, int timeout_ms) {
+	DecideVerifyPluginDigestOf(artifact, plugin_path, plugin_path, timeout_ms);
+}
+
+void DecideVerifyPluginDigestOf(const DecideRuntimeArtifact &artifact, const string &candidate,
+                                const string &plugin_path, int timeout_ms) {
+	try {
+		VerifyAgainstSidecar(artifact, candidate, plugin_path, timeout_ms);
+	} catch (...) {
+		// Whatever went wrong (a mismatch, a sidecar that cannot be fetched, a file that cannot be read), no
+		// unverified plugin may stay where something will dlopen it.
+		std::error_code ec;
+		fs::remove(candidate, ec);
+		fs::remove(plugin_path, ec);
+		throw;
+	}
+}
+
 vector<DecideRuntimeFile> DecideInstallRuntime(ClientContext &context, const DecideRuntimeArtifact &artifact,
                                                const string &plugin_dir, int timeout_ms) {
-	(void)context;
 	const string function = "decide_download_runtime";
 	std::error_code ec;
+	const bool dir_existed = fs::exists(plugin_dir, ec);
 	fs::create_directories(plugin_dir, ec);
 	if (ec) {
 		Fail(function, "cannot create the plugin directory '" + plugin_dir + "' (" + ec.message() + ")",
 		     "SET anofox_decide_plugin_dir = '<a writable directory>';");
 	}
+#ifndef _WIN32
+	if (!dir_existed) {
+		// Not at the mercy of a permissive umask (Ubuntu's default is 002): the check below would refuse it.
+		fs::permissions(plugin_dir, fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec |
+		                                fs::perms::others_read | fs::perms::others_exec,
+		                ec);
+	}
+	// A plugin is native code this process loads: whoever can write to the directory can replace it.
+	struct stat dir_stat;
+	if (stat(plugin_dir.c_str(), &dir_stat) == 0 && (dir_stat.st_mode & (S_IWGRP | S_IWOTH))) {
+		Fail(function, "the plugin directory '" + plugin_dir + "' is writable by other users, who could replace the plugins in it",
+		     "chmod go-w '" + plugin_dir + "'; or SET anofox_decide_plugin_dir = '<a directory only you can write>';");
+	}
+#else
+	(void)dir_existed;
+#endif
 	struct Target {
 		string path;
 		bool present;
@@ -443,7 +565,12 @@ vector<DecideRuntimeFile> DecideInstallRuntime(ClientContext &context, const Dec
 	bool wheel_needed = false;
 	for (auto &entry : artifact.wheel_entries) {
 		const auto path = (fs::path(plugin_dir) / entry.dest_name).string();
-		const bool present = fs::exists(path, ec);
+		// Existence is not enough: a truncated or replaced runtime file would be loaded by the plugin's
+		// DT_NEEDED without any other check, so a pinned digest is compared on every call and a mismatch deletes.
+		const bool present = EntryIntact(entry, path);
+		if (!present) {
+			fs::remove(path, ec);
+		}
 		wheel_needed = wheel_needed || !present;
 		targets.push_back({path, present});
 	}
@@ -463,26 +590,61 @@ vector<DecideRuntimeFile> DecideInstallRuntime(ClientContext &context, const Dec
 			     "retry the call; if it recurs the source changed, update the extension "
 			     "(FORCE INSTALL anofox_decide FROM community;)");
 		}
+		auto discard_runtime = [&]() {
+			fs::remove(wheel_path, ec);
+			for (auto &entry : artifact.wheel_entries) {
+				fs::remove(fs::path(plugin_dir) / entry.dest_name, ec); // no half-extracted runtime stays behind
+			}
+		};
 		try {
 			DecideExtractWheelEntries(wheel_path, artifact.wheel_entries, plugin_dir, function);
+			for (auto &entry : artifact.wheel_entries) {
+				if (!entry.sha256.empty() && !EntryIntact(entry, (fs::path(plugin_dir) / entry.dest_name).string())) {
+					Fail(function,
+					     "'" + entry.dest_name + "' extracted from the ONNX Runtime GPU runtime does not match its pinned sha256; "
+					     "the extracted files were deleted",
+					     "retry the call; if it recurs the source changed, update the extension "
+					     "(FORCE INSTALL anofox_decide FROM community;)");
+				}
+			}
 		} catch (...) {
-			fs::remove(wheel_path, ec);
+			discard_runtime();
 			throw;
 		}
 		fs::remove(wheel_path, ec); // scratch, not a cache entry
 	}
-	if (!plugin_present) {
-		FetchFile(artifact.plugin_url, plugin_path, -1, timeout_ms, function,
-		          "the '" + artifact.backend + "' plugin",
-		          "the release " + string(DECIDE_PLUGIN_RELEASE_TAG) + " has no '" + artifact.plugin_name +
-		              "' asset: this release was published without GPU plugins",
-		          "update the extension (FORCE INSTALL anofox_decide FROM community;) or SET anofox_decide_device = 'cpu';");
-	}
 	// Verified before anything dlopens these bytes, on a cached hit as well as on a fresh download: the
 	// "already present" decision is existence-only, so without this one corrupt file would be trusted for as
-	// long as it sat there.
-	DecideVerifyPluginDigest(artifact, plugin_path, timeout_ms);
+	// long as it sat there. (A plugin dropped in by hand is replaced or refused here as well: it is checked
+	// against the release's sidecar like any other.)
+	if (plugin_present) {
+		DecideVerifyPluginDigest(artifact, plugin_path, timeout_ms);
+	} else {
+		// Quarantine: the download lands under a name nothing loads, and moves into place only after its digest
+		// matched. Every failure on the way deletes it.
+		const auto quarantine = plugin_path + ".verify." + ProcessSuffix();
+		try {
+			FetchFile(artifact.plugin_url, quarantine, -1, timeout_ms, function,
+			          "the '" + artifact.backend + "' plugin",
+			          "the release " + string(DECIDE_PLUGIN_RELEASE_TAG) + " has no '" + artifact.plugin_name +
+			              "' asset: this release was published without GPU plugins",
+			          "update the extension (FORCE INSTALL anofox_decide FROM community;) or SET anofox_decide_device = 'cpu';");
+			DecideVerifyPluginDigestOf(artifact, quarantine, plugin_path, timeout_ms);
+		} catch (...) {
+			fs::remove(quarantine, ec);
+			fs::remove(plugin_path, ec);
+			throw;
+		}
+		fs::remove(plugin_path, ec);
+		fs::rename(quarantine, plugin_path, ec);
+		if (ec) {
+			fs::remove(quarantine, ec);
+			Fail(function, "cannot move the verified plugin into '" + plugin_path + "' (" + ec.message() + ")",
+			     "check the permissions of the plugin directory (anofox_decide_plugin_dir)");
+		}
+	}
 	DecideBumpPluginProbeGeneration(); // a plugin that has just arrived is visible to this session now
+	DecideLocalSession::InvalidateGpuSessions(context); // and a session built from the plugin it replaced is not reused
 
 	vector<DecideRuntimeFile> files;
 	for (auto &target : targets) {
@@ -494,6 +656,7 @@ vector<DecideRuntimeFile> DecideInstallRuntime(ClientContext &context, const Dec
 	}
 	return files;
 }
+
 
 //===----------------------------------------------------------------------===//
 // decide_download_runtime(backend)
@@ -653,6 +816,7 @@ unique_ptr<GlobalTableFunctionState> AccelerateInit(ClientContext &context, Tabl
 	DecideRuntimeArtifact artifact;
 	string error;
 	DecideResolveRuntimeArtifact(backend, DecideHostPluginOs(), DecideHostPluginArch(), artifact, error);
+	bool installed = false;
 	try {
 		int64_t fetched = 0, cached = 0;
 		for (auto &file : DecideInstallRuntime(context, artifact, plugin_dir, TimeoutMs(context))) {
@@ -661,8 +825,15 @@ unique_ptr<GlobalTableFunctionState> AccelerateInit(ClientContext &context, Tabl
 		add("download", fetched > 0 ? "downloaded" : "cached",
 		    plugin_dir + ": " + std::to_string(fetched) + " bytes fetched, " + std::to_string(cached) +
 		        " bytes already present, checksum verified");
+		installed = true;
 	} catch (const std::exception &e) {
 		add("download", "failed", DecideCleanExceptionMessage(e));
+	}
+	if (!installed) {
+		// Nothing that failed verification is loaded to find out what it is: the probe runs the library's code.
+		add("verify", "skipped", "the plugin was not installed (see the download step), so it was not loaded. Scoring "
+		                         "continues on the CPU.");
+		return std::move(state);
 	}
 
 	// The proof: the plugin loads and speaks an ABI we know. No create(), no scoring.
@@ -721,8 +892,9 @@ void RegisterDecideAccelerate(ExtensionLoader &loader) {
 		RegisterTableFunctionWithAlias(
 		    loader, std::move(func), "decide_download_runtime",
 		    DecideDocs("Download the GPU plugin for 'cuda', 'rocm' or 'mlx' into anofox_decide_plugin_dir (default "
-		               "<cache dir>/plugins) and verify it against the sha256 published with the release, on download "
-		               "and on every cached call. CUDA also fetches the pinned ONNX Runtime GPU runtime. Refuses a "
+		               "<cache dir>/plugins) and verify it against the sha256 published with the release before it is "
+		               "moved into place, and again on every later call of this function (a mismatch deletes it). CUDA "
+		               "also fetches the pinned ONNX Runtime GPU runtime. Refuses a "
 		               "platform nothing is published for before downloading. Columns: file, bytes, status (cached / "
 		               "downloaded).",
 		               "devices", {{{"backend"}, {LogicalType::VARCHAR}, "CALL decide_download_runtime('cuda');"}}));

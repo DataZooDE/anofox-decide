@@ -88,9 +88,27 @@ unique_ptr<GlobalTableFunctionState> PrecompileInit(ClientContext &context, Tabl
 		    "CALL decide_accelerate(); then SET anofox_decide_device = 'rocm'; (decide_backends() shows what serves "
 		    "which model)"));
 	}
+	// Only a backend that compiles per shape has anything to warm: on CUDA and MLX the plugin's precompile is a
+	// no-op, and a row per bucket would claim compilation that never happened.
+	if (device.backend != "rocm") {
+		throw InvalidInputException(DecideMsg(
+		    function,
+		    "the '" + device.backend + "' backend does not compile per shape, so there is nothing to precompile for '" +
+		        entry.id + "' on " + device.device_id,
+		    "only ROCm (MIGraphX) needs it: SET anofox_decide_device = 'rocm'; on a machine with an AMD GPU"));
+	}
+	const auto plan = decide_gpu::PlanBuckets(entry.catalog_id, data.seq);
+	if (plan.empty()) {
+		const auto largest = decide_gpu::SeqBuckets(entry.catalog_id).back();
+		throw InvalidInputException(DecideMsg(
+		    function,
+		    "seq = " + std::to_string(data.seq) + " is longer than the largest bucket of '" + entry.id + "' (" +
+		        std::to_string(largest) + " tokens), so no program serves it",
+		    "CALL decide_gpu_precompile('" + data.model + "', seq := " + std::to_string(largest) + "); (or omit seq to compile every bucket)"));
+	}
 	auto session = DecideLocalSession::Open(context, entry, function);
 	auto state = make_uniq<PrecompileState>();
-	for (auto &bucket : decide_gpu::PlanBuckets(entry.catalog_id, data.seq)) {
+	for (auto &bucket : plan) {
 		const auto start = std::chrono::steady_clock::now();
 		session->Precompile(bucket.batch, bucket.seq, bucket.markers, function);
 		PrecompileRow row;

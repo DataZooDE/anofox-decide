@@ -39,6 +39,17 @@ public:
 	virtual const string &Backend() const = 0;
 };
 
+//! "<size>:<mtime>" of a file, "" when it cannot be stat'ed. What the verification and probe caches key on, so a
+//! replaced plugin is never mistaken for the one that was checked or probed.
+string DecidePluginFileIdentity(const string &path);
+
+//! Checks a plugin file against the `<file>.sha256` sidecar next to it (the one decide_download_runtime wrote),
+//! the first time this process meets these bytes (cached by path, size and mtime, so scoring does not rehash).
+//! A plugin with NO sidecar was placed by hand and is trusted. On a mismatch, or a sidecar that does not name the
+//! file, both are deleted and false is returned with the reason in `problem`. Called by DecidePluginLoadable and
+//! DecideLoadPlugin before they dlopen; the residual TOCTOU is described at the definition.
+bool DecideVerifyPluginBeforeLoad(const string &library_path, string &problem);
+
 //! Load `library_path` and construct its backend with `params`.
 //!
 //! Throws IOException when the library cannot be loaded, does not export the entry point, or was built against

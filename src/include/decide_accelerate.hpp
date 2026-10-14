@@ -3,9 +3,12 @@
 //
 // A plugin is native code this process loads, so "downloaded over HTTPS from a URL we built" is not enough: it
 // authenticates the host, not the artifact, and says nothing about a truncated transfer or a cache poisoned
-// afterwards. Every plugin is checked against the sha256 sidecar published next to it in the pinned release,
-// on download and on every cached hit (an existence check alone would trust one corrupt file for as long as it
-// sat there), and a sidecar that does not name the file proves nothing and is refused.
+// afterwards. A download lands under a quarantine name and is moved into place only after it matched the sha256
+// sidecar published next to it in the pinned release; every later decide_download_runtime / decide_accelerate
+// call re-checks the installed file the same way, and the loader checks it against the sidecar once per file
+// identity before it loads it (decide_plugin_loader.hpp). A sidecar that does not name the file proves nothing
+// and is refused. The sidecar comes from the same release as the plugin, so this is integrity (damage, a
+// swapped asset), not authenticity. A plugin with no sidecar was placed by hand and is trusted.
 //===----------------------------------------------------------------------===//
 
 #pragma once
@@ -24,6 +27,9 @@ struct DecideRuntimeEntry {
 	string zip_path;
 	string dest_name;
 	bool patch_soname = false;
+	//! sha256 of the file as written to disk (after the SONAME patch). Empty = not pinned. Checked on every
+	//! install call; a mismatch deletes the file.
+	string sha256;
 };
 
 struct DecideRuntimeArtifact {
@@ -61,8 +67,14 @@ vector<string> DecideExtractWheelEntries(const string &wheel_path, const vector<
                                          const string &dest_dir, const string &function);
 
 //! Checks `plugin_path` against the sidecar next to it (fetching the sidecar when absent). Throws IOException
-//! and deletes the plugin and the sidecar on any mismatch.
+//! and deletes the plugin on EVERY failure (a mismatch, a sidecar that does not name it, a sidecar that cannot be
+//! fetched), so nothing unverified stays where a later call would load it.
 void DecideVerifyPluginDigest(const DecideRuntimeArtifact &artifact, const string &plugin_path, int timeout_ms);
+
+//! The same check for bytes held under another name (`candidate`, the quarantined download), vouched for by the
+//! sidecar of `plugin_path`. Deletes both `candidate` and `plugin_path` on any failure.
+void DecideVerifyPluginDigestOf(const DecideRuntimeArtifact &artifact, const string &candidate,
+                                const string &plugin_path, int timeout_ms);
 
 //! TEST HOOK, never called by the extension: the release download root the plugin URLs are built from, so a
 //! loopback server can stand in for GitHub. Empty restores the default.
