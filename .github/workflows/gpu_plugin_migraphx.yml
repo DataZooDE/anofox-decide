@@ -78,3 +78,15 @@ jobs:
             libanofox_decide_migraphx_plugin.so
             migraphx_plugin.sha256
           if-no-files-found: error
+
+  publish:
+    name: Attach the plugin to the release (tags only)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [migraphx-plugin]
+    permissions:
+      contents: write
+    uses: ./.github/workflows/_gpu_release_assets.yml
+    with:
+      artifact: anofox-decide-migraphx-plugin
+      plugin: libanofox_decide_migraphx_plugin.so
+      sidecar: migraphx_plugin.sha256

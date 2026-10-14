@@ -13,10 +13,21 @@ Models (all optional, pick with --models):
                                ticket text leaves the machine)
   laya-ml, laya-td, julia      local ONNX graphs (env: LAYA_ML_DIR/LAYA_ML_ONNX, LAYA_TD_DIR/LAYA_TD_ONNX,
                                JULIA_WEIGHTS_DIR/JULIA_ONNX)
+  laya-multilingual, laya-typed-decisions, julia-1
+                               the same three models as catalog downloads (decide_download; ~2 GB, needs network
+                               once). GPU backends serve only these: a model registered with its own .onnx graph
+                               (laya-ml, laya-td, julia above) always runs on the CPU
   kev                          a running Kev server (--kev-url, default http://127.0.0.1:8009)
   strands                      a running `strands-decider serve` (--strands-url, default http://127.0.0.1:8000)
 
 --concurrency N sets anofox_decide_max_concurrency (0 = automatic: 8 for hosted providers, 1 for local).
+--device auto|cpu|cuda|rocm|mlx sets anofox_decide_device for the run and checks decide_models().device afterwards.
+A model that was not served on the requested device (a GPU request that fell to the CPU, a CPU request served
+elsewhere, a model that has no device because it is hosted) is REFUSED: its results are deleted, no report is
+written and the exit status is 2, so a CPU number can never be filed as a GPU number. `auto` accepts whatever
+served. With --device the serving device and the wall time are recorded in report.md and report.json. Without it
+nothing changes.
+
 Needs a built extension (default build/release). Telemetry is always disabled here.
 """
 import argparse
@@ -40,6 +51,28 @@ CLASSES = ["billing", "orders", "account", "other"]
 
 def esc(s):
     return s.replace("'", "''")
+
+
+DEVICES = ["auto", "cpu", "cuda", "rocm", "mlx"]
+
+
+def device_refusal(requested, serving):
+    """Why a model scored on `serving` (decide_models().device: "cpu", "cuda:0", ..., or ""/None) may not be
+    reported for a run that asked for `requested`; None when it may. `requested` None or "auto" accepts any."""
+    if requested in (None, "auto"):
+        return None
+    if not serving:
+        return (f"requested device '{requested}' but decide_models().device is empty: the model is not a local "
+                f"model that a device serves (hosted and server models have none)")
+    kind = serving.split(":")[0]
+    if requested == "cpu":
+        return None if kind == "cpu" else f"requested 'cpu' but the model was served on '{serving}'"
+    if kind == "cpu":
+        return (f"requested '{requested}' but the model fell back to the CPU "
+                f"(CALL decide_accelerate(); and check decide_backends())")
+    if kind != requested:
+        return f"requested '{requested}' but the model was served on '{serving}'"
+    return None
 
 
 def models(env, kev_url, strands_url):
@@ -68,6 +101,11 @@ def models(env, kev_url, strands_url):
                   f"SELECT decide_register_model('julia','local','{esc(env.get('JULIA_ONNX',''))}',"
                   f"'{esc(env.get('JULIA_WEIGHTS_DIR',''))}/tokenizer/tokenizer.json');", "julia",
                   ["JULIA_ONNX", "JULIA_WEIGHTS_DIR"]),
+        "laya-multilingual": ("Laya multilingual (catalog)", "CALL decide_download('laya-multilingual');",
+                              "laya-multilingual", []),
+        "laya-typed-decisions": ("Laya typed-decisions (catalog)", "CALL decide_download('laya-typed-decisions');",
+                                 "laya-typed-decisions", []),
+        "julia-1": ("Julia-1 (catalog)", "CALL decide_download('julia-1');", "julia-1", []),
         "kev": ("Kev-0.8B (server)",
                 "CREATE SECRET (TYPE anofox_decide, API_KEY 'local', SCOPE '127.0.0.1');"
                 f"SELECT decide_register_model('kev-latest','systemone',MAP {{'endpoint':'{kev_url}'}});",
@@ -78,7 +116,9 @@ def models(env, kev_url, strands_url):
     }
 
 
-def run_model(name, spec, tickets, out, duckdb, ext, env, concurrency=None, batch_tokens=None):
+def run_model(name, spec, tickets, out, duckdb, ext, env, concurrency=None, batch_tokens=None, device=None):
+    """Score one model. Returns (seconds, serving device) or None on a failure or skip. With `device` set, raises
+    DeviceRefused when the model was not served on it (its results file is removed first)."""
     display, register, model_id, keys = spec
     missing = [k for k in keys if not env.get(k)]
     if missing:
@@ -88,6 +128,14 @@ def run_model(name, spec, tickets, out, duckdb, ext, env, concurrency=None, batc
     setting = f"SET anofox_decide_max_concurrency = {int(concurrency)};\n" if concurrency is not None else ""
     if batch_tokens is not None:
         setting += f"SET anofox_decide_batch_tokens = {int(batch_tokens)};\n"
+    serving_csv = out / f"serving_{name}.csv"
+    serving_sql = ""
+    if device is not None:
+        setting += f"SET anofox_decide_device = '{device}';\n"
+        serving_csv.unlink(missing_ok=True)
+        res.unlink(missing_ok=True)  # never leave a previous run's numbers to be reported for this one
+        serving_sql = (f"COPY (SELECT device FROM decide_models() WHERE model = '{esc(model_id)}') "
+                       f"TO '{esc(str(serving_csv))}' (HEADER);")
     sql = f"""
 LOAD '{esc(str(ext))}';
 SET anofox_decide_allow_remote = true;
@@ -98,6 +146,7 @@ COPY (
   FROM (SELECT id, unnest(decide_answers(text, '{esc(QUESTIONS)}', model := '{model_id}'), recursive := true) FROM t)
   ORDER BY 1, 2
 ) TO '{esc(str(res))}' (HEADER);
+{serving_sql}
 """
     e = dict(env, DATAZOO_DISABLE_TELEMETRY="1")
     t0 = time.time()
@@ -105,10 +154,25 @@ COPY (
     dt = time.time() - t0
     if p.returncode != 0 or not res.exists():
         err = "\n".join(l for l in p.stderr.splitlines() if "Schema error" not in l and l.strip())[:600]
+        if device not in (None, "auto") and "anofox_decide_device" in err:
+            # An explicit device that cannot serve the model is a hard error of the extension, never a CPU run.
+            raise DeviceRefused(f"REFUSED {name}: the extension would not serve it on '{device}': {err}")
         print(f"FAIL {name}: {err}", file=sys.stderr)
         return None
-    print(f"ok   {name}: {dt:.0f}s", file=sys.stderr)
-    return dt
+    serving = ""
+    if device is not None:
+        rows = list(csv.DictReader(open(serving_csv))) if serving_csv.exists() else []
+        serving = (rows[0]["device"] if rows else "") or ""
+        why = device_refusal(device, serving)
+        if why:
+            res.unlink(missing_ok=True)
+            raise DeviceRefused(f"REFUSED {name}: {why}")
+    print(f"ok   {name}: {dt:.0f}s" + (f" on {serving or 'n/a'}" if device is not None else ""), file=sys.stderr)
+    return dt, serving
+
+
+class DeviceRefused(Exception):
+    pass
 
 
 # --- metrics ---------------------------------------------------------------
@@ -202,7 +266,7 @@ def analyse(tickets, out, names, displays):
     return report, truth
 
 
-def render(report, truth, times):
+def render(report, truth, times, serving=None):
     ids = sorted(truth)
     pos = sum(1 for i in ids if truth[i]["refund"] == "true")
     routing = {cl: sum(1 for i in ids if truth[i]["routing"] == cl) for cl in CLASSES}
@@ -240,7 +304,11 @@ def render(report, truth, times):
             pr = "best" if k == best_ref else f"{mcnemar_exact(report[best_ref]['_ok_ref'], report[k]['_ok_ref']):.3f}"
             pt = "best" if k == best_route else f"{mcnemar_exact(report[best_route]['_ok_route'], report[k]['_ok_route']):.3f}"
             L.append(f"| {report[k]['display']} | {pr} | {pt} |")
-    if times:
+    if times and serving:
+        L += ["", "## Wall time for the whole sample, and the device that served it", "",
+              "Wall time includes session start and model load.", "", "| Model | Device | Seconds |", "|---|---|---|"]
+        L += [f"| {report[k]['display']} | {serving.get(k) or 'n/a'} | {times[k]:.0f} |" for k in order if k in times]
+    elif times:
         L += ["", "## Wall time for the whole sample", "", "| Model | Seconds |", "|---|---|"]
         L += [f"| {report[k]['display']} | {times[k]:.0f} |" for k in order if k in times]
     return "\n".join(L) + "\n"
@@ -259,6 +327,9 @@ def main():
                     help="anofox_decide_max_concurrency for hosted models (0 = automatic, the extension default)")
     ap.add_argument("--batch-tokens", type=int, default=None,
                     help="anofox_decide_batch_tokens for local models (0 = off, the extension default)")
+    ap.add_argument("--device", choices=DEVICES, default=None,
+                    help="anofox_decide_device for local models; the run is refused unless decide_models().device "
+                         "agrees (auto accepts any); records the serving device and wall time")
     ap.add_argument("--analyse-only", action="store_true", help="skip scoring; reuse results_*.csv in --out")
     a = ap.parse_args()
     out = Path(a.out)
@@ -269,18 +340,35 @@ def main():
     unknown = [m for m in names if m not in specs]
     if unknown:
         sys.exit(f"unknown model(s): {unknown}; choose from {sorted(specs)}")
-    times = {}
+    if a.device is not None and a.analyse_only:
+        sys.exit("--device needs scoring: it cannot be checked on reused results (drop --analyse-only)")
+    times, serving = {}, {}
+    refused = []
     if not a.analyse_only:
         for n in names:
-            t = run_model(n, specs[n], a.tickets, out, a.duckdb, a.extension, env, a.concurrency, a.batch_tokens)
-            if t is not None:
-                times[n] = t
+            try:
+                r = run_model(n, specs[n], a.tickets, out, a.duckdb, a.extension, env, a.concurrency,
+                              a.batch_tokens, a.device)
+            except DeviceRefused as e:
+                print(str(e), file=sys.stderr)
+                refused.append(n)
+                continue
+            if r is not None:
+                times[n], serving[n] = r
+    if refused:
+        print(f"no report written: {', '.join(refused)} not served on --device {a.device}", file=sys.stderr)
+        sys.exit(2)
     report, truth = analyse(a.tickets, out, names, {k: v[0] for k, v in specs.items()})
     if not report:
         sys.exit("no model produced complete results")
-    md = render(report, truth, times)
+    md = render(report, truth, times, serving if a.device is not None else None)
     (out / "report.md").write_text(md)
     clean = {k: {kk: vv for kk, vv in v.items() if not kk.startswith("_")} for k, v in report.items()}
+    if a.device is not None:
+        for k, v in clean.items():
+            v["requested_device"] = a.device
+            v["serving_device"] = serving.get(k, "")
+            v["wall_seconds"] = times.get(k)
     (out / "report.json").write_text(json.dumps(clean, indent=2))
     print(md)
 

@@ -1,0 +1,79 @@
+#
+# Reusable: attach one GPU plugin and its sha256 sidecar to the GitHub release of the tag being built.
+#
+# Called by gpu_plugin_cuda.yml, gpu_plugin_migraphx.yml and gpu_plugin_mlx.yml from a job that `needs` the build
+# job and runs on `v*` tags only. The asset names are what decide_download_runtime asks for
+# (src/include/decide_plugin_artifacts.hpp: DecidePluginFileNameFor and DecidePluginSha256AssetName), so they are
+# passed in by the caller and checked here against the files that were built, instead of trusting a typo to fail
+# at a user's machine months later.
+#
+# Gates, in order: DECIDE_PLUGIN_RELEASE_TAG must equal the tag; both files must exist under exactly the expected
+# names; the sidecar must list the plugin under its own file name (the loader matches the line by name, and a
+# sidecar that does not mention the file proves nothing about it); the digest must match the file.
+#
+name: GPU release assets
+
+on:
+  workflow_call:
+    inputs:
+      artifact:
+        description: "name of the upload-artifact bundle the build job produced"
+        required: true
+        type: string
+      plugin:
+        description: "plugin file name as decide_download_runtime expects it, e.g. libanofox_decide_cuda_plugin.so"
+        required: true
+        type: string
+      sidecar:
+        description: "sha256 sidecar name, e.g. cuda_plugin.sha256"
+        required: true
+        type: string
+
+jobs:
+  publish:
+    name: Attach ${{ inputs.plugin }} to the release
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: The pinned plugin release must be the one being published
+        run: tools/ci/check_plugin_pin.sh "${GITHUB_REF_NAME}"
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact }}
+          path: assets
+      - name: The assets carry the names decide_download_runtime asks for, and the sidecar vouches for the plugin
+        env:
+          PLUGIN: ${{ inputs.plugin }}
+          SIDECAR: ${{ inputs.sidecar }}
+        run: |
+          ls -l assets
+          test -f "assets/${PLUGIN}" || { echo "::error::missing asset ${PLUGIN}"; exit 1; }
+          test -f "assets/${SIDECAR}" || { echo "::error::missing asset ${SIDECAR}"; exit 1; }
+          # The sidecar line is "<64 hex>  <name>" (the name may carry a build directory): match it by file name.
+          expected="$(awk -v f="${PLUGIN}" '{ n=$2; sub(/^\*/, "", n); sub(/.*\//, "", n); if (n == f) print $1 }' "assets/${SIDECAR}")"
+          if [ -z "${expected}" ]; then
+            echo "::error::${SIDECAR} does not list ${PLUGIN}"
+            cat "assets/${SIDECAR}"
+            exit 1
+          fi
+          actual="$(sha256sum "assets/${PLUGIN}" | cut -d' ' -f1)"
+          if [ "${expected}" != "${actual}" ]; then
+            echo "::error::${SIDECAR} says ${expected} but ${PLUGIN} is ${actual}"
+            exit 1
+          fi
+          echo "sha256 ${actual} verified for ${PLUGIN}"
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLUGIN: ${{ inputs.plugin }}
+          SIDECAR: ${{ inputs.sidecar }}
+        run: |
+          # `gh release upload` does not create the release object: create it when a human has not yet. Three
+          # plugin workflows can race here; whoever loses finds the release already there.
+          gh release create "${GITHUB_REF_NAME}" --verify-tag --generate-notes \
+            --repo "${GITHUB_REPOSITORY}" 2>/dev/null || true
+          gh release upload "${GITHUB_REF_NAME}" "assets/${PLUGIN}" "assets/${SIDECAR}" \
+            --repo "${GITHUB_REPOSITORY}" --clobber
