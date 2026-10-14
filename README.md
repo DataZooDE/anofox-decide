@@ -240,10 +240,10 @@ Every function is available as `anofox_decide_<name>` and as the short alias `de
 | `decide_ece(p, outcome)` | `DOUBLE` | expected calibration error over ten equal-width bins (aggregate) |
 | `decide_fit_calibration(p, outcome)` | `VARCHAR` | fits Platt scaling to a model's raw probabilities and returns the `'platt:a,b'` spec for `decide_register_model` ([Calibration](#calibration)) (aggregate) |
 | `decide_download(model)` | table | download a local model's weights from Hugging Face into the cache directory, verified and resumable ([Local models](#local-models)) |
-| `decide_devices()` | table | the devices this machine can score local models on (cpu, and any NVIDIA, AMD or Apple GPU found), with `usable` and why not ([GPU](#gpu-infrastructure)) |
-| `decide_backends()` | table | which device can serve which local model, and why not: the same check `anofox_decide_device = 'auto'` uses ([GPU](#gpu-infrastructure)) |
-| `decide_accelerate()` | table | finds the GPU, downloads and verifies its plugin, activates it for this session ([GPU](#gpu-infrastructure)) |
-| `decide_download_runtime(backend)` | table | download and verify the plugin of `'cuda'`, `'rocm'` or `'mlx'` ([GPU](#gpu-infrastructure)) |
+| `decide_devices()` | table | the devices this machine can score local models on (cpu, and any NVIDIA, AMD or Apple GPU found), with `usable` and why not ([GPU](#gpu-acceleration)) |
+| `decide_backends()` | table | which device can serve which local model, and why not: the same check `anofox_decide_device = 'auto'` uses ([GPU](#gpu-acceleration)) |
+| `decide_accelerate()` | table | finds the GPU, downloads and verifies its plugin, activates it for this session ([GPU](#gpu-acceleration)) |
+| `decide_download_runtime(backend)` | table | download and verify the plugin of `'cuda'`, `'rocm'` or `'mlx'` ([GPU](#gpu-acceleration)) |
 | `decide_gpu_precompile(model[, seq := N])` | table | compile a local model's shape buckets ahead of time on the ROCm backend, with the seconds each took ([ROCm](docs/GPU_ROCM.md)) |
 | `decide_register_model(id[, provider[, ...]])` | `BOOLEAN` | register a model for this database instance |
 | `decide_unregister_model(id)` | `BOOLEAN` | remove a registered model so it can be registered again |
@@ -561,19 +561,23 @@ to keep a GPU busy: with one row per call a GPU waits, with a batch it does not.
 
 See [`examples/05_local_model.sql`](examples/05_local_model.sql).
 
-### GPU infrastructure
+### GPU acceleration
 
-The extension stays one CPU-only file. A GPU backend (CUDA, ROCm/MIGraphX, Apple MLX) is a separate plugin the
-extension loads when asked, behind one C interface (`src/include/decide_plugin_abi.h`); the plugins are built and
-attached to the releases separately, and **this release ships the infrastructure only**: no plugin is published
-yet, so `decide_accelerate()` finds nothing to download and everything keeps running on the CPU. What is in place:
+The extension stays one CPU-only file. A GPU backend (NVIDIA CUDA, AMD ROCm/MIGraphX, Apple MLX) is a separate
+plugin the extension loads when asked, fetched from the release and verified before it is used. Nothing changes
+until you ask: without a plugin every local model scores on the CPU exactly as before.
 
 ```sql
 SELECT * FROM decide_devices();     -- cpu, plus any NVIDIA / AMD / Apple GPU found, usable or not and why
-SELECT * FROM decide_backends();    -- per local model and device: supported, or the reason and the fix
 CALL decide_accelerate();           -- find the GPU, download and verify its plugin, use it from now on
+SELECT * FROM decide_backends();    -- per local model and device: supported, or the reason and the fix
 SELECT model, device FROM decide_models();   -- where each local model is scored right now
+SET anofox_decide_batch_tokens = 8192;       -- advisable on a GPU: score the rows of a chunk together
 ```
+
+`decide_download_runtime('cuda')` (or `'rocm'`, `'mlx'`) fetches one backend's plugin explicitly. Requirements, all
+fp32: CUDA 12.8 or newer with cuDNN 9 on Linux x86-64; ROCm 7.x with MIGraphX on Linux x86-64 for a supported
+architecture; macOS on Apple silicon with `brew install mlx mlx-c`.
 
 `anofox_decide_device` is `auto` by default: a GPU is used only when its plugin is installed, the device is usable
 and the plugin serves the model, and `decide_backends()` is the same check, so `auto` never names a device that
@@ -582,15 +586,22 @@ table calls unsupported. `cpu` always scores on the CPU. `cuda`, `rocm` or `mlx`
 Only the models from `decide_download` can run on a GPU (the plugin loads their safetensors file itself); a model
 registered with its own `.onnx` graph stays on the CPU. Plugins are native code, so every download is checked
 against the sha256 published with the release, on download and on every later call, and a plugin built against
-another interface version is refused with the fix. `anofox_decide_gpu_precision` accepts only `fp32` for now.
-The CUDA plugin's source and build are in [`plugins/cuda`](plugins/cuda/README.md).
+another interface version is refused with the fix. `anofox_decide_gpu_precision` accepts only `fp32`;
+`anofox_decide_plugin_dir` is where plugins are installed and loaded from.
 
-**ROCm (AMD).** The first backend is a plugin for AMD GPUs that drives MIGraphX directly
-(`plugins/migraphx/`, `libanofox_decide_migraphx_plugin.so`). MIGraphX compiles one program per tensor shape, so
-the plugin serves a few fixed shapes (20 markers; Laya 256 or 1024 tokens, Julia-1 256 to 8192; one row or a
-full batch) and caches each compiled program under `<cache dir>/gpu-cache/migraphx/`. A compile takes
-2 to 4 minutes once per shape and leaves 0.6 to 1.7 GB; `CALL decide_gpu_precompile('laya-multilingual');` does
-them up front with progress. Details, limits and measured numbers: [docs/GPU_ROCM.md](docs/GPU_ROCM.md).
+**ROCm needs a compile.** MIGraphX compiles one program per tensor shape: 2 to 5 minutes once per shape, and
+0.6 to 1.75 GB of cache each, under `<cache dir>/gpu-cache/migraphx/`. `CALL decide_gpu_precompile('laya-multilingual');`
+does it up front with progress; otherwise the first query that meets a shape pays for it.
+
+**Measured** (the 200-ticket evaluation, two questions per ticket, wall time including session start and model
+load, each CPU number from the same machine as its GPU number, so they are not comparable across machines):
+Laya multilingual took 97.0 s on a CPU and 11.8 s on an RTX 4090 (CUDA); 51-81 s against 9 s on an RX 9070 XT
+(ROCm, batched); 80.8 s against 9.5 s on an Apple M3 (MLX, batched). The largest probability difference to the CPU
+was 4e-5 or less on every device and model, no routing or refund decision changed, and accuracy is identical.
+Not every model gains as much (Julia-1 on the M3: 24.1 s against 14.2 s unbatched), and the gains depend on the
+machine. All numbers, the requirements, the limits and troubleshooting: [docs/GPU_BACKENDS.md](docs/GPU_BACKENDS.md);
+the ROCm bucket table: [docs/GPU_ROCM.md](docs/GPU_ROCM.md). Not yet: half precision, CUDA on Windows, CUDA 13.
+Source: [`plugins/cuda`](plugins/cuda/README.md), `plugins/migraphx`, `plugins/mlx`.
 
 ---
 
@@ -612,7 +623,7 @@ example.
 | `anofox_decide_max_length` | `8192` | Tokens a `julia-1` local model reads per question (Laya uses its own config) |
 | `anofox_decide_head_length` | `512` | Tokens reserved for the question and its options in local models |
 | `anofox_decide_batch_tokens` | `0` | Local models: score the rows of a whole chunk together, in batches of at most this many padded tokens (batch size times padded length; `1024` to `131072`). `0` scores one text at a time. Answers are the same either way (identical to the last bit on the 200-ticket evaluation); on CPU the effect on speed is small and inconsistent, it exists to feed GPUs ([Local models](#local-models)) |
-| `anofox_decide_device` | `auto` | Where local models run: `auto` (a GPU only when its plugin is installed, the device is usable and the plugin serves the model; else the CPU), `cpu`, or `cuda` / `rocm` / `mlx`, which fail with the fix when that device cannot serve the model ([GPU](#gpu-infrastructure)) |
+| `anofox_decide_device` | `auto` | Where local models run: `auto` (a GPU only when its plugin is installed, the device is usable and the plugin serves the model; else the CPU), `cpu`, or `cuda` / `rocm` / `mlx`, which fail with the fix when that device cannot serve the model ([GPU](#gpu-acceleration)) |
 | `anofox_decide_gpu_precision` | `fp32` | Numeric precision of the GPU backends. Only `fp32`; other values are rejected, never silently run in fp32 |
 | `anofox_decide_plugin_dir` | *(unset: `plugins` inside the cache directory)* | Where the GPU plugins are installed and loaded from; `decide_accelerate()` fills it |
 | `anofox_decide_on_truncate` | `error` | `error`: a local model refuses text, question or options that do not fit its window; `ignore`: score the shortened input |
@@ -641,7 +652,7 @@ on Linux (amd64, arm64), macOS (arm64) and Windows (amd64) against DuckDB 1.5.6.
 `score` is verified for parity with each model's upstream implementation and against the live services;
 unlike refund and routing it has not been scored for accuracy on labelled data.
 
-**Not yet:** images (Cloudflare Clef accepts them, our functions take text only); GPU execution for local models; the Von model (it needs order-invariant attention in the
+**Not yet:** images (Cloudflare Clef accepts them, our functions take text only); half-precision GPU execution (the GPU backends are fp32; see [GPU acceleration](#gpu-acceleration)); the Von model (it needs order-invariant attention in the
 export);
 on macOS only Apple silicon is built (ONNX Runtime ships no Intel macOS archive after v1.23.2), and
 WebAssembly, musl and MinGW are not built.
@@ -655,6 +666,7 @@ Further reading: [docs/EVALUATION.md](docs/EVALUATION.md) (the 200-ticket evalua
 [docs/SPIKE_RESULTS.md](docs/SPIKE_RESULTS.md) (provider contracts),
 [docs/CALIBRATION_PERF.md](docs/CALIBRATION_PERF.md) (calibration and performance),
 [docs/REVIEW_FOLLOWUP.md](docs/REVIEW_FOLLOWUP.md) (design decisions and model investigations),
+[docs/GPU_BACKENDS.md](docs/GPU_BACKENDS.md) (CUDA, ROCm and MLX: requirements, measurements, limits),
 [CHANGELOG.md](CHANGELOG.md).
 
 ---
@@ -693,6 +705,8 @@ that caused it. Run `SELECT * FROM decide_doctor();` first when something does n
 | `'.../rl_agent_config.json' sits next to the graph ..., so it comes from a Laya checkpoint` | a Laya graph registered without the profile would be scored as `julia-1` | add the 5th argument: `decide_register_model('<id>', 'local', '<graph>', '<tokenizer>', 'laya')` |
 | `provider '<x>' takes no file paths` | a remote provider was given a path argument | remote providers take an options `MAP`: `decide_register_model('m', 'typesafe', MAP {'endpoint': 'https://host'})` |
 | `model '<id>' is already registered` | ids are unique per database instance | `decide_unregister_model('<id>')`, then register again |
+| `anofox_decide_device is 'cuda' but no 'cuda' plugin ...` (also `rocm`, `mlx`) | an explicit GPU device with no plugin installed, or a device that cannot serve the model | `CALL decide_accelerate();` (see `decide_backends()` for the reason), or `SET anofox_decide_device = 'auto';` |
+| `the 'cuda' backend ... a runtime library it needs is missing` / `ran out of device memory` | CUDA 12.8+ with cuDNN 9, the ROCm MIGraphX runtime or Apple MLX is not installed; or the batch does not fit the card | install it and `CALL decide_download_runtime('cuda');`; for memory `SET anofox_decide_batch_tokens = 4096;` or `SET anofox_decide_device = 'cpu';`. More in [docs/GPU_BACKENDS.md](docs/GPU_BACKENDS.md#troubleshooting) |
 | `<setting>: must be between A and B, got X` | a setting is out of range | the message shows the default and an example `SET` |
 | `threshold must be between 0 and 1, got 70` | thresholds are fractions, not percents | use `0.7` for 70% |
 | `probability must be between 0 and 1` (metrics) | the first argument is not a probability | pass probabilities, not percents or logits (`p / 100.0`); NaN: `NULLIF(p, 'NaN'::DOUBLE)` |

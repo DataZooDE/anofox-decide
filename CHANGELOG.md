@@ -7,6 +7,22 @@ All notable changes to `anofox_decide` are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **GPU release assets, evaluation by device, GPU documentation.** A `v*` tag now attaches all three plugins
+  (`libanofox_decide_cuda_plugin.so`, `libanofox_decide_migraphx_plugin.so`, `libanofox_decide_mlx_plugin.dylib`)
+  and their `cuda_plugin.sha256` / `migraphx_plugin.sha256` / `mlx_plugin.sha256` sidecars to the release, under the
+  names `decide_accelerate()` and `decide_download_runtime()` ask for. The three plugin workflows share one reusable
+  publish workflow (`_gpu_release_assets.yml`) that checks the file names, that the sidecar lists the plugin and
+  its digest, and that `DECIDE_PLUGIN_RELEASE_TAG` equals the tag; the new `GPU release gate` workflow
+  (`tools/ci/check_plugin_pin.sh`) fails a tag build at once when it does not. `tools/eval/run_eval.py` gained
+  `--device auto|cpu|cuda|rocm|mlx`: it sets `anofox_decide_device`, refuses to report (exit status 2, no report,
+  results deleted) any model that `decide_models().device` shows was not served on the requested device, and records
+  the serving device and wall time; catalog models (`laya-multilingual`, `laya-typed-decisions`, `julia-1`) can be
+  evaluated by it, which is what the GPU backends serve. Tests: `tools/eval/test_run_eval.py` (no GPU needed).
+  Documentation: the README section "GPU acceleration" and `docs/GPU_BACKENDS.md` with the measured numbers
+  (200-ticket evaluation, fp32: Laya multilingual CPU 97.0 s against 11.8 s on CUDA RTX 4090, 51-81 s against 9 s on
+  ROCm RX 9070 XT, 80.8 s against 9.5 s on MLX Apple M3, each CPU from the same box; largest probability difference
+  to the CPU 4e-5, no routing or refund decision changed, accuracy identical), requirements, limits (fp32 only, no
+  Windows or CUDA 13, ROCm compile 2 to 5 minutes and 0.6 to 1.75 GB per shape) and troubleshooting.
 - **ROCm backend (MIGraphX plugin).** `plugins/migraphx/decide_migraphx_plugin.cpp` builds
   `libanofox_decide_migraphx_plugin.so`, which drives MIGraphX directly through `libmigraphx_c` (no ONNX Runtime) and
   scores the catalog models on AMD GPUs. Fixed shapes through buckets (20 markers; Laya 256 or 1024 tokens, Julia-1
