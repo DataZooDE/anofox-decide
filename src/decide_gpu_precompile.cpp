@@ -20,6 +20,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb_compat.hpp"
 
 #include <chrono>
 
@@ -48,7 +49,7 @@ struct PrecompileState : public GlobalTableFunctionState {
 };
 
 unique_ptr<FunctionData> PrecompileBind(ClientContext &context, TableFunctionBindInput &input,
-                                        vector<LogicalType> &return_types, vector<string> &names) {
+                                        vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	(void)context;
 	PostHogTelemetry::Instance().RecordFunctionCall("decide_gpu_precompile");
 	if (input.inputs[0].IsNull()) {
@@ -57,9 +58,9 @@ unique_ptr<FunctionData> PrecompileBind(ClientContext &context, TableFunctionBin
 	}
 	auto data = make_uniq<PrecompileData>();
 	data->model = input.inputs[0].ToString();
-	auto seq = input.named_parameters.find("seq");
-	if (seq != input.named_parameters.end() && !seq->second.IsNull()) {
-		data->seq = BigIntValue::Get(seq->second.DefaultCastAs(LogicalType::BIGINT));
+	auto seq = duckdb_compat::FindNamedParameter(input.named_parameters, "seq");
+	if (seq && !seq->IsNull()) {
+		data->seq = BigIntValue::Get(seq->DefaultCastAs(LogicalType::BIGINT));
 		if (data->seq < 1) {
 			throw InvalidInputException(DecideMsg("decide_gpu_precompile", "seq must be a positive number of tokens",
 			                                      "CALL decide_gpu_precompile('" + data->model + "', seq := 1024);"));
@@ -137,7 +138,7 @@ void PrecompileScan(ClientContext &context, TableFunctionInput &data, DataChunk 
 		output.SetValue(5, n, Value::DOUBLE(r.seconds));
 		n++;
 	}
-	output.SetCardinality(n);
+	duckdb_compat::SetChildCardinality(output, n);
 }
 
 } // namespace
@@ -145,7 +146,7 @@ void PrecompileScan(ClientContext &context, TableFunctionInput &data, DataChunk 
 void RegisterDecideGpuPrecompile(ExtensionLoader &loader) {
 	TableFunction func("anofox_decide_gpu_precompile", {LogicalType::VARCHAR}, DECIDE_GUARD(PrecompileScan),
 	                   DECIDE_GUARD(PrecompileBind), DECIDE_GUARD(PrecompileInit));
-	func.named_parameters["seq"] = LogicalType::BIGINT;
+	duckdb_compat::AddNamedParameter(func, "seq", LogicalType::BIGINT);
 	RegisterTableFunctionWithAlias(
 	    loader, std::move(func), "decide_gpu_precompile",
 	    DecideDocs("Compile a local model's shape buckets ahead of time on the ROCm (MIGraphX) backend, so no query "

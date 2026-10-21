@@ -22,6 +22,7 @@
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/settings.hpp"
+#include "duckdb_compat.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -796,7 +797,7 @@ struct DevicesState : public GlobalTableFunctionState {
 };
 
 unique_ptr<FunctionData> DevicesBind(ClientContext &context, TableFunctionBindInput &input,
-                                     vector<LogicalType> &return_types, vector<string> &names) {
+                                     vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	(void)context;
 	(void)input;
 	PostHogTelemetry::Instance().RecordFunctionCall("decide_devices");
@@ -832,7 +833,7 @@ void DevicesScan(ClientContext &context, TableFunctionInput &data, DataChunk &ou
 		output.SetValue(8, count, d.reason.empty() ? Value(LogicalType::VARCHAR) : Value(d.reason));
 		count++;
 	}
-	output.SetCardinality(count);
+	duckdb_compat::SetChildCardinality(output, count);
 }
 
 struct BackendsRow {
@@ -849,7 +850,7 @@ struct BackendsState : public GlobalTableFunctionState {
 };
 
 unique_ptr<FunctionData> BackendsBind(ClientContext &context, TableFunctionBindInput &input,
-                                      vector<LogicalType> &return_types, vector<string> &names) {
+                                      vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	(void)context;
 	(void)input;
 	PostHogTelemetry::Instance().RecordFunctionCall("decide_backends");
@@ -907,7 +908,7 @@ void BackendsScan(ClientContext &context, TableFunctionInput &data, DataChunk &o
 		output.SetValue(3, count, text.empty() ? Value(LogicalType::VARCHAR) : Value(text));
 		count++;
 	}
-	output.SetCardinality(count);
+	duckdb_compat::SetChildCardinality(output, count);
 }
 
 } // namespace

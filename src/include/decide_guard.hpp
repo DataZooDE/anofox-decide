@@ -55,6 +55,21 @@ struct DecideGuardedFunction<RETURN(ARGS...), FN, INFO> {
 };
 
 } // namespace guard_detail
+
+// A bind callback of any bind signature (BIND_T, e.g. bind_scalar_function_t) that ignores its
+// input and runs BODY. DuckDB 2.0 passes a single Bind*FunctionInput &; 1.x passes
+// (ClientContext &, <Function> &, vector<unique_ptr<Expression>> &). Deduced from DuckDB's own
+// typedef, so the same definition fits every line.
+template <class BIND_T>
+struct DecideArgsIgnoredBind;
+
+template <class RETURN, class... ARGS>
+struct DecideArgsIgnoredBind<RETURN (*)(ARGS...)> {
+	template <RETURN (*BODY)()>
+	static RETURN Call(ARGS...) {
+		return BODY();
+	}
+};
 } // namespace anofox
 } // namespace duckdb
 

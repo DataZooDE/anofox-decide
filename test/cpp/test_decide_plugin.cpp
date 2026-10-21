@@ -17,6 +17,7 @@
 #include "decide_soname_patch.hpp"
 
 #include "duckdb.hpp"
+#include "duckdb_compat.hpp"
 #include "miniz.hpp"
 
 #define CPPHTTPLIB_OPENSSL_SUPPORT
@@ -42,20 +43,17 @@ namespace fs = std::filesystem;
 
 namespace {
 
+// Connection::Query returns MaterializedQueryResult on DuckDB 1.x and QueryResult on 2.0.
 QueryResult &Res(QueryResult &r) {
 	return r;
 }
-QueryResult &Res(unique_ptr<QueryResult> &r) {
+template <class RESULT>
+QueryResult &Res(unique_ptr<RESULT> &r) {
 	return *r;
 }
-QueryResult &Res(unique_ptr<MaterializedQueryResult> &r) {
-	return *r;
-}
-QueryResult &Res(MaterializedQueryResult &r) {
-	return r;
-}
-QueryResult &Res(unique_ptr<MaterializedQueryResult> &&r) {
-	static thread_local unique_ptr<MaterializedQueryResult> keep;
+template <class RESULT>
+QueryResult &Res(unique_ptr<RESULT> &&r) {
+	static thread_local unique_ptr<QueryResult> keep;
 	keep = std::move(r);
 	return *keep;
 }
@@ -1053,7 +1051,7 @@ TEST_CASE("the GPU settings validate and normalise", "[anofox_decide][plugin][se
 	auto value = [&](const string &setting) {
 		auto r = con.Query("SELECT current_setting('" + setting + "')");
 		REQUIRE_NO_FAIL(*r);
-		return r->GetValue(0, 0).ToString();
+		return duckdb_compat::ResultValue(*r, 0, 0).ToString();
 	};
 	REQUIRE(value("anofox_decide_device") == "auto");
 	REQUIRE(value("anofox_decide_gpu_precision") == "fp32");
@@ -1116,13 +1114,13 @@ TEST_CASE("decide_devices and decide_backends come from discovery and one predic
 	auto d = con.Query("SELECT device_id, backend, usable, reason IS NULL, arch FROM decide_devices() ORDER BY device_id");
 	REQUIRE_NO_FAIL(*d);
 	REQUIRE(d->RowCount() == 4);
-	REQUIRE(d->GetValue(0, 0).ToString() == "cpu");
-	REQUIRE(d->GetValue(1, 0).ToString() == "cpu");
-	REQUIRE(d->GetValue(2, 0) == Value::BOOLEAN(true));
-	REQUIRE(d->GetValue(0, 1).ToString() == "cuda:0");
-	REQUIRE(d->GetValue(4, 1).ToString() == "sm_89");
-	REQUIRE(d->GetValue(2, 3) == Value::BOOLEAN(false)); // rocm:0
-	REQUIRE(d->GetValue(3, 3) == Value::BOOLEAN(false)); // ... with its reason
+	REQUIRE(duckdb_compat::ResultValue(*d, 0, 0).ToString() == "cpu");
+	REQUIRE(duckdb_compat::ResultValue(*d, 1, 0).ToString() == "cpu");
+	REQUIRE(duckdb_compat::ResultValue(*d, 2, 0) == Value::BOOLEAN(true));
+	REQUIRE(duckdb_compat::ResultValue(*d, 0, 1).ToString() == "cuda:0");
+	REQUIRE(duckdb_compat::ResultValue(*d, 4, 1).ToString() == "sm_89");
+	REQUIRE(duckdb_compat::ResultValue(*d, 2, 3) == Value::BOOLEAN(false)); // rocm:0
+	REQUIRE(duckdb_compat::ResultValue(*d, 3, 3) == Value::BOOLEAN(false)); // ... with its reason
 	auto cols = con.Query("SELECT column_name FROM (DESCRIBE SELECT * FROM decide_devices())");
 	REQUIRE(cols->RowCount() == 9);
 
@@ -1130,13 +1128,13 @@ TEST_CASE("decide_devices and decide_backends come from discovery and one predic
 	auto b = con.Query("SELECT device, supported, reason FROM decide_backends() WHERE model = 'test-tiny' ORDER BY device");
 	REQUIRE_NO_FAIL(*b);
 	REQUIRE(b->RowCount() == 4);
-	REQUIRE(b->GetValue(0, 0).ToString() == "cpu");
-	REQUIRE(b->GetValue(1, 0) == Value::BOOLEAN(true));
-	REQUIRE(b->GetValue(2, 0).IsNull());
-	REQUIRE(b->GetValue(1, 1) == Value::BOOLEAN(false)); // cuda:0
-	REQUIRE_THAT(b->GetValue(2, 1).ToString(), Contains("its plugin is not installed in " + plugin_dir));
-	REQUIRE_THAT(b->GetValue(2, 1).ToString(), Contains("Fix: CALL decide_accelerate();"));
-	REQUIRE_THAT(b->GetValue(2, 3).ToString(), Contains("MIGraphX does not support the GPU architecture gfx1010")); // rocm:0 (an unusable device reports its own reason)
+	REQUIRE(duckdb_compat::ResultValue(*b, 0, 0).ToString() == "cpu");
+	REQUIRE(duckdb_compat::ResultValue(*b, 1, 0) == Value::BOOLEAN(true));
+	REQUIRE(duckdb_compat::ResultValue(*b, 2, 0).IsNull());
+	REQUIRE(duckdb_compat::ResultValue(*b, 1, 1) == Value::BOOLEAN(false)); // cuda:0
+	REQUIRE_THAT(duckdb_compat::ResultValue(*b, 2, 1).ToString(), Contains("its plugin is not installed in " + plugin_dir));
+	REQUIRE_THAT(duckdb_compat::ResultValue(*b, 2, 1).ToString(), Contains("Fix: CALL decide_accelerate();"));
+	REQUIRE_THAT(duckdb_compat::ResultValue(*b, 2, 3).ToString(), Contains("MIGraphX does not support the GPU architecture gfx1010")); // rocm:0 (an unusable device reports its own reason)
 }
 
 TEST_CASE("decide_models gives the serving device only to local models", "[anofox_decide][plugin][sql]") {
@@ -1152,7 +1150,7 @@ TEST_CASE("decide_models gives the serving device only to local models", "[anofo
 	REQUIRE_NO_FAIL(*m);
 	std::map<string, Value> device;
 	for (idx_t i = 0; i < m->RowCount(); i++) {
-		device[m->GetValue(0, i).ToString()] = m->GetValue(2, i);
+		device[duckdb_compat::ResultValue(*m, 0, i).ToString()] = duckdb_compat::ResultValue(*m, 2, i);
 	}
 	REQUIRE(device["tiny-local"].ToString() == "cpu");
 	REQUIRE(device["test-tiny"].ToString() == "cpu");
@@ -1180,30 +1178,30 @@ TEST_CASE("a GPU plugin serves a catalog model through SQL, and auto never names
 	// CPU first: the reference answer, and the default behaviour with nothing installed.
 	auto cpu = con.Query(kQuestion);
 	REQUIRE_NO_FAIL(*cpu);
-	const double cpu_probability = cpu->GetValue(0, 0).GetValue<double>();
-	REQUIRE(con.Query("SELECT device FROM decide_models() WHERE model = 'test-tiny'")->GetValue(0, 0).ToString() == "cpu");
+	const double cpu_probability = duckdb_compat::ResultValue(*cpu, 0, 0).GetValue<double>();
+	REQUIRE(duckdb_compat::ResultValue(*con.Query("SELECT device FROM decide_models() WHERE model = 'test-tiny'"), 0, 0).ToString() == "cpu");
 
 	// Install the plugin for cuda: auto now uses it for the catalog model and still the CPU for the other.
 	InstallPlugin(kFakePlugin, plugin_dir, "cuda");
 	auto m = con.Query("SELECT model, device FROM decide_models() WHERE model IN ('test-tiny', 'tiny-local') ORDER BY model");
 	REQUIRE_NO_FAIL(*m);
-	REQUIRE(m->GetValue(0, 0).ToString() == "test-tiny");
-	REQUIRE(m->GetValue(1, 0).ToString() == "cuda:1");
-	REQUIRE(m->GetValue(1, 1).ToString() == "cpu");
+	REQUIRE(duckdb_compat::ResultValue(*m, 0, 0).ToString() == "test-tiny");
+	REQUIRE(duckdb_compat::ResultValue(*m, 1, 0).ToString() == "cuda:1");
+	REQUIRE(duckdb_compat::ResultValue(*m, 1, 1).ToString() == "cpu");
 
 	// The invariant: whatever device a model reports, decide_backends() calls it supported.
 	auto violations = con.Query("SELECT count(*) FROM decide_models() m WHERE m.device IS NOT NULL AND m.device <> 'cpu' "
 	                            "AND NOT EXISTS (SELECT 1 FROM decide_backends() b WHERE b.model = m.model AND b.device = m.device AND b.supported)");
 	REQUIRE_NO_FAIL(*violations);
-	REQUIRE(violations->GetValue(0, 0) == Value::BIGINT(0));
+	REQUIRE(duckdb_compat::ResultValue(*violations, 0, 0) == Value::BIGINT(0));
 	auto matrix = con.Query("SELECT model, device, supported, reason FROM decide_backends() WHERE model IN ('test-tiny', 'tiny-local') ORDER BY model, device");
 	REQUIRE_NO_FAIL(*matrix);
 	std::map<string, Value> supported;
 	std::map<string, string> reason;
 	for (idx_t i = 0; i < matrix->RowCount(); i++) {
-		const auto key = matrix->GetValue(0, i).ToString() + "/" + matrix->GetValue(1, i).ToString();
-		supported[key] = matrix->GetValue(2, i);
-		reason[key] = matrix->GetValue(3, i).ToString();
+		const auto key = duckdb_compat::ResultValue(*matrix, 0, i).ToString() + "/" + duckdb_compat::ResultValue(*matrix, 1, i).ToString();
+		supported[key] = duckdb_compat::ResultValue(*matrix, 2, i);
+		reason[key] = duckdb_compat::ResultValue(*matrix, 3, i).ToString();
 	}
 	REQUIRE(supported["test-tiny/cpu"] == Value::BOOLEAN(true));
 	REQUIRE(supported["test-tiny/cuda:1"] == Value::BOOLEAN(true));
@@ -1218,11 +1216,11 @@ TEST_CASE("a GPU plugin serves a catalog model through SQL, and auto never names
 	// The fake plugin scores: a different answer than the CPU's, and the same one every time.
 	auto gpu = con.Query(kQuestion);
 	REQUIRE_NO_FAIL(*gpu);
-	const double gpu_probability = gpu->GetValue(0, 0).GetValue<double>();
+	const double gpu_probability = duckdb_compat::ResultValue(*gpu, 0, 0).GetValue<double>();
 	REQUIRE(gpu_probability > 0.0);
 	REQUIRE(gpu_probability < 1.0);
 	REQUIRE(gpu_probability != cpu_probability);
-	REQUIRE(con.Query(kQuestion)->GetValue(0, 0).GetValue<double>() == gpu_probability);
+	REQUIRE(duckdb_compat::ResultValue(*con.Query(kQuestion), 0, 0).GetValue<double>() == gpu_probability);
 
 	// The raw scores through the session are the fixture's formula: every tensor and the ordinal reached the plugin.
 	{
@@ -1240,12 +1238,12 @@ TEST_CASE("a GPU plugin serves a catalog model through SQL, and auto never names
 
 	// Switching the device mid-session: cpu gives the CPU answer back, auto the plugin's again.
 	REQUIRE_NO_FAIL(con.Query("SET anofox_decide_device = 'cpu'"));
-	REQUIRE(con.Query("SELECT device FROM decide_models() WHERE model = 'test-tiny'")->GetValue(0, 0).ToString() == "cpu");
-	REQUIRE(con.Query(kQuestion)->GetValue(0, 0).GetValue<double>() == cpu_probability);
+	REQUIRE(duckdb_compat::ResultValue(*con.Query("SELECT device FROM decide_models() WHERE model = 'test-tiny'"), 0, 0).ToString() == "cpu");
+	REQUIRE(duckdb_compat::ResultValue(*con.Query(kQuestion), 0, 0).GetValue<double>() == cpu_probability);
 	REQUIRE_NO_FAIL(con.Query("SET anofox_decide_device = 'cuda'"));
-	REQUIRE(con.Query(kQuestion)->GetValue(0, 0).GetValue<double>() == gpu_probability);
+	REQUIRE(duckdb_compat::ResultValue(*con.Query(kQuestion), 0, 0).GetValue<double>() == gpu_probability);
 	REQUIRE_NO_FAIL(con.Query("SET anofox_decide_device = 'auto'"));
-	REQUIRE(con.Query(kQuestion)->GetValue(0, 0).GetValue<double>() == gpu_probability);
+	REQUIRE(duckdb_compat::ResultValue(*con.Query(kQuestion), 0, 0).GetValue<double>() == gpu_probability);
 
 	// Explicit devices that cannot serve it are hard errors with the fix, never a silent CPU run.
 	REQUIRE_NO_FAIL(con.Query("SET anofox_decide_device = 'rocm'"));
@@ -1265,12 +1263,12 @@ TEST_CASE("a GPU plugin serves a catalog model through SQL, and auto never names
 	// decide_models does not fail for it: the model has no serving device under this setting.
 	auto listed = con.Query("SELECT model, device FROM decide_models() WHERE model = 'tiny-local'");
 	REQUIRE_NO_FAIL(*listed);
-	REQUIRE(listed->GetValue(1, 0).IsNull());
+	REQUIRE(duckdb_compat::ResultValue(*listed, 1, 0).IsNull());
 	auto doctor = con.Query("SELECT item, status FROM decide_doctor() WHERE item LIKE 'gpu%' ORDER BY item");
 	REQUIRE_NO_FAIL(*doctor);
 	std::map<string, string> doctor_rows;
 	for (idx_t i = 0; i < doctor->RowCount(); i++) {
-		doctor_rows[doctor->GetValue(0, i).ToString()] = doctor->GetValue(1, i).ToString();
+		doctor_rows[duckdb_compat::ResultValue(*doctor, 0, i).ToString()] = duckdb_compat::ResultValue(*doctor, 1, i).ToString();
 	}
 	REQUIRE(doctor_rows["gpu device"] == "ok");
 	// A plugin row for every usable GPU family: installed, or missing.
@@ -1307,17 +1305,17 @@ TEST_CASE("a plugin of another ABI is never used, and every surface says why", "
 	Connection con(db);
 	REQUIRE_NO_FAIL(con.Query("SET anofox_decide_cache_dir = '" + catalog.cache + "'"));
 	InstallPlugin(kBadAbiPlugin, catalog.cache + "/plugins", "cuda");
-	const double cpu = con.Query(kQuestion)->GetValue(0, 0).GetValue<double>(); // auto: the CPU
-	REQUIRE(con.Query("SELECT device FROM decide_models() WHERE model = 'test-tiny'")->GetValue(0, 0).ToString() == "cpu");
+	const double cpu = duckdb_compat::ResultValue(*con.Query(kQuestion), 0, 0).GetValue<double>(); // auto: the CPU
+	REQUIRE(duckdb_compat::ResultValue(*con.Query("SELECT device FROM decide_models() WHERE model = 'test-tiny'"), 0, 0).ToString() == "cpu");
 	auto b = con.Query("SELECT supported, reason FROM decide_backends() WHERE model = 'test-tiny' AND device = 'cuda:0'");
-	REQUIRE(b->GetValue(0, 0) == Value::BOOLEAN(false));
-	REQUIRE_THAT(b->GetValue(1, 0).ToString(), Contains("cannot be used (built against plugin ABI version 1001, but this build speaks 1)"));
+	REQUIRE(duckdb_compat::ResultValue(*b, 0, 0) == Value::BOOLEAN(false));
+	REQUIRE_THAT(duckdb_compat::ResultValue(*b, 1, 0).ToString(), Contains("cannot be used (built against plugin ABI version 1001, but this build speaks 1)"));
 	auto doctor = con.Query("SELECT status, detail, fix FROM decide_doctor() WHERE item = 'gpu plugin ''cuda'''");
 	REQUIRE_NO_FAIL(*doctor);
 	REQUIRE(doctor->RowCount() == 1);
-	REQUIRE(doctor->GetValue(0, 0).ToString() == "fail");
-	REQUIRE_THAT(doctor->GetValue(1, 0).ToString(), Contains("ABI version 1001"));
-	REQUIRE(doctor->GetValue(2, 0).ToString() == "CALL decide_accelerate();");
+	REQUIRE(duckdb_compat::ResultValue(*doctor, 0, 0).ToString() == "fail");
+	REQUIRE_THAT(duckdb_compat::ResultValue(*doctor, 1, 0).ToString(), Contains("ABI version 1001"));
+	REQUIRE(duckdb_compat::ResultValue(*doctor, 2, 0).ToString() == "CALL decide_accelerate();");
 	REQUIRE_NO_FAIL(con.Query("SET anofox_decide_device = 'cuda'"));
 	auto r = con.Query(kQuestion);
 	REQUIRE(r->HasError());
@@ -1350,15 +1348,15 @@ TEST_CASE("an explicit device with no hardware or no plugin names CALL decide_ac
 	// doctor: the device row fails for the unsatisfiable setting, and says how to leave it.
 	auto doctor = con.Query("SELECT status, fix FROM decide_doctor() WHERE item = 'gpu device'");
 	REQUIRE_NO_FAIL(*doctor);
-	REQUIRE(doctor->GetValue(0, 0).ToString() == "fail");
-	REQUIRE_THAT(doctor->GetValue(1, 0).ToString(), Contains("SET anofox_decide_device = 'auto';"));
+	REQUIRE(duckdb_compat::ResultValue(*doctor, 0, 0).ToString() == "fail");
+	REQUIRE_THAT(duckdb_compat::ResultValue(*doctor, 1, 0).ToString(), Contains("SET anofox_decide_device = 'auto';"));
 	// The plugin of the usable cuda device is reported as not installed.
 	auto plugin = con.Query("SELECT status, fix FROM decide_doctor() WHERE item = 'gpu plugin ''cuda'''");
-	REQUIRE(plugin->GetValue(0, 0).ToString() == "warn");
+	REQUIRE(duckdb_compat::ResultValue(*plugin, 0, 0).ToString() == "warn");
 	if (DecideUnsupportedPluginPlatform("cuda", DecideHostPluginOs(), DecideHostPluginArch()).empty()) {
-		REQUIRE(plugin->GetValue(1, 0).ToString() == "CALL decide_accelerate();");
+		REQUIRE(duckdb_compat::ResultValue(*plugin, 1, 0).ToString() == "CALL decide_accelerate();");
 	} else {
-		REQUIRE_THAT(plugin->GetValue(1, 0).ToString(), Contains("the CPU serves everything"));
+		REQUIRE_THAT(duckdb_compat::ResultValue(*plugin, 1, 0).ToString(), Contains("the CPU serves everything"));
 	}
 }
 
@@ -1422,18 +1420,18 @@ TEST_CASE("decide_accelerate on a machine with no usable GPU says the CPU serves
 	auto r = con.Query("SELECT step, status, detail FROM decide_accelerate()");
 	REQUIRE_NO_FAIL(*r);
 	REQUIRE(r->RowCount() == 2);
-	REQUIRE(r->GetValue(0, 0).ToString() == "hardware");
-	REQUIRE(r->GetValue(1, 0).ToString() == "none");
-	REQUIRE_THAT(r->GetValue(2, 0).ToString(), Contains("CPU"));
-	REQUIRE(r->GetValue(0, 1).ToString() == "device");
-	REQUIRE(r->GetValue(1, 1).ToString() == "cpu");
+	REQUIRE(duckdb_compat::ResultValue(*r, 0, 0).ToString() == "hardware");
+	REQUIRE(duckdb_compat::ResultValue(*r, 1, 0).ToString() == "none");
+	REQUIRE_THAT(duckdb_compat::ResultValue(*r, 2, 0).ToString(), Contains("CPU"));
+	REQUIRE(duckdb_compat::ResultValue(*r, 0, 1).ToString() == "device");
+	REQUIRE(duckdb_compat::ResultValue(*r, 1, 1).ToString() == "cpu");
 
 	// An unusable GPU is named with its reason, and still no download is attempted.
 	DeviceGuard unusable({Dev("rocm:0", "Fake Radeon", "gfx1010", false, "MIGraphX does not support the GPU architecture gfx1010")});
 	auto u = con.Query("SELECT status, detail FROM decide_accelerate() WHERE step = 'hardware'");
 	REQUIRE_NO_FAIL(*u);
-	REQUIRE(u->GetValue(0, 0).ToString() == "none");
-	REQUIRE_THAT(u->GetValue(1, 0).ToString(), Contains("found Fake Radeon (rocm:0) but it is not usable on this machine: MIGraphX does not support"));
+	REQUIRE(duckdb_compat::ResultValue(*u, 0, 0).ToString() == "none");
+	REQUIRE_THAT(duckdb_compat::ResultValue(*u, 1, 0).ToString(), Contains("found Fake Radeon (rocm:0) but it is not usable on this machine: MIGraphX does not support"));
 }
 
 TEST_CASE("decide_accelerate with no checksum asset leaves nothing to load and does not probe", "[anofox_decide][plugin][sql][download]") {
@@ -1454,8 +1452,8 @@ TEST_CASE("decide_accelerate with no checksum asset leaves nothing to load and d
 	std::map<string, string> status;
 	std::map<string, string> detail;
 	for (idx_t i = 0; i < r->RowCount(); i++) {
-		status[r->GetValue(0, i).ToString()] = r->GetValue(1, i).ToString();
-		detail[r->GetValue(0, i).ToString()] = r->GetValue(2, i).ToString();
+		status[duckdb_compat::ResultValue(*r, 0, i).ToString()] = duckdb_compat::ResultValue(*r, 1, i).ToString();
+		detail[duckdb_compat::ResultValue(*r, 0, i).ToString()] = duckdb_compat::ResultValue(*r, 2, i).ToString();
 	}
 	REQUIRE(status["download"] == "failed");
 	REQUIRE_THAT(detail["download"], Contains("not used unverified"));
@@ -1463,7 +1461,7 @@ TEST_CASE("decide_accelerate with no checksum asset leaves nothing to load and d
 	REQUIRE(status.count("device") == 0);
 	REQUIRE_FALSE(fs::exists(DecidePluginPath(catalog.cache + "/plugins", "rocm")));
 	auto model = con.Query("SELECT device FROM decide_models() WHERE model = 'test-tiny'");
-	REQUIRE(model->GetValue(0, 0).ToString() == "cpu");
+	REQUIRE(duckdb_compat::ResultValue(*model, 0, 0).ToString() == "cpu");
 }
 
 TEST_CASE("decide_gpu_precompile warms the buckets on a compile-per-shape backend only", "[anofox_decide][plugin][sql]") {
@@ -1491,13 +1489,13 @@ TEST_CASE("decide_gpu_precompile warms the buckets on a compile-per-shape backen
 	REQUIRE_NO_FAIL(con.Query("SET anofox_decide_device = 'rocm'"));
 	auto all = con.Query("SELECT count(*), min(seq), max(seq) FROM decide_gpu_precompile('test-tiny')");
 	REQUIRE_NO_FAIL(*all);
-	REQUIRE(all->GetValue(0, 0) == Value::BIGINT(9)); // 3 + 3 + 2 + 1 row rungs over 256, 1024, 4096, 8192
-	REQUIRE(all->GetValue(1, 0) == Value::BIGINT(256));
-	REQUIRE(all->GetValue(2, 0) == Value::BIGINT(8192));
+	REQUIRE(duckdb_compat::ResultValue(*all, 0, 0) == Value::BIGINT(9)); // 3 + 3 + 2 + 1 row rungs over 256, 1024, 4096, 8192
+	REQUIRE(duckdb_compat::ResultValue(*all, 1, 0) == Value::BIGINT(256));
+	REQUIRE(duckdb_compat::ResultValue(*all, 2, 0) == Value::BIGINT(8192));
 	auto one = con.Query("SELECT DISTINCT seq FROM decide_gpu_precompile('test-tiny', seq := 300)");
 	REQUIRE_NO_FAIL(*one);
 	REQUIRE(one->RowCount() == 1);
-	REQUIRE(one->GetValue(0, 0) == Value::BIGINT(1024));
+	REQUIRE(duckdb_compat::ResultValue(*one, 0, 0) == Value::BIGINT(1024));
 
 	// A seq no bucket holds is an error naming the largest bucket, not zero rows.
 	auto big = con.Query("SELECT * FROM decide_gpu_precompile('test-tiny', seq := 5000000)");
@@ -1523,14 +1521,14 @@ TEST_CASE("decide_accelerate downloads, verifies and activates a plugin end to e
 	REQUIRE_NO_FAIL(con.Query("SET anofox_decide_cache_dir = '" + catalog.cache + "'"));
 
 	auto before = con.Query("SELECT device FROM decide_models() WHERE model = 'test-tiny'");
-	REQUIRE(before->GetValue(0, 0).ToString() == "cpu");
+	REQUIRE(duckdb_compat::ResultValue(*before, 0, 0).ToString() == "cpu");
 	auto r = con.Query("SELECT step, status, detail FROM decide_accelerate()");
 	REQUIRE_NO_FAIL(*r);
 	std::map<string, string> status;
 	std::map<string, string> detail;
 	for (idx_t i = 0; i < r->RowCount(); i++) {
-		status[r->GetValue(0, i).ToString()] = r->GetValue(1, i).ToString();
-		detail[r->GetValue(0, i).ToString()] = r->GetValue(2, i).ToString();
+		status[duckdb_compat::ResultValue(*r, 0, i).ToString()] = duckdb_compat::ResultValue(*r, 1, i).ToString();
+		detail[duckdb_compat::ResultValue(*r, 0, i).ToString()] = duckdb_compat::ResultValue(*r, 2, i).ToString();
 	}
 	REQUIRE(status["hardware"] == "found");
 	REQUIRE(status["download"] == "downloaded");
@@ -1540,14 +1538,14 @@ TEST_CASE("decide_accelerate downloads, verifies and activates a plugin end to e
 	REQUIRE(status["note"] == "first-run cost");
 	// Live in this session, without reconnecting: the catalog model is now served by rocm:0.
 	auto after = con.Query("SELECT device FROM decide_models() WHERE model = 'test-tiny'");
-	REQUIRE(after->GetValue(0, 0).ToString() == "rocm:0");
+	REQUIRE(duckdb_compat::ResultValue(*after, 0, 0).ToString() == "rocm:0");
 	REQUIRE_NO_FAIL(con.Query(kQuestion));
 	// Idempotent: the second run finds everything in place and verified.
 	auto again = con.Query("SELECT status FROM decide_accelerate() WHERE step = 'download'");
-	REQUIRE(again->GetValue(0, 0).ToString() == "cached");
+	REQUIRE(duckdb_compat::ResultValue(*again, 0, 0).ToString() == "cached");
 	// The same through the explicit function.
 	auto files = con.Query("SELECT file, status FROM decide_download_runtime('rocm')");
 	REQUIRE_NO_FAIL(*files);
 	REQUIRE(files->RowCount() == 1);
-	REQUIRE(files->GetValue(1, 0).ToString() == "cached");
+	REQUIRE(duckdb_compat::ResultValue(*files, 1, 0).ToString() == "cached");
 }

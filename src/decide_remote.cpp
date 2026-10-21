@@ -5,6 +5,7 @@
 
 #define CPPHTTPLIB_OPENSSL_SUPPORT
 #include "httplib.hpp"
+#include "duckdb_compat/httplib.hpp"
 #include "yyjson.hpp"
 
 #include "decide_errors.hpp"
@@ -1664,7 +1665,7 @@ BioPtr RawConnect(bool ssl, const string &host, int port, int timeout_ms, Decide
 	SSL_CTX_set_verify(ctx.get(), SSL_VERIFY_PEER, nullptr);
 	SSL_CTX_set_default_verify_paths(ctx.get());
 #ifdef _WIN32
-	duckdb_httplib_openssl::detail::load_system_certs_on_windows(SSL_CTX_get_cert_store(ctx.get()));
+	duckdb_compat::LoadSystemCerts(ctx.get());
 #endif
 #ifdef __APPLE__
 	SSL_CTX_load_verify_locations(ctx.get(), "/etc/ssl/cert.pem", nullptr);

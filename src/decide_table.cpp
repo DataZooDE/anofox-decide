@@ -16,6 +16,7 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/execution/execution_context.hpp"
+#include "duckdb_compat.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -37,7 +38,7 @@ struct DecideModelsGlobalState : public GlobalTableFunctionState {
 };
 
 unique_ptr<FunctionData> DecideModelsBind(ClientContext &context, TableFunctionBindInput &input,
-                                          vector<LogicalType> &return_types, vector<string> &names) {
+                                          vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	(void)context;
 	(void)input;
 	PostHogTelemetry::Instance().RecordFunctionCall("decide_models");
@@ -133,7 +134,7 @@ void DecideModelsScan(ClientContext &context, TableFunctionInput &data, DataChun
 		gstate.offset++;
 		row_count++;
 	}
-	output.SetCardinality(row_count);
+	duckdb_compat::SetChildCardinality(output, row_count);
 }
 
 //===----------------------------------------------------------------------===//
@@ -155,7 +156,7 @@ struct DecideDoctorGlobalState : public GlobalTableFunctionState {
 };
 
 unique_ptr<FunctionData> DecideDoctorBind(ClientContext &context, TableFunctionBindInput &input,
-                                          vector<LogicalType> &return_types, vector<string> &names) {
+                                          vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	(void)context;
 	(void)input;
 	PostHogTelemetry::Instance().RecordFunctionCall("decide_doctor");
@@ -335,7 +336,7 @@ void DecideDoctorScan(ClientContext &context, TableFunctionInput &data, DataChun
 		output.SetValue(3, count, row.fix.empty() ? Value(LogicalType::VARCHAR) : Value(row.fix));
 		count++;
 	}
-	output.SetCardinality(count);
+	duckdb_compat::SetChildCardinality(output, count);
 }
 
 //===----------------------------------------------------------------------===//
@@ -387,7 +388,7 @@ struct DecideTableLocalState : public LocalTableFunctionState {
 	bool have_entry = false;
 };
 
-void DecideTableColumns(vector<LogicalType> &return_types, vector<string> &names) {
+void DecideTableColumns(vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	names.emplace_back("question_id");
 	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("kind");
@@ -412,8 +413,8 @@ void DecideTableColumns(vector<LogicalType> &return_types, vector<string> &names
 // Model id for a constant-argument call and whether it came from the setting (for error text).
 // Passing the model twice (3rd argument and model :=) is ambiguous and rejected.
 string TableBindModel(ClientContext &context, TableFunctionBindInput &input, bool &from_setting) {
-	auto nit = input.named_parameters.find("model");
-	const bool has_named = nit != input.named_parameters.end() && !nit->second.IsNull();
+	auto named_model = duckdb_compat::FindNamedParameter(input.named_parameters, "model");
+	const bool has_named = named_model && !named_model->IsNull();
 	const bool has_positional = input.inputs.size() > 2 && !input.inputs[2].IsNull();
 	if (has_named && has_positional) {
 		throw BinderException(DecideMsg("decide_table", "the model was given twice (as the 3rd argument and as "
@@ -422,7 +423,7 @@ string TableBindModel(ClientContext &context, TableFunctionBindInput &input, boo
 	}
 	from_setting = false;
 	if (has_named) {
-		return nit->second.ToString();
+		return named_model->ToString();
 	}
 	if (has_positional) {
 		return input.inputs[2].ToString();
@@ -432,7 +433,7 @@ string TableBindModel(ClientContext &context, TableFunctionBindInput &input, boo
 }
 
 unique_ptr<FunctionData> DecideTableBind(ClientContext &context, TableFunctionBindInput &input,
-                                        vector<LogicalType> &return_types, vector<string> &names) {
+                                        vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("decide_table");
 	DecideTableColumns(return_types, names);
 	auto data = make_uniq<DecideTableData>();
@@ -503,7 +504,7 @@ void DecideTableScan(ClientContext &context, TableFunctionInput &data, DataChunk
 		gstate.offset++;
 		row_count++;
 	}
-	output.SetCardinality(row_count);
+	duckdb_compat::SetChildCardinality(output, row_count);
 }
 
 // Per-row operator for lateral calls: each input row carries one
@@ -526,7 +527,7 @@ OperatorResultType DecideTableInOut(ExecutionContext &context, TableFunctionInpu
 				// (below): returning it here would re-present the same
 				// exhausted chunk forever.
 				lstate.input_row = 0;
-				output.SetCardinality(out_count);
+				duckdb_compat::SetChildCardinality(output, out_count);
 				return OperatorResultType::NEED_MORE_INPUT;
 			}
 			auto state_v = input.GetValue(0, lstate.input_row);
@@ -568,7 +569,7 @@ OperatorResultType DecideTableInOut(ExecutionContext &context, TableFunctionInpu
 			lstate.answers.shrink_to_fit();
 		}
 		if (out_count >= STANDARD_VECTOR_SIZE) {
-			output.SetCardinality(out_count);
+			duckdb_compat::SetChildCardinality(output, out_count);
 			return OperatorResultType::HAVE_MORE_OUTPUT;
 		}
 	}
@@ -649,13 +650,13 @@ void RegisterDecideTableFunctions(ExtensionLoader &loader) {
 		                      DECIDE_GUARD(DecideTableBind), DecideTableInitGlobal,
 		                      DecideTableInitLocal);
 		table_2.in_out_function = DECIDE_GUARD(DecideTableInOut);
-		table_2.named_parameters["model"] = V;
+		duckdb_compat::AddNamedParameter(table_2, "model", V);
 		set.AddFunction(table_2);
 		TableFunction table_3({V, V, V}, DECIDE_GUARD(DecideTableScan),
 		                      DECIDE_GUARD(DecideTableBind), DecideTableInitGlobal,
 		                      DecideTableInitLocal);
 		table_3.in_out_function = DECIDE_GUARD(DecideTableInOut);
-		table_3.named_parameters["model"] = V;
+		duckdb_compat::AddNamedParameter(table_3, "model", V);
 		set.AddFunction(table_3);
 		RegisterTableFunctionSetWithAlias(
 		    loader, std::move(set), "decide_table",

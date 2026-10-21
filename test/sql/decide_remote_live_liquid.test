@@ -7,6 +7,8 @@
 
 require anofox_decide
 
+require-env LIQUID_API_KEY
+
 statement ok
 LOAD anofox_decide
 

@@ -23,6 +23,7 @@
 #include "decide_calibration.hpp"
 #include "decide_errors.hpp"
 #include "decide_function_docs.hpp"
+#include "decide_guard.hpp"
 #include "decide_registration.hpp"
 #include "telemetry.hpp"
 #include "decide_provider.hpp"
@@ -58,29 +59,89 @@ struct ECEState {
 	int64_t total = 0;
 };
 
-idx_t BrierStateSize(const AggregateFunction &) {
-	return sizeof(BrierState);
-}
+// State lifecycle (initialize / combine / finalize / destroy) runs through DuckDB's own
+// AggregateFunction::State* templates with these operation structs: the raw callback signatures
+// differ between DuckDB 1.x and 2.0, the templates adapt. Only update is hand-written (it validates
+// every row and its signature is the same on every line).
+struct BrierOp {
+	static void Initialize(BrierState &state) {
+		new (&state) BrierState();
+	}
+	template <class STATE, class OP>
+	static void Combine(const STATE &src, STATE &tgt, AggregateInputData &) {
+		tgt.sum_sq += src.sum_sq;
+		tgt.n += src.n;
+	}
+	template <class T, class STATE>
+	static void Finalize(STATE &state, T &target, AggregateFinalizeData &finalize_data) {
+		if (state.n == 0) {
+			finalize_data.ReturnNull();
+		} else {
+			target = state.sum_sq / static_cast<double>(state.n);
+		}
+	}
+	static bool IgnoreNull() {
+		return true;
+	}
+};
 
-void BrierStateInit(const AggregateFunction &, data_ptr_t state_ptr) {
-	new (state_ptr) BrierState();
-}
+struct AccuracyOp {
+	static void Initialize(AccuracyState &state) {
+		new (&state) AccuracyState();
+	}
+	template <class STATE, class OP>
+	static void Combine(const STATE &src, STATE &tgt, AggregateInputData &) {
+		tgt.correct += src.correct;
+		tgt.total += src.total;
+	}
+	template <class T, class STATE>
+	static void Finalize(STATE &state, T &target, AggregateFinalizeData &finalize_data) {
+		if (state.total == 0) {
+			finalize_data.ReturnNull();
+		} else {
+			target = static_cast<double>(state.correct) / static_cast<double>(state.total);
+		}
+	}
+	static bool IgnoreNull() {
+		return true;
+	}
+};
 
-idx_t AccuracyStateSize(const AggregateFunction &) {
-	return sizeof(AccuracyState);
-}
-
-void AccuracyStateInit(const AggregateFunction &, data_ptr_t state_ptr) {
-	new (state_ptr) AccuracyState();
-}
-
-idx_t ECEStateSize(const AggregateFunction &) {
-	return sizeof(ECEState);
-}
-
-void ECEStateInit(const AggregateFunction &, data_ptr_t state_ptr) {
-	new (state_ptr) ECEState();
-}
+struct ECEOp {
+	static void Initialize(ECEState &state) {
+		new (&state) ECEState();
+	}
+	template <class STATE, class OP>
+	static void Combine(const STATE &src, STATE &tgt, AggregateInputData &) {
+		for (int m = 0; m < 10; m++) {
+			tgt.n[m] += src.n[m];
+			tgt.hits[m] += src.hits[m];
+			tgt.conf[m] += src.conf[m];
+		}
+		tgt.total += src.total;
+	}
+	template <class T, class STATE>
+	static void Finalize(STATE &state, T &target, AggregateFinalizeData &finalize_data) {
+		if (state.total == 0) {
+			finalize_data.ReturnNull();
+			return;
+		}
+		double total = static_cast<double>(state.total);
+		double ece = 0.0;
+		for (int m = 0; m < 10; m++) {
+			if (state.n[m] == 0) {
+				continue;
+			}
+			double acc = static_cast<double>(state.hits[m]) / static_cast<double>(state.n[m]);
+			double conf = state.conf[m] / static_cast<double>(state.n[m]);
+			ece += (static_cast<double>(state.n[m]) / total) * std::fabs(acc - conf);
+		}
+		target = ece;
+	}
+	static bool IgnoreNull() {
+		return true;
+	}
+};
 
 // Validated (probability, label-as-0/1) pair for one row. Returns false for
 // NULL rows (caller skips); throws an actionable error for non-probabilities
@@ -141,7 +202,7 @@ bool ValidPair(const char *func, const LogicalType &label_type, UnifiedVectorFor
 
 template <typename StateT>
 StateT &RowState(Vector &state_vector, UnifiedVectorFormat &sdata, idx_t i) {
-	auto states = reinterpret_cast<StateT **>(sdata.data);
+	auto states = reinterpret_cast<StateT *const *>(sdata.data);
 	return *states[sdata.sel->get_index(i)];
 }
 
@@ -241,106 +302,6 @@ void ECEUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vecto
 	ECEUpdateImpl("decide_ece", inputs, count, state_vector);
 }
 
-void BrierCombine(Vector &source_vector, Vector &target_vector, AggregateInputData &, idx_t count) {
-	UnifiedVectorFormat source_data, target_data;
-	source_vector.ToUnifiedFormat(count, source_data);
-	target_vector.ToUnifiedFormat(count, target_data);
-	auto sources = reinterpret_cast<BrierState **>(source_data.data);
-	auto targets = reinterpret_cast<BrierState **>(target_data.data);
-	for (idx_t i = 0; i < count; i++) {
-		auto &src = *sources[source_data.sel->get_index(i)];
-		auto &tgt = *targets[target_data.sel->get_index(i)];
-		tgt.sum_sq += src.sum_sq;
-		tgt.n += src.n;
-	}
-}
-
-void AccuracyCombine(Vector &source_vector, Vector &target_vector, AggregateInputData &, idx_t count) {
-	UnifiedVectorFormat source_data, target_data;
-	source_vector.ToUnifiedFormat(count, source_data);
-	target_vector.ToUnifiedFormat(count, target_data);
-	auto sources = reinterpret_cast<AccuracyState **>(source_data.data);
-	auto targets = reinterpret_cast<AccuracyState **>(target_data.data);
-	for (idx_t i = 0; i < count; i++) {
-		auto &src = *sources[source_data.sel->get_index(i)];
-		auto &tgt = *targets[target_data.sel->get_index(i)];
-		tgt.correct += src.correct;
-		tgt.total += src.total;
-	}
-}
-
-void ECECombine(Vector &source_vector, Vector &target_vector, AggregateInputData &, idx_t count) {
-	UnifiedVectorFormat source_data, target_data;
-	source_vector.ToUnifiedFormat(count, source_data);
-	target_vector.ToUnifiedFormat(count, target_data);
-	auto sources = reinterpret_cast<ECEState **>(source_data.data);
-	auto targets = reinterpret_cast<ECEState **>(target_data.data);
-	for (idx_t i = 0; i < count; i++) {
-		auto &src = *sources[source_data.sel->get_index(i)];
-		auto &tgt = *targets[target_data.sel->get_index(i)];
-		for (int m = 0; m < 10; m++) {
-			tgt.n[m] += src.n[m];
-			tgt.hits[m] += src.hits[m];
-			tgt.conf[m] += src.conf[m];
-		}
-		tgt.total += src.total;
-	}
-}
-
-void BrierFinalize(Vector &state_vector, AggregateInputData &, Vector &result, idx_t count, idx_t offset) {
-	UnifiedVectorFormat sdata;
-	state_vector.ToUnifiedFormat(count, sdata);
-	auto states = reinterpret_cast<BrierState **>(sdata.data);
-	for (idx_t i = 0; i < count; i++) {
-		auto &state = *states[sdata.sel->get_index(i)];
-		if (state.n == 0) {
-			FlatVector::SetNull(result, i + offset, true);
-		} else {
-			FlatVector::GetData<double>(result)[i + offset] =
-			    state.sum_sq / static_cast<double>(state.n);
-		}
-	}
-}
-
-void AccuracyFinalize(Vector &state_vector, AggregateInputData &, Vector &result, idx_t count, idx_t offset) {
-	UnifiedVectorFormat sdata;
-	state_vector.ToUnifiedFormat(count, sdata);
-	auto states = reinterpret_cast<AccuracyState **>(sdata.data);
-	for (idx_t i = 0; i < count; i++) {
-		auto &state = *states[sdata.sel->get_index(i)];
-		if (state.total == 0) {
-			FlatVector::SetNull(result, i + offset, true);
-		} else {
-			FlatVector::GetData<double>(result)[i + offset] =
-			    static_cast<double>(state.correct) / static_cast<double>(state.total);
-		}
-	}
-}
-
-void ECEFinalize(Vector &state_vector, AggregateInputData &, Vector &result, idx_t count, idx_t offset) {
-	UnifiedVectorFormat sdata;
-	state_vector.ToUnifiedFormat(count, sdata);
-	auto states = reinterpret_cast<ECEState **>(sdata.data);
-	for (idx_t i = 0; i < count; i++) {
-		auto &state = *states[sdata.sel->get_index(i)];
-		if (state.total == 0) {
-			FlatVector::SetNull(result, i + offset, true);
-			continue;
-		}
-		double total = static_cast<double>(state.total);
-		double ece = 0.0;
-		for (int m = 0; m < 10; m++) {
-			if (state.n[m] == 0) {
-				continue;
-			}
-			double acc = static_cast<double>(state.hits[m]) / static_cast<double>(state.n[m]);
-			double conf = state.conf[m] / static_cast<double>(state.n[m]);
-			ece += (static_cast<double>(state.n[m]) / total) * std::fabs(acc - conf);
-		}
-		FlatVector::GetData<double>(result)[i + offset] = ece;
-	}
-}
-
 // decide_fit_calibration(probability, outcome): Platt scaling fitted from labelled data. The state keeps
 // every valid (probability, outcome) pair (the fit is iterative, so it needs the data, not running sums)
 // on the heap; the destructor frees it.
@@ -348,29 +309,6 @@ struct FitState {
 	vector<double> *p = nullptr;
 	vector<uint8_t> *y = nullptr;
 };
-
-idx_t FitStateSize(const AggregateFunction &) {
-	return sizeof(FitState);
-}
-
-void FitStateInit(const AggregateFunction &, data_ptr_t state_ptr) {
-	auto *state = new (state_ptr) FitState();
-	state->p = new vector<double>();
-	state->y = new vector<uint8_t>();
-}
-
-void FitStateDestroy(Vector &state_vector, AggregateInputData &, idx_t count) {
-	UnifiedVectorFormat sdata;
-	state_vector.ToUnifiedFormat(count, sdata);
-	auto states = reinterpret_cast<FitState **>(sdata.data);
-	for (idx_t i = 0; i < count; i++) {
-		auto &state = *states[sdata.sel->get_index(i)];
-		delete state.p;
-		delete state.y;
-		state.p = nullptr;
-		state.y = nullptr;
-	}
-}
 
 void FitUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vector, idx_t count) {
 	UnifiedVectorFormat sdata, prob_data, label_data;
@@ -390,29 +328,22 @@ void FitUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vecto
 	}
 }
 
-void FitCombine(Vector &source_vector, Vector &target_vector, AggregateInputData &, idx_t count) {
-	UnifiedVectorFormat source_data, target_data;
-	source_vector.ToUnifiedFormat(count, source_data);
-	target_vector.ToUnifiedFormat(count, target_data);
-	auto sources = reinterpret_cast<FitState **>(source_data.data);
-	auto targets = reinterpret_cast<FitState **>(target_data.data);
-	for (idx_t i = 0; i < count; i++) {
-		auto &src = *sources[source_data.sel->get_index(i)];
-		auto &tgt = *targets[target_data.sel->get_index(i)];
+struct FitOp {
+	static void Initialize(FitState &state) {
+		new (&state) FitState();
+		state.p = new vector<double>();
+		state.y = new vector<uint8_t>();
+	}
+	template <class STATE, class OP>
+	static void Combine(const STATE &src, STATE &tgt, AggregateInputData &) {
 		tgt.p->insert(tgt.p->end(), src.p->begin(), src.p->end());
 		tgt.y->insert(tgt.y->end(), src.y->begin(), src.y->end());
 	}
-}
-
-void FitFinalize(Vector &state_vector, AggregateInputData &, Vector &result, idx_t count, idx_t offset) {
-	UnifiedVectorFormat sdata;
-	state_vector.ToUnifiedFormat(count, sdata);
-	auto states = reinterpret_cast<FitState **>(sdata.data);
-	for (idx_t i = 0; i < count; i++) {
-		auto &state = *states[sdata.sel->get_index(i)];
+	template <class T, class STATE>
+	static void Finalize(STATE &state, T &target, AggregateFinalizeData &finalize_data) {
 		if (state.p->empty()) {
-			FlatVector::SetNull(result, i + offset, true);
-			continue;
+			finalize_data.ReturnNull();
+			return;
 		}
 		double a, b;
 		string why;
@@ -422,17 +353,27 @@ void FitFinalize(Vector &state_vector, AggregateInputData &, Vector &result, idx
 			    "pass a model's probabilities and the true outcomes, e.g. SELECT decide_fit_calibration(p, y) "
 			    "FROM labelled; (both outcomes must occur, and about 50 or more rows give a stable fit)"));
 		}
-		FlatVector::GetData<string_t>(result)[i + offset] =
-		    StringVector::AddString(result, DecideFormatPlatt(a, b));
+		target = StringVector::AddString(finalize_data.result, DecideFormatPlatt(a, b));
 	}
-}
+	template <class STATE>
+	static void Destroy(STATE &state, AggregateInputData &) {
+		delete state.p;
+		delete state.y;
+		state.p = nullptr;
+		state.y = nullptr;
+	}
+	static bool IgnoreNull() {
+		return true;
+	}
+};
 
 // Telemetry (tabfm convention): one aggregated call per function at bind time.
 #define DECIDE_METRIC_TELEMETRY_BIND(FN, NAME)                                                                  \
-	unique_ptr<FunctionData> FN(ClientContext &, AggregateFunction &, vector<unique_ptr<Expression>> &) {        \
+	unique_ptr<FunctionData> FN##Body() {                                                                       \
 		PostHogTelemetry::Instance().RecordFunctionCall(NAME);                                                   \
 		return nullptr;                                                                                         \
-	}
+	}                                                                                                           \
+	constexpr bind_aggregate_function_t FN = &DecideArgsIgnoredBind<bind_aggregate_function_t>::Call<&FN##Body>;
 DECIDE_METRIC_TELEMETRY_BIND(BrierBind, "decide_brier_score")
 DECIDE_METRIC_TELEMETRY_BIND(ECEBind, "decide_ece")
 DECIDE_METRIC_TELEMETRY_BIND(AccuracyBind, "decide_accuracy")
@@ -449,9 +390,9 @@ void RegisterMetric(const string &primary, const string &alias, aggregate_size_t
 	const auto D = LogicalType::DOUBLE;
 	const auto B = LogicalType::BOOLEAN;
 	const auto I = LogicalType::BIGINT;
-	AggregateFunctionSet set(primary);
+	AggregateFunctionSet set(duckdb_compat::FunctionName(primary));
 	auto add = [&](vector<LogicalType> args, aggregate_update_t fn_update) {
-		set.AddFunction(AggregateFunction(primary, args, D, state_size, init, fn_update, combine, finalize, nullptr,
+		set.AddFunction(AggregateFunction(duckdb_compat::FunctionName(primary), args, D, state_size, init, fn_update, combine, finalize, nullptr,
 		                                  bind, nullptr));
 	};
 	add({D, B}, update);
@@ -470,21 +411,27 @@ void RegisterMetric(const string &primary, const string &alias, aggregate_size_t
 } // namespace
 
 void RegisterDecideMetrics(ExtensionLoader &loader) {
-	RegisterMetric("anofox_decide_brier_score", "decide_brier_score", BrierStateSize, BrierStateInit, BrierUpdate,
-	               BrierCombine, BrierFinalize, BrierBind, loader,
+	RegisterMetric("anofox_decide_brier_score", "decide_brier_score", AggregateFunction::StateSize<BrierState>,
+	               AggregateFunction::StateInitialize<BrierState, BrierOp>, BrierUpdate,
+	               AggregateFunction::StateCombine<BrierState, BrierOp>,
+	               AggregateFunction::StateFinalize<BrierState, double, BrierOp>, BrierBind, loader,
 	               "Brier score of predicted probabilities against observed outcomes: mean squared difference "
 	               "between the probability and the 0/1 outcome (lower is better; 0 is perfect, 0.25 is a constant "
 	               "0.5). Rows with a NULL probability or outcome are skipped; empty input returns NULL.",
 	               "SELECT decide_brier_score(p, y) FROM labeled;",
 	               "SELECT decide_brier_score(p, y::BIGINT) FROM labeled;");
-	RegisterMetric("anofox_decide_ece", "decide_ece", ECEStateSize, ECEStateInit, ECEUpdate, ECECombine,
-	               ECEFinalize, ECEBind, loader,
+	RegisterMetric("anofox_decide_ece", "decide_ece", AggregateFunction::StateSize<ECEState>,
+	               AggregateFunction::StateInitialize<ECEState, ECEOp>, ECEUpdate,
+	               AggregateFunction::StateCombine<ECEState, ECEOp>,
+	               AggregateFunction::StateFinalize<ECEState, double, ECEOp>, ECEBind, loader,
 	               "Expected calibration error over ten equal-width probability bins: the bin-weighted gap between "
 	               "average confidence and accuracy (lower is better). Rows with a NULL probability or outcome are "
 	               "skipped; empty input returns NULL.",
 	               "SELECT decide_ece(p, y) FROM labeled;", "SELECT decide_ece(p, y::BIGINT) FROM labeled;");
-	RegisterMetric("anofox_decide_accuracy", "decide_accuracy", AccuracyStateSize, AccuracyStateInit,
-	               AccuracyUpdate, AccuracyCombine, AccuracyFinalize, AccuracyBind, loader,
+	RegisterMetric("anofox_decide_accuracy", "decide_accuracy", AggregateFunction::StateSize<AccuracyState>,
+	               AggregateFunction::StateInitialize<AccuracyState, AccuracyOp>, AccuracyUpdate,
+	               AggregateFunction::StateCombine<AccuracyState, AccuracyOp>,
+	               AggregateFunction::StateFinalize<AccuracyState, double, AccuracyOp>, AccuracyBind, loader,
 	               "Fraction of rows where thresholding the probability reproduces the outcome. The two-argument "
 	               "form uses the documented 0.5 boundary; the three-argument form takes an explicit threshold in "
 	               "[0, 1] (NaN or out-of-range thresholds raise an error). NULL inputs are skipped; empty input "
@@ -497,13 +444,18 @@ void RegisterDecideMetrics(ExtensionLoader &loader) {
 		const auto D = LogicalType::DOUBLE;
 		const auto B = LogicalType::BOOLEAN;
 		const auto I = LogicalType::BIGINT;
+		const auto FitStateSize = AggregateFunction::StateSize<FitState>;
+		const auto FitStateInit = AggregateFunction::StateInitialize<FitState, FitOp>;
+		const auto FitCombine = AggregateFunction::StateCombine<FitState, FitOp>;
+		const auto FitFinalize = AggregateFunction::StateFinalize<FitState, string_t, FitOp>;
+		const auto FitDestroy = AggregateFunction::StateDestroy<FitState, FitOp>;
 		AggregateFunctionSet set("anofox_decide_fit_calibration");
 		set.AddFunction(AggregateFunction("anofox_decide_fit_calibration", {D, B}, LogicalType::VARCHAR,
 		                                  FitStateSize, FitStateInit, FitUpdate, FitCombine, FitFinalize, nullptr,
-		                                  FitCalibrationBind, FitStateDestroy));
+		                                  FitCalibrationBind, FitDestroy));
 		set.AddFunction(AggregateFunction("anofox_decide_fit_calibration", {D, I}, LogicalType::VARCHAR,
 		                                  FitStateSize, FitStateInit, FitUpdate, FitCombine, FitFinalize, nullptr,
-		                                  FitCalibrationBind, FitStateDestroy));
+		                                  FitCalibrationBind, FitDestroy));
 		RegisterAggregateFunctionSetWithAlias(
 		    loader, std::move(set), "decide_fit_calibration",
 		    DecideDocs("Fit Platt scaling from labelled data: given a model's yes/no probabilities and the true "

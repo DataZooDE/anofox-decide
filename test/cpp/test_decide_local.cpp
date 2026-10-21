@@ -8,6 +8,7 @@
 #include "decide_tokenizer.hpp"
 
 #include "duckdb.hpp"
+#include "duckdb_compat.hpp"
 
 #include <cmath>
 #include <cstdlib>
@@ -320,10 +321,10 @@ TEST_CASE("decide_token_count counts tokens for local models only", "[anofox_dec
 	auto r = con.Query("SELECT decide_token_count('" + LongText(50) + "', model := 'tiny-local'), "
 	                   "decide_token_count(NULL, 'tiny-local'), anofox_decide_token_count('ab', 'tiny-local')");
 	REQUIRE_FALSE(r->HasError());
-	REQUIRE(r->GetValue(0, 0).GetValue<int64_t>() == expect);
-	REQUIRE(r->GetValue(1, 0).IsNull());
-	REQUIRE(r->GetValue(2, 0).GetValue<int64_t>() == (int64_t)tok.Encode("ab").size());
-	REQUIRE(r->GetValue(0, 0).type() == LogicalType::BIGINT);
+	REQUIRE(duckdb_compat::ResultValue(*r, 0, 0).GetValue<int64_t>() == expect);
+	REQUIRE(duckdb_compat::ResultValue(*r, 1, 0).IsNull());
+	REQUIRE(duckdb_compat::ResultValue(*r, 2, 0).GetValue<int64_t>() == (int64_t)tok.Encode("ab").size());
+	REQUIRE(duckdb_compat::ResultValue(*r, 0, 0).type() == LogicalType::BIGINT);
 
 	auto stub = con.Query("SELECT decide_token_count('ab', model := 'stub')");
 	REQUIRE(stub->HasError());

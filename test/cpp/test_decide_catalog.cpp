@@ -11,6 +11,7 @@
 #include "decide_safetensors.hpp"
 
 #include "duckdb.hpp"
+#include "duckdb_compat.hpp"
 
 #define CPPHTTPLIB_OPENSSL_SUPPORT
 #include "httplib.hpp"
@@ -35,20 +36,17 @@ namespace fs = std::filesystem;
 
 namespace {
 
+// Connection::Query returns MaterializedQueryResult on DuckDB 1.x and QueryResult on 2.0.
 QueryResult &Res(QueryResult &r) {
 	return r;
 }
-QueryResult &Res(unique_ptr<QueryResult> &r) {
+template <class RESULT>
+QueryResult &Res(unique_ptr<RESULT> &r) {
 	return *r;
 }
-QueryResult &Res(unique_ptr<MaterializedQueryResult> &r) {
-	return *r;
-}
-QueryResult &Res(MaterializedQueryResult &r) {
-	return r;
-}
-QueryResult &Res(unique_ptr<MaterializedQueryResult> &&r) {
-	static thread_local unique_ptr<MaterializedQueryResult> keep;
+template <class RESULT>
+QueryResult &Res(unique_ptr<RESULT> &&r) {
+	static thread_local unique_ptr<QueryResult> keep;
 	keep = std::move(r);
 	return *keep;
 }
@@ -507,34 +505,34 @@ TEST_CASE("catalog models resolve through SQL: not downloaded, download, score",
 	auto models = con.Query("SELECT ready, hint FROM decide_models() WHERE model = 'test-tiny'");
 	REQUIRE_NO_FAIL(*models);
 	REQUIRE(models->RowCount() == 1);
-	REQUIRE(models->GetValue(0, 0) == Value::BOOLEAN(false));
-	REQUIRE_THAT(models->GetValue(1, 0).ToString(), Contains("CALL decide_download('test-tiny');"));
+	REQUIRE(duckdb_compat::ResultValue(*models, 0, 0) == Value::BOOLEAN(false));
+	REQUIRE_THAT(duckdb_compat::ResultValue(*models, 1, 0).ToString(), Contains("CALL decide_download('test-tiny');"));
 	auto doctor = con.Query("SELECT status, fix FROM decide_doctor() WHERE item = 'local model ''test-tiny'''");
 	REQUIRE_NO_FAIL(*doctor);
 	REQUIRE(doctor->RowCount() == 1);
-	REQUIRE(doctor->GetValue(0, 0).ToString() == "warn");
+	REQUIRE(duckdb_compat::ResultValue(*doctor, 0, 0).ToString() == "warn");
 
 	// Download through SQL.
 	auto dl = con.Query("CALL decide_download('test-tiny')");
 	REQUIRE_NO_FAIL(*dl);
 	REQUIRE(dl->RowCount() == 2);
-	REQUIRE(dl->GetValue(3, 0).ToString() == "downloaded");
+	REQUIRE(duckdb_compat::ResultValue(*dl, 3, 0).ToString() == "downloaded");
 
 	// Offline from here on: stop the server's answers by pointing the entry at a dead port; scoring needs no network.
 	auto models2 = con.Query("SELECT ready FROM decide_models() WHERE model = 'test-tiny'");
-	REQUIRE(models2->GetValue(0, 0) == Value::BOOLEAN(true));
+	REQUIRE(duckdb_compat::ResultValue(*models2, 0, 0) == Value::BOOLEAN(true));
 	auto p = con.Query("SELECT decide_probability('I want my money back.', 'A refund is requested.', model := 'test-tiny')");
 	REQUIRE_NO_FAIL(*p);
-	double prob = p->GetValue(0, 0).GetValue<double>();
+	double prob = duckdb_compat::ResultValue(*p, 0, 0).GetValue<double>();
 	REQUIRE(prob > 0.0);
 	REQUIRE(prob < 1.0);
 	auto p2 = con.Query("SELECT decide_probability('I want my money back.', 'A refund is requested.', model := 'test-tiny')");
-	REQUIRE(p2->GetValue(0, 0).GetValue<double>() == prob);
+	REQUIRE(duckdb_compat::ResultValue(*p2, 0, 0).GetValue<double>() == prob);
 
 	// A second CALL verifies instead of downloading.
 	auto again = con.Query("CALL decide_download('test-tiny')");
 	REQUIRE_NO_FAIL(*again);
-	REQUIRE(again->GetValue(3, 0).ToString() == "cached");
+	REQUIRE(duckdb_compat::ResultValue(*again, 3, 0).ToString() == "cached");
 
 	auto typo = con.Query("CALL decide_download('test-tinny')");
 	REQUIRE(typo->HasError());
@@ -582,8 +580,8 @@ TEST_CASE("the built-in catalog lists its models in decide_models", "[anofox_dec
 	REQUIRE_NO_FAIL(*r);
 	REQUIRE(r->RowCount() == 3);
 	for (idx_t i = 0; i < 3; i++) {
-		REQUIRE(r->GetValue(1, i) == Value::BOOLEAN(false));
-		REQUIRE_THAT(r->GetValue(2, i).ToString(), Contains("CALL decide_download('" + r->GetValue(0, i).ToString() + "');"));
+		REQUIRE(duckdb_compat::ResultValue(*r, 1, i) == Value::BOOLEAN(false));
+		REQUIRE_THAT(duckdb_compat::ResultValue(*r, 2, i).ToString(), Contains("CALL decide_download('" + duckdb_compat::ResultValue(*r, 0, i).ToString() + "');"));
 	}
 	auto q = con.Query("SELECT decide_probability('a', 'b?', model := 'laya-multilingual')");
 	REQUIRE(q->HasError());
@@ -670,7 +668,7 @@ TEST_CASE("a graph's .meta.json decides the profile", "[anofox_decide][catalog]"
 	REQUIRE_THAT(bad->GetError(), Contains("Fix: use 'julia-1' as the 5th argument"));
 	REQUIRE_NO_FAIL(con.Query("SELECT decide_register_model('m2', 'local', '" + dir + "/g.onnx', '" + dir + "/tok.json')"));
 	auto profile = con.Query("SELECT profile FROM decide_models() WHERE model = 'm2'");
-	REQUIRE(profile->GetValue(0, 0).ToString() == "julia-1");
+	REQUIRE(duckdb_compat::ResultValue(*profile, 0, 0).ToString() == "julia-1");
 	// No metadata: the caller's profile is trusted, as before.
 	fs::remove(dir + "/g.onnx.meta.json");
 	REQUIRE_NO_FAIL(con.Query("SELECT decide_register_model('m3', 'local', '" + dir + "/g.onnx', '" + dir + "/tok.json', 'julia-1')"));

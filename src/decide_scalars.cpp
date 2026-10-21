@@ -13,6 +13,7 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/types/value.hpp"
+#include "duckdb_compat.hpp"
 
 #include <cmath>
 
@@ -469,10 +470,11 @@ void DecideRegisterModelFun(DataChunk &args, ExpressionState &state, Vector &res
 // bind time, never per row; the recorded name is always one of these fixed
 // identifiers.
 #define DECIDE_SCALAR_TELEMETRY_BIND(FN, NAME)                                                                  \
-	unique_ptr<FunctionData> FN(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {           \
+	unique_ptr<FunctionData> FN##Body() {                                                                       \
 		PostHogTelemetry::Instance().RecordFunctionCall(NAME);                                                   \
 		return nullptr;                                                                                         \
-	}
+	}                                                                                                           \
+	constexpr bind_scalar_function_t FN = &DecideArgsIgnoredBind<bind_scalar_function_t>::Call<&FN##Body>;
 DECIDE_SCALAR_TELEMETRY_BIND(DecideProbabilityBind, "decide_probability")
 DECIDE_SCALAR_TELEMETRY_BIND(DecideChoiceBind, "decide_choice")
 DECIDE_SCALAR_TELEMETRY_BIND(DecideChoiceDistributionBind, "decide_choice_distribution")
@@ -520,8 +522,11 @@ void DecideUnregisterModelFun(DataChunk &args, ExpressionState &state, Vector &r
 // silently return NULL instead of the actionable error).
 ScalarFunction DecideScalar(string name, vector<LogicalType> args, LogicalType ret, scalar_function_t fun,
                             bind_scalar_function_t bind) {
-	ScalarFunction f(std::move(name), std::move(args), std::move(ret), fun, bind);
-	f.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
+	ScalarFunction f(duckdb_compat::FunctionName(name), std::move(args), std::move(ret), fun, bind);
+	duckdb_compat::SetNullHandling(f, FunctionNullHandling::SPECIAL_HANDLING);
+	// Every decide scalar raises actionable errors; 2.0 turns an error from a function not marked
+	// fallible into an INTERNAL error.
+	duckdb_compat::SetFallible(f);
 	return f;
 }
 
@@ -530,8 +535,7 @@ ScalarFunction DecideScalar(string name, vector<LogicalType> args, LogicalType r
 // DECIDE_GUARD appends the issue-link hint to unexpected errors only (see decide_guard.hpp).
 // The argument-type list goes last so its commas fold into __VA_ARGS__.
 #define DECIDE_SCALAR(NAME, RET, FUN, BIND, ...)                                                                \
-	DecideScalar(NAME, vector<LogicalType> __VA_ARGS__, RET, DECIDE_GUARD(FUN),          \
-	             DECIDE_GUARD(BIND))
+	DecideScalar(NAME, vector<LogicalType> __VA_ARGS__, RET, DECIDE_GUARD(FUN), BIND)
 
 void RegisterDecideScalars(ExtensionLoader &loader) {
 	const auto V = LogicalType::VARCHAR;

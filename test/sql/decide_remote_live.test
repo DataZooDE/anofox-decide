@@ -8,6 +8,8 @@
 
 require anofox_decide
 
+require-env TYPESAFE_API_KEY
+
 statement ok
 LOAD anofox_decide
 
