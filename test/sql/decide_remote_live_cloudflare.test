@@ -6,6 +6,10 @@
 
 require anofox_decide
 
+require-env CLOUDFLARE_API_TOKEN
+
+require-env CLOUDFLARE_ACCOUNT_ID
+
 statement ok
 LOAD anofox_decide
 
