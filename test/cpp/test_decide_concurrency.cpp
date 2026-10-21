@@ -6,6 +6,7 @@
 #include "decide_errors.hpp"
 
 #include "duckdb.hpp"
+#include "duckdb_compat.hpp"
 
 #define CPPHTTPLIB_OPENSSL_SUPPORT
 #include "httplib.hpp"
@@ -92,7 +93,7 @@ struct Session {
 		Run(string("SELECT decide_register_model('m', '") + provider + "', MAP {'endpoint': 'http://127.0.0.1:" +
 		    std::to_string(server.port) + "'})");
 	}
-	unique_ptr<MaterializedQueryResult> Run(const string &sql) {
+	unique_ptr<QueryResult> Run(const string &sql) {
 		auto result = con.Query(sql);
 		if (result->HasError()) {
 			FAIL("query failed: " << result->GetError() << "\n" << sql);
@@ -129,8 +130,8 @@ TEST_CASE("rows of one chunk are sent concurrently, within the limit, in row ord
 	const double took = Seconds(start);
 	REQUIRE(result->RowCount() == 40);
 	for (idx_t i = 0; i < 40; i++) {
-		REQUIRE(result->GetValue(0, i).GetValue<int64_t>() == (int64_t)i);
-		REQUIRE(result->GetValue(1, i).GetValue<bool>() == (i % 2 == 1)); // each row got its own answer
+		REQUIRE(duckdb_compat::ResultValue(*result, 0, i).GetValue<int64_t>() == (int64_t)i);
+		REQUIRE(duckdb_compat::ResultValue(*result, 1, i).GetValue<bool>() == (i % 2 == 1)); // each row got its own answer
 	}
 	REQUIRE(server.hits == 40);
 	REQUIRE(server.peak <= 4);
@@ -177,7 +178,7 @@ TEST_CASE("identical rows in a chunk are sent once and share the answer", "[anof
 	REQUIRE(result->RowCount() == 60);
 	REQUIRE(server.hits == 6); // 6 distinct texts
 	for (idx_t i = 0; i < 60; i++) {
-		REQUIRE(result->GetValue(1, i).GetValue<double>() == Approx((i % 6) % 2 == 1 ? 0.9 : 0.1));
+		REQUIRE(duckdb_compat::ResultValue(*result, 1, i).GetValue<double>() == Approx((i % 6) % 2 == 1 ? 0.9 : 0.1));
 	}
 	// The same text with a different question is a different request.
 	server.hits = 0;
@@ -191,10 +192,10 @@ TEST_CASE("NULL rows cost no request and stay NULL", "[anofox_decide][concurrenc
 	auto result = s.Run("SELECT decide_probability(t, 'A refund is requested.', model := 'm') FROM "
 	                    "(VALUES ('a refund'), (NULL), ('thanks'), (NULL)) v(t)");
 	REQUIRE(result->RowCount() == 4);
-	REQUIRE(!result->GetValue(0, 0).IsNull());
-	REQUIRE(result->GetValue(0, 1).IsNull());
-	REQUIRE(!result->GetValue(0, 2).IsNull());
-	REQUIRE(result->GetValue(0, 3).IsNull());
+	REQUIRE(!duckdb_compat::ResultValue(*result, 0, 0).IsNull());
+	REQUIRE(duckdb_compat::ResultValue(*result, 0, 1).IsNull());
+	REQUIRE(!duckdb_compat::ResultValue(*result, 0, 2).IsNull());
+	REQUIRE(duckdb_compat::ResultValue(*result, 0, 3).IsNull());
 	REQUIRE(server.hits == 2);
 }
 
@@ -222,7 +223,7 @@ TEST_CASE("a rate limit shrinks the window and the query still finishes", "[anof
 	s.Run("SET anofox_decide_max_retries = 6");
 	auto result = s.Run("SELECT count(*) FILTER (WHERE p IS NOT NULL) FROM (SELECT decide_probability(text, "
 	                    "'A refund is requested.', model := 'm') AS p FROM " + Tickets(16, 16) + ")");
-	REQUIRE(result->GetValue(0, 0).GetValue<int64_t>() == 16);
+	REQUIRE(duckdb_compat::ResultValue(*result, 0, 0).GetValue<int64_t>() == 16);
 	REQUIRE(server.hits == 16 + 4); // every 429 was retried once more
 }
 
@@ -239,8 +240,8 @@ TEST_CASE("decide_table in a LATERAL join is correct, and sends one request per 
 	                    "\"instruction\":\"y\"}]', 'm')) dt ORDER BY t.id, dt.question_id");
 	REQUIRE(result->RowCount() == 24); // two questions per ticket
 	for (idx_t i = 0; i < 24; i++) {
-		REQUIRE(result->GetValue(0, i).GetValue<int64_t>() == (int64_t)(i / 2));
-		REQUIRE(result->GetValue(2, i).GetValue<bool>() == ((i / 2) % 2 == 1));
+		REQUIRE(duckdb_compat::ResultValue(*result, 0, i).GetValue<int64_t>() == (int64_t)(i / 2));
+		REQUIRE(duckdb_compat::ResultValue(*result, 2, i).GetValue<bool>() == ((i / 2) % 2 == 1));
 	}
 	REQUIRE(server.hits == 12);
 	REQUIRE(server.peak == 1);
@@ -285,12 +286,12 @@ TEST_CASE("a model's calibration applies to rows scored through the chunk path",
 	REQUIRE(result->RowCount() == 6);
 	for (idx_t i = 0; i < 6; i++) {
 		const bool refund = (i % 2 == 1);
-		REQUIRE(result->GetValue(2, i).GetValue<double>() == Approx(refund ? 0.9 : 0.1)); // uncalibrated model
-		REQUIRE(result->GetValue(1, i).GetValue<double>() == Approx(refund ? 0.987805 : 0.012195).epsilon(1e-4));
+		REQUIRE(duckdb_compat::ResultValue(*result, 2, i).GetValue<double>() == Approx(refund ? 0.9 : 0.1)); // uncalibrated model
+		REQUIRE(duckdb_compat::ResultValue(*result, 1, i).GetValue<double>() == Approx(refund ? 0.987805 : 0.012195).epsilon(1e-4));
 	}
 	// decide_many and decide_table (binary questions) go through the same path.
 	auto many = s.Run("SELECT decide_many('wants a refund', '[{\"id\":\"q\",\"kind\":\"binary\",\"instruction\":\"x\"}]', 'cal')");
-	REQUIRE_THAT(many->GetValue(0, 0).ToString(), Contains("0.98780"));
+	REQUIRE_THAT(duckdb_compat::ResultValue(*many, 0, 0).ToString(), Contains("0.98780"));
 }
 
 namespace {
@@ -310,8 +311,8 @@ TEST_CASE("decide_answers sends one request per distinct row, concurrently, with
 	const double took = Seconds(start);
 	REQUIRE(result->RowCount() == 48); // two questions per ticket
 	for (idx_t i = 0; i < 48; i++) {
-		REQUIRE(result->GetValue(0, i).GetValue<int64_t>() == (int64_t)(i / 2));
-		REQUIRE(result->GetValue(2, i).GetValue<bool>() == ((i / 2) % 2 == 1));
+		REQUIRE(duckdb_compat::ResultValue(*result, 0, i).GetValue<int64_t>() == (int64_t)(i / 2));
+		REQUIRE(duckdb_compat::ResultValue(*result, 2, i).GetValue<bool>() == ((i / 2) % 2 == 1));
 	}
 	REQUIRE(server.hits == 24); // one request per ticket, not per question
 	REQUIRE(server.peak > 1);
@@ -325,16 +326,16 @@ TEST_CASE("decide_answers de-duplicates identical rows and NULL rows cost nothin
 	Session s(server, "systemone");
 	auto result = s.Run("SELECT count(*) FROM (SELECT unnest(decide_answers(text, " + string(kTwoQuestions) +
 	                    ", model := 'm'), recursive := true) FROM " + Tickets(60, 6) + ")");
-	REQUIRE(result->GetValue(0, 0).GetValue<int64_t>() == 120);
+	REQUIRE(duckdb_compat::ResultValue(*result, 0, 0).GetValue<int64_t>() == 120);
 	REQUIRE(server.hits == 6);
 	server.hits = 0;
 	auto nulls = s.Run("SELECT id, decide_answers(t, " + string(kTwoQuestions) + ", model := 'm') IS NULL FROM "
 	                   "(VALUES (1, 'a refund'), (2, NULL), (3, 'thanks'), (4, NULL)) v(id, t) ORDER BY id");
 	REQUIRE(nulls->RowCount() == 4);
-	REQUIRE(!nulls->GetValue(1, 0).GetValue<bool>());
-	REQUIRE(nulls->GetValue(1, 1).GetValue<bool>());
-	REQUIRE(!nulls->GetValue(1, 2).GetValue<bool>());
-	REQUIRE(nulls->GetValue(1, 3).GetValue<bool>());
+	REQUIRE(!duckdb_compat::ResultValue(*nulls, 1, 0).GetValue<bool>());
+	REQUIRE(duckdb_compat::ResultValue(*nulls, 1, 1).GetValue<bool>());
+	REQUIRE(!duckdb_compat::ResultValue(*nulls, 1, 2).GetValue<bool>());
+	REQUIRE(duckdb_compat::ResultValue(*nulls, 1, 3).GetValue<bool>());
 	REQUIRE(server.hits == 2);
 }
 
@@ -349,7 +350,7 @@ TEST_CASE("decide_answers applies the model's calibration", "[anofox_decide][con
 	REQUIRE(result->RowCount() == 6);
 	for (idx_t i = 0; i < 6; i++) {
 		const bool refund = (i % 2 == 1);
-		REQUIRE(result->GetValue(1, i).GetValue<double>() == Approx(refund ? 0.987805 : 0.012195).epsilon(1e-4));
+		REQUIRE(duckdb_compat::ResultValue(*result, 1, i).GetValue<double>() == Approx(refund ? 0.987805 : 0.012195).epsilon(1e-4));
 	}
 }
 
@@ -366,7 +367,7 @@ TEST_CASE("LATERAL decide_table and decide_answers give the same rows", "[anofox
 	REQUIRE(scalar->RowCount() == 20);
 	for (idx_t r = 0; r < 20; r++) {
 		for (idx_t c = 0; c < 5; c++) {
-			REQUIRE(lateral->GetValue(c, r).ToString() == scalar->GetValue(c, r).ToString());
+			REQUIRE(duckdb_compat::ResultValue(*lateral, c, r).ToString() == duckdb_compat::ResultValue(*scalar, c, r).ToString());
 		}
 	}
 }

@@ -198,10 +198,12 @@ void DecideValidateLocalFiles(ClientContext &context, const DecideModelEntry &en
 
 namespace {
 
-unique_ptr<FunctionData> DecideTokenCountBind(ClientContext &, ScalarFunction &, vector<unique_ptr<Expression>> &) {
+unique_ptr<FunctionData> DecideTokenCountBindBody() {
 	PostHogTelemetry::Instance().RecordFunctionCall("decide_token_count");
 	return nullptr;
 }
+constexpr bind_scalar_function_t DecideTokenCountBind =
+    &DecideArgsIgnoredBind<bind_scalar_function_t>::Call<&DecideTokenCountBindBody>;
 
 void DecideTokenCountFun(DataChunk &args, ExpressionState &state, Vector &result) {
 	static const char *fn = "decide_token_count";
@@ -254,8 +256,10 @@ void RegisterDecideTokenCount(ExtensionLoader &loader) {
 	const auto V = LogicalType::VARCHAR;
 	ScalarFunctionSet set("anofox_decide_token_count");
 	for (auto &args : {vector<LogicalType> {V}, vector<LogicalType> {V, V}}) {
-		set.AddFunction(ScalarFunction("anofox_decide_token_count", args, LogicalType::BIGINT,
-		                               DECIDE_GUARD(DecideTokenCountFun), DECIDE_GUARD(DecideTokenCountBind)));
+		ScalarFunction fn("anofox_decide_token_count", args, LogicalType::BIGINT, DECIDE_GUARD(DecideTokenCountFun),
+		                  DecideTokenCountBind);
+		duckdb_compat::SetFallible(fn);
+		set.AddFunction(std::move(fn));
 	}
 	RegisterScalarFunctionSetWithAlias(
 	    loader, std::move(set), "decide_token_count",

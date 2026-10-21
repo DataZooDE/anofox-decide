@@ -4,6 +4,7 @@
 #include "anofox_decide_extension.hpp"
 
 #include "duckdb.hpp"
+#include "duckdb_compat.hpp"
 
 #include <fstream>
 #include <regex>
@@ -51,7 +52,7 @@ TEST_CASE("every documented function example binds", "[anofox_decide][docs]") {
 	REQUIRE_FALSE(result->HasError());
 	REQUIRE(result->RowCount() > 20);
 	for (idx_t i = 0; i < result->RowCount(); i++) {
-		const auto example = result->GetValue(0, i).ToString();
+		const auto example = duckdb_compat::ResultValue(*result, 0, i).ToString();
 		auto prepared = docs.con.Prepare(example);
 		INFO("example: " << example);
 		INFO("error: " << (prepared->HasError() ? prepared->GetError() : ""));
@@ -92,12 +93,12 @@ TEST_CASE("every function and setting the README names exists", "[anofox_decide]
 	auto fn = docs.con.Query("SELECT DISTINCT function_name FROM duckdb_functions() WHERE function_name LIKE '%decide_%'");
 	REQUIRE_FALSE(fn->HasError());
 	for (idx_t i = 0; i < fn->RowCount(); i++) {
-		functions.insert(fn->GetValue(0, i).ToString());
+		functions.insert(duckdb_compat::ResultValue(*fn, 0, i).ToString());
 	}
 	auto st = docs.con.Query("SELECT name FROM duckdb_settings() WHERE name LIKE 'anofox_%' OR name LIKE 'datazoo_%'");
 	REQUIRE_FALSE(st->HasError());
 	for (idx_t i = 0; i < st->RowCount(); i++) {
-		settings.insert(st->GetValue(0, i).ToString());
+		settings.insert(duckdb_compat::ResultValue(*st, 0, i).ToString());
 	}
 	const auto readme = ReadFile("README.md");
 	// name( : a function call (the documentation only mentions decide_* and anofox_decide_* functions)

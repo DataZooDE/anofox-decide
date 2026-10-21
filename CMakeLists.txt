@@ -14,6 +14,10 @@ set(DATAZOO_BANNER_TELEMETRY_INCLUDE_DIR
 add_subdirectory(datazoo-banner)
 
 include_directories(src/include)
+# DuckDB 1.4 / 1.5 / 2.0 API differences (header-only). Include path only: a
+# target_link_libraries() to duckdb_compat breaks DuckDB's export() of the
+# extension targets.
+include_directories(duckdb-compat/include)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -88,10 +92,11 @@ foreach(_tgt ${EXTENSION_NAME} ${LOADABLE_EXTENSION_NAME})
         decide_onnxruntime)
 endforeach()
 
-# posthog-telemetry reads the machine id from the IORegistry on macOS.
+# posthog-telemetry reads the machine id from the IORegistry on macOS; DuckDB
+# 2.0's httplib reads the keychain (Security) when built with OpenSSL.
 if(APPLE)
-    target_link_libraries(${EXTENSION_NAME} "-framework IOKit" "-framework CoreFoundation")
-    target_link_libraries(${LOADABLE_EXTENSION_NAME} "-framework IOKit" "-framework CoreFoundation")
+    target_link_libraries(${EXTENSION_NAME} "-framework IOKit" "-framework CoreFoundation" "-framework Security")
+    target_link_libraries(${LOADABLE_EXTENSION_NAME} "-framework IOKit" "-framework CoreFoundation" "-framework Security")
 endif()
 
 # posthog-telemetry's machine id (GetMacAddress -> GetAdaptersInfo) needs the

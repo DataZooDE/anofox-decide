@@ -6,6 +6,7 @@
 #include "decide_tokenizer.hpp"
 
 #include "duckdb.hpp"
+#include "duckdb_compat.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -271,7 +272,7 @@ TEST_CASE("anofox_decide_batch_tokens validates its range", "[anofox_decide][loc
 	Connection con(db);
 	auto res = con.Query("SELECT current_setting('anofox_decide_batch_tokens')");
 	REQUIRE_FALSE(res->HasError());
-	REQUIRE(res->GetValue(0, 0).ToString() == "0");
+	REQUIRE(duckdb_compat::ResultValue(*res, 0, 0).ToString() == "0");
 	REQUIRE_NOTHROW(con.Query("SET anofox_decide_batch_tokens = 1024"));
 	REQUIRE_NOTHROW(con.Query("SET anofox_decide_batch_tokens = 131072"));
 	for (const char *bad : {"1", "1023", "131073", "-5"}) {

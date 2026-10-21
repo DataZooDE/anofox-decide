@@ -7,6 +7,7 @@
 #include "decide_remote.hpp"
 
 #include "duckdb.hpp"
+#include "duckdb_compat.hpp"
 
 #define CPPHTTPLIB_OPENSSL_SUPPORT
 #include "httplib.hpp"
@@ -302,8 +303,8 @@ TEST_CASE("cloudflare: SQL over a chunk goes through the envelope, the chunk pat
 	                  "decide_probability('ticket ' || i, 'Is it urgent?', model := 'clef-cal') AS cal FROM range(5) t(i)");
 	REQUIRE(result->RowCount() == 5);
 	for (idx_t i = 0; i < 5; i++) {
-		REQUIRE(result->GetValue(0, i).GetValue<double>() == Approx(0.9));
-		REQUIRE(result->GetValue(1, i).GetValue<double>() == Approx(0.987805).epsilon(1e-4));
+		REQUIRE(duckdb_compat::ResultValue(*result, 0, i).GetValue<double>() == Approx(0.9));
+		REQUIRE(duckdb_compat::ResultValue(*result, 1, i).GetValue<double>() == Approx(0.987805).epsilon(1e-4));
 	}
 	REQUIRE(server.hits == 10); // 5 distinct texts x 2 models
 	REQUIRE(server.last_path == string("/client/v4/accounts/") + ACCOUNT + "/ai/run/@cf/cloudflare/clef");

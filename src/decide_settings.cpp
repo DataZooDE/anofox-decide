@@ -3,6 +3,7 @@
 
 #include "duckdb/main/config.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/main/client_context.hpp"
 
 #include <algorithm>
 

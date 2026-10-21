@@ -24,6 +24,7 @@
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/settings.hpp"
+#include "duckdb_compat.hpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -691,7 +692,7 @@ struct RuntimeState : public GlobalTableFunctionState {
 };
 
 unique_ptr<FunctionData> RuntimeBind(ClientContext &context, TableFunctionBindInput &input,
-                                     vector<LogicalType> &return_types, vector<string> &names) {
+                                     vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	(void)context;
 	PostHogTelemetry::Instance().RecordFunctionCall("decide_download_runtime");
 	if (input.inputs[0].IsNull()) {
@@ -735,7 +736,7 @@ void RuntimeScan(ClientContext &context, TableFunctionInput &data, DataChunk &ou
 		output.SetValue(2, n, Value(f.status));
 		n++;
 	}
-	output.SetCardinality(n);
+	duckdb_compat::SetChildCardinality(output, n);
 }
 
 //===----------------------------------------------------------------------===//
@@ -761,7 +762,7 @@ struct AccelerateState : public GlobalTableFunctionState {
 };
 
 unique_ptr<FunctionData> AccelerateBind(ClientContext &context, TableFunctionBindInput &input,
-                                        vector<LogicalType> &return_types, vector<string> &names) {
+                                        vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	(void)context;
 	(void)input;
 	PostHogTelemetry::Instance().RecordFunctionCall("decide_accelerate");
@@ -880,7 +881,7 @@ void AccelerateScan(ClientContext &context, TableFunctionInput &data, DataChunk 
 		output.SetValue(2, n, Value(r.detail));
 		n++;
 	}
-	output.SetCardinality(n);
+	duckdb_compat::SetChildCardinality(output, n);
 }
 
 } // namespace

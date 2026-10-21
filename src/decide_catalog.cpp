@@ -17,6 +17,7 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/settings.hpp"
+#include "duckdb_compat.hpp"
 
 #include <openssl/evp.h>
 
@@ -500,7 +501,7 @@ struct DecideDownloadState : public GlobalTableFunctionState {
 };
 
 unique_ptr<FunctionData> DecideDownloadBind(ClientContext &context, TableFunctionBindInput &input,
-                                            vector<LogicalType> &return_types, vector<string> &names) {
+                                            vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	(void)context;
 	PostHogTelemetry::Instance().RecordFunctionCall("decide_download");
 	if (input.inputs[0].IsNull()) {
@@ -555,7 +556,7 @@ void DecideDownloadScan(ClientContext &context, TableFunctionInput &data, DataCh
 		output.SetValue(4, n, Value(r.path));
 		n++;
 	}
-	output.SetCardinality(n);
+	duckdb_compat::SetChildCardinality(output, n);
 }
 
 void ValidateCacheDir(ClientContext &context, SetScope scope, Value &parameter) {
