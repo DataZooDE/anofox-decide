@@ -93,7 +93,8 @@ struct Session {
 		Run(string("SELECT decide_register_model('m', '") + provider + "', MAP {'endpoint': 'http://127.0.0.1:" +
 		    std::to_string(server.port) + "'})");
 	}
-	unique_ptr<QueryResult> Run(const string &sql) {
+	// Connection::Query returns MaterializedQueryResult on 1.x, QueryResult on 2.0; both have RowCount().
+	decltype(std::declval<Connection &>().Query(string())) Run(const string &sql) {
 		auto result = con.Query(sql);
 		if (result->HasError()) {
 			FAIL("query failed: " << result->GetError() << "\n" << sql);
