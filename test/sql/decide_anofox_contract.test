@@ -1,0 +1,259 @@
+# name: test/sql/decide_anofox_contract.test
+# description: anofox integration contract (anofox-visualization docs/plans/integration-contract.md, #34):
+#              the tagged curve / summary producers, their exact column shape, their values against
+#              scikit-learn, the duckdb_functions() tags and anofox_contract_version().
+# group: [anofox_decide]
+
+require anofox_decide
+
+statement ok
+LOAD anofox_decide
+
+# Two models with a tied score (a: 0.8) and NULL rows that are skipped, plus a model with one
+# class only (c), whose ROC curve and AUC are undefined.
+statement ok
+CREATE TABLE scored AS SELECT * FROM (VALUES
+    ('a', 0.1, false), ('a', 0.4, false), ('a', 0.35, true), ('a', 0.8, true),
+    ('a', 0.8, false), ('a', 0.62, true), ('a', 0.05, false), ('a', 0.93, true), ('a', NULL, true),
+    ('b', 0.2, false), ('b', 0.2, true), ('b', 0.7, true), ('b', 0.55, false), ('b', 0.9, true),
+    ('b', 0.3, false), ('b', 0.5, NULL),
+    ('c', 0.3, true), ('c', 0.6, true)
+) t(model, p, y);
+
+statement ok
+CREATE TABLE scored_int AS SELECT model, p, y::INTEGER AS y FROM scored WHERE model <> 'c';
+
+statement ok
+CREATE TABLE one AS SELECT 'm' AS model, 1.0 AS p, true AS y;
+
+statement ok
+CREATE TABLE bad_p AS SELECT 'm' AS model, 1.5 AS p, true AS y;
+
+statement ok
+CREATE TABLE bad_y AS SELECT 'm' AS model, 0.5 AS p, 2 AS y;
+
+# ── anofox_contract_version ─────────────────────────────────────────────────
+
+query T
+SELECT anofox_contract_version()
+----
+1
+
+# ── column shape: identical to anofox-statistics' roc_curve_by / calibration_curve_by ──
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM decide_roc_curve_by('scored', model, p, y))
+----
+model	VARCHAR
+model_id	VARCHAR
+series	VARCHAR
+curve_type	VARCHAR
+x	DOUBLE
+y	DOUBLE
+y_low	DOUBLE
+y_high	DOUBLE
+threshold	DOUBLE
+weight	DOUBLE
+n_censor	BIGINT
+
+# Both curves have one shape, so they UNION into one plot input.
+query I
+SELECT count(DISTINCT cols) FROM (
+    SELECT string_agg(column_name || ' ' || column_type, ', ') cols FROM (DESCRIBE SELECT * FROM decide_roc_curve_by('scored', model, p, y))
+    UNION ALL SELECT string_agg(column_name || ' ' || column_type, ', ') FROM (DESCRIBE SELECT * FROM decide_calibration_curve_by('scored', model, p, y))
+)
+----
+1
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM decide_metrics_by('scored', model, p, y))
+----
+model	VARCHAR
+model_id	VARCHAR
+metric	VARCHAR
+value	DOUBLE
+conf_low	DOUBLE
+conf_high	DOUBLE
+
+# ── ROC: scikit-learn roc_curve(y, p, drop_intermediate=True) ──────────────
+
+query TTRRR
+SELECT model_id, curve_type, round(x, 6), round(y, 6), threshold FROM decide_roc_curve_by('scored', model, p, y)
+----
+a	roc	0.0	0.0	inf
+a	roc	0.0	0.25	0.93
+a	roc	0.25	0.5	0.8
+a	roc	0.25	0.75	0.62
+a	roc	0.5	0.75	0.4
+a	roc	0.5	1.0	0.35
+a	roc	1.0	1.0	0.05
+b	roc	0.0	0.0	inf
+b	roc	0.0	0.333333	0.9
+b	roc	0.0	0.666667	0.7
+b	roc	0.666667	0.666667	0.3
+b	roc	1.0	1.0	0.2
+
+# drop_intermediate := false keeps every distinct threshold (a: 0.1, b: 0.55).
+query I
+SELECT count(*) FROM decide_roc_curve_by('scored', model, p, y, drop_intermediate := false)
+----
+14
+
+query RRR
+SELECT round(x, 6), round(y, 6), threshold FROM decide_roc_curve_by('scored', model, p, y, drop_intermediate := false)
+WHERE model_id = 'a' AND threshold = 0.1
+----
+0.75	1.0	0.1
+
+# The columns the curve does not use are NULL, never missing.
+query I
+SELECT count(*) FROM decide_roc_curve_by('scored', model, p, y)
+WHERE series IS NOT NULL OR y_low IS NOT NULL OR y_high IS NOT NULL OR weight IS NOT NULL OR n_censor IS NOT NULL
+----
+0
+
+# One class only: no curve (scikit-learn: undefined), no error.
+query I
+SELECT count(*) FROM decide_roc_curve_by('scored', model, p, y) WHERE model_id = 'c'
+----
+0
+
+# INTEGER 0/1 outcomes work like BOOLEAN ones.
+query I
+SELECT count(*) FROM decide_roc_curve_by('scored_int', model, p, y)
+----
+12
+
+# ── calibration: equal-width bins on P(yes) (floor(p * n_bins), like decide_ece's edges) ──
+
+query TTRRRR
+SELECT model_id, curve_type, round(x, 6), round(y, 6), weight, threshold FROM decide_calibration_curve_by('scored', model, p, y, n_bins := 4)
+WHERE model_id <> 'c'
+----
+a	calibration	0.075	0.0	2.0	NULL
+a	calibration	0.375	0.5	2.0	NULL
+a	calibration	0.62	1.0	1.0	NULL
+a	calibration	0.843333	0.666667	3.0	NULL
+b	calibration	0.2	0.5	2.0	NULL
+b	calibration	0.3	0.0	1.0	NULL
+b	calibration	0.625	0.5	2.0	NULL
+b	calibration	0.9	1.0	1.0	NULL
+
+# y_low / y_high: the 95% Wilson interval of the bin's fraction of positives.
+query RR
+SELECT round(y_low, 6), round(y_high, 6) FROM decide_calibration_curve_by('scored', model, p, y, n_bins := 4)
+WHERE model_id = 'a' AND weight = 3
+----
+0.20766	0.938508
+
+query RR
+SELECT round(y_low, 6), round(y_high, 6) FROM decide_calibration_curve_by('scored', model, p, y, n_bins := 4)
+WHERE model_id = 'a' AND round(x, 6) = 0.075
+----
+0.0	0.65762
+
+# Default n_bins is 10; x spans P(yes), not only the decided class's confidence (0.5 .. 1).
+query I
+SELECT min(x) < 0.5 FROM decide_calibration_curve_by('scored', model, p, y)
+----
+true
+
+# A probability of exactly 1 falls in the last bin.
+query RR
+SELECT x, weight FROM decide_calibration_curve_by('one', model, p, y)
+----
+1.0	1.0
+
+# ── metrics: the summary schema, one row per metric, values as the decide aggregates ──
+
+query TTR
+SELECT model_id, metric, round(value, 6) FROM decide_metrics_by('scored', model, p, y) WHERE model_id = 'a'
+----
+a	accuracy	0.75
+a	auc	0.78125
+a	brier	0.178038
+a	ece	0.11875
+a	log_loss	0.512561
+
+query TR
+SELECT metric, round(value, 6) FROM decide_metrics_by('scored', model, p, y) WHERE model_id = 'b' AND metric IN ('auc', 'log_loss')
+----
+auc	0.722222
+log_loss	0.574967
+
+# One class only: AUC is undefined and left out; the other metrics stay.
+query T
+SELECT string_agg(metric, ',' ORDER BY metric) FROM decide_metrics_by('scored', model, p, y) WHERE model_id = 'c'
+----
+accuracy,brier,ece,log_loss
+
+# The new aggregates on their own.
+query RR
+SELECT round(decide_auc(p, y), 6), round(decide_log_loss(p, y), 6) FROM scored WHERE model = 'a'
+----
+0.78125	0.512561
+
+query I
+SELECT decide_auc(p, y) IS NULL FROM scored WHERE model = 'c'
+----
+true
+
+# log loss clips p to [1e-15, 1 - 1e-15]: a confident miss is large but finite.
+query I
+SELECT decide_log_loss(1.0, false) BETWEEN 34 AND 35
+----
+true
+
+query I
+SELECT decide_auc(p, y::BIGINT) = decide_auc(p, y) FROM scored WHERE model = 'b'
+----
+true
+
+# Errors are actionable, not silent curves.
+statement error
+SELECT * FROM decide_roc_curve_by('bad_p', model, p, y)
+----
+<REGEX>:.*decide_roc_curve_by: the probability must be a finite number in \[0, 1\].*
+
+statement error
+SELECT * FROM decide_calibration_curve_by('bad_y', model, p, y)
+----
+<REGEX>:.*decide_calibration_curve_by: the outcome must be BOOLEAN or 0/1.*
+
+statement error
+SELECT * FROM decide_calibration_curve_by('scored', model, p, y, n_bins := 0)
+----
+<REGEX>:.*decide_calibration_curve_by: n_bins must be at least 1.*
+
+statement error
+SELECT decide_auc(1.5, true)
+----
+<REGEX>:.*decide_auc: .*
+
+# ── discovery: the duckdb_functions() tags ─────────────────────────────────
+
+query TT
+SELECT function_name, tags['anofox.output'] FROM duckdb_functions()
+WHERE tags['anofox.contract'] = '1' AND function_name LIKE '%decide%'
+ORDER BY function_name
+----
+anofox_decide_calibration_curve_by	curve
+anofox_decide_metrics_by	summary
+anofox_decide_roc_curve_by	curve
+decide_calibration_curve_by	curve
+decide_metrics_by	summary
+decide_roc_curve_by	curve
+
+# Every decide function carries the family tag.
+query I
+SELECT count(*) FROM duckdb_functions()
+WHERE (function_name LIKE 'decide\_%' ESCAPE '\' OR function_name LIKE 'anofox\_decide\_%' ESCAPE '\')
+  AND (tags['anofox.family'] IS NULL OR tags['anofox.family'] <> 'decide')
+----
+0
+
+# DuckDB's own functions are left alone.
+query I
+SELECT count(*) FROM duckdb_functions() WHERE function_name = 'sum' AND tags['anofox.family'] IS NOT NULL
+----
+0

@@ -56,6 +56,7 @@ test_release_internal:
 	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/release/test/unittest "test/sql/decide_table.test"
 	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/release/test/unittest "test/sql/decide_calibration.test"
 	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/release/test/unittest "test/sql/decide_remote_config.test"
+	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/release/test/unittest "test/sql/decide_anofox_contract.test"
 	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/release/test/unittest "[anofox_decide]"
 
 test_debug_internal:
@@ -79,6 +80,7 @@ test_debug_internal:
 	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/debug/test/unittest "test/sql/decide_table.test"
 	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/debug/test/unittest "test/sql/decide_calibration.test"
 	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/debug/test/unittest "test/sql/decide_remote_config.test"
+	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/debug/test/unittest "test/sql/decide_anofox_contract.test"
 	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/debug/test/unittest "[anofox_decide]"
 
 # Live TypeSafe E2E (DoD gate). Explicit SKIP without a key — never
@@ -87,6 +89,12 @@ test-live:
 	if [ -z "$$TYPESAFE_API_KEY" ]; then echo "SKIP: TYPESAFE_API_KEY not set — TypeSafe live E2E not run"; else $(DECIDE_TEST_ENV) ./$(BUILD_ROOT)/release/test/unittest --test-config test/configs/live.json "test/sql/decide_remote_live.test"; fi
 	if [ -z "$$LIQUID_API_KEY" ]; then echo "SKIP: LIQUID_API_KEY not set — Liquid D1 live E2E not run"; else $(DECIDE_TEST_ENV) ./$(BUILD_ROOT)/release/test/unittest --test-config test/configs/live.json "test/sql/decide_remote_live_liquid.test"; fi
 	if [ -z "$$CLOUDFLARE_API_TOKEN" ] || [ -z "$$CLOUDFLARE_ACCOUNT_ID" ]; then echo "SKIP: CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID not set — Cloudflare Clef live E2E not run"; else $(DECIDE_TEST_ENV) ./$(BUILD_ROOT)/release/test/unittest --test-config test/configs/live.json "test/sql/decide_remote_live_cloudflare.test"; fi
+
+# anofox-visualization picks up the contract producers (#34, DoD): the built artifact next to a released
+# anofox_visualization in the official DuckDB CLI. Needs network (CLI and extension download).
+# VIZ_REPO=community or another extension repository to test against a different visualization build.
+test_visualization:
+	python3 scripts/visualization_pickup.py $(BUILD_ROOT)/release/extension/anofox_decide/anofox_decide.duckdb_extension
 
 init:
 	git submodule add -b $(CI_TOOLS_BRANCH) https://github.com/duckdb/extension-ci-tools.git extension-ci-tools || true
