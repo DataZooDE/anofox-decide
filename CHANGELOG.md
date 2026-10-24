@@ -6,6 +6,8 @@ All notable changes to `anofox_decide` are documented here. The format follows
 
 ## [Unreleased]
 
+## [2026.10.24] - 2026-10-24
+
 ### Added
 - **anofox integration contract** (#34): decide's evaluation results plot in
   [anofox-visualization](https://github.com/DataZooDE/anofox-visualization) with no hand-written SQL.
@@ -19,6 +21,13 @@ All notable changes to `anofox_decide` are documented here. The format follows
 - **Visualization pickup check** (`scripts/visualization_pickup.py`, `make test_visualization`, a CI job that deploy
   waits for): the built extension next to a released anofox_visualization in the official DuckDB CLI; both load
   orders, the tags, and every producer's output through `anofox_plot`, which must auto-detect its schema.
+
+### Changed
+- **Builds on DuckDB 2.0** (#35), the line community-extensions builds against, as well as 1.5.6: one source
+  tree, with the API differences behind the [duckdb-compat](https://github.com/DataZooDE/duckdb-compat) shims.
+  On 2.0, `model := 'x'` and the other named arguments bind by name again. CI has a DuckDB 2.0 build and test job.
+- **DuckDB 1.4.x LTS is no longer supported** (#36): the supported lines are 1.5.6 and 2.0. Published 1.4.5
+  binaries stay where they are.
 
 ## [2026.10.14] - 2026-10-14
 
@@ -263,7 +272,8 @@ First public release.
 - Platforms: Linux (amd64, arm64), macOS (arm64) and Windows (amd64) against DuckDB 1.5.6. Not built:
   macOS on Intel (ONNX Runtime ships no archive after v1.23.2), WebAssembly, musl and MinGW.
 
-[Unreleased]: https://github.com/DataZooDE/anofox-decide/compare/v2026.10.14...HEAD
+[Unreleased]: https://github.com/DataZooDE/anofox-decide/compare/v2026.10.24...HEAD
+[2026.10.24]: https://github.com/DataZooDE/anofox-decide/compare/v2026.10.14...v2026.10.24
 [2026.10.14]: https://github.com/DataZooDE/anofox-decide/compare/v2026.10.04...v2026.10.14
 [2026.10.04]: https://github.com/DataZooDE/anofox-decide/compare/v2026.10.03...v2026.10.04
 [2026.10.03]: https://github.com/DataZooDE/anofox-decide/releases/tag/v2026.10.03
