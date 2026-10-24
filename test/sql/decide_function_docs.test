@@ -21,9 +21,10 @@ WHERE function_name IN ('decide_probability','decide_choice','decide_score','dec
                         'decide_register_model','decide_unregister_model','decide_models','decide_doctor','decide_table',
                         'decide_brier_score','decide_ece','decide_accuracy',
                         'decide_choice_distribution','decide_fit_calibration','decide_answers','decide_token_count','decide_download',
-                        'decide_devices','decide_backends','decide_accelerate','decide_download_runtime','decide_gpu_precompile')
+                        'decide_devices','decide_backends','decide_accelerate','decide_download_runtime','decide_gpu_precompile',
+                        'decide_auc','decide_log_loss','decide_roc_curve_by','decide_calibration_curve_by','decide_metrics_by')
 ----
-23
+28
 
 query I
 SELECT count(DISTINCT function_name)
@@ -33,9 +34,11 @@ WHERE function_name IN ('anofox_decide_probability','anofox_decide_choice','anof
                         'anofox_decide_table','anofox_decide_brier_score','anofox_decide_ece',
                         'anofox_decide_accuracy','anofox_decide_choice_distribution',
                         'anofox_decide_fit_calibration','anofox_decide_answers','anofox_decide_token_count','anofox_decide_download',
-                        'anofox_decide_devices','anofox_decide_backends','anofox_decide_accelerate','anofox_decide_download_runtime','anofox_decide_gpu_precompile')
+                        'anofox_decide_devices','anofox_decide_backends','anofox_decide_accelerate','anofox_decide_download_runtime','anofox_decide_gpu_precompile',
+                        'anofox_decide_auc','anofox_decide_log_loss','anofox_decide_roc_curve_by',
+                        'anofox_decide_calibration_curve_by','anofox_decide_metrics_by')
 ----
-23
+28
 
 # Every overload of every function carries a non-empty description ...
 query I
@@ -83,7 +86,7 @@ SELECT count(DISTINCT function_name)
 FROM duckdb_functions()
 WHERE function_name LIKE 'decide\_%' ESCAPE '\' AND alias_of = 'anofox_' || function_name
 ----
-23
+28
 
 # Spot-check the documented signatures.
 query T
@@ -122,3 +125,13 @@ SELECT count(*) FROM duckdb_functions()
 WHERE function_name = 'decide_register_model' AND description LIKE '%calibration%' AND len(parameters) = 6
 ----
 1
+
+query T
+SELECT parameters FROM duckdb_functions() WHERE function_name = 'decide_roc_curve_by'
+----
+[source, group_col, probability_col, outcome_col, drop_intermediate]
+
+query T
+SELECT parameters FROM duckdb_functions() WHERE function_name = 'decide_auc' AND parameter_types[2] = 'BOOLEAN'
+----
+[probability, outcome]

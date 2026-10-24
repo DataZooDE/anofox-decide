@@ -48,9 +48,18 @@ jobs:
       extension_name: anofox_decide
       exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;osx_amd64'
 
+  # anofox-visualization picks up the contract producers (#34): the DoD for them, so deploy waits for it.
+  duckdb-v1_5_5-visualization-pickup:
+    name: Visualization pickup
+    needs: duckdb-v1_5_5-build
+    uses: ./.github/workflows/_visualization_pickup.yml
+    with:
+      duckdb_version: v1.5.6
+      extension_name: anofox_decide
+
   duckdb-v1_5_5-deploy:
     name: Deploy extension binaries
-    needs: [duckdb-v1_5_5-build, duckdb-v1_5_5-smoke-test]
+    needs: [duckdb-v1_5_5-build, duckdb-v1_5_5-smoke-test, duckdb-v1_5_5-visualization-pickup]
     # Deploy only ever uploads on main or a v* tag (deploy_latest/deploy_versioned
     # below) -- everything else, including every PR, is a dry run that still pays
     # for "Configure AWS Credentials" and fails there for a fork PR (no repo

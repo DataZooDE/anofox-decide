@@ -1,5 +1,6 @@
 #pragma once
 
+#include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 
 namespace duckdb {
@@ -18,6 +19,13 @@ void RegisterDecideCatalog(ExtensionLoader &loader);         // decide_catalog.c
 void RegisterDecideDevices(ExtensionLoader &loader);         // decide_devices.cpp (decide_devices, decide_backends)
 void RegisterDecideAccelerate(ExtensionLoader &loader);      // decide_accelerate.cpp (decide_accelerate, decide_download_runtime)
 void RegisterDecideGpuPrecompile(ExtensionLoader &loader);   // decide_gpu_precompile.cpp (decide_gpu_precompile)
+
+// decide_contract.cpp: the anofox integration contract (curve / summary producers, anofox_contract_version,
+// duckdb_functions() tags). LoadInternal snapshots the function names before registering anything, so
+// ApplyDecideContractTags (called last) tags only this extension's functions.
+case_insensitive_set_t SnapshotSystemFunctionNames(ExtensionLoader &loader);
+void RegisterDecideContract(ExtensionLoader &loader);
+void ApplyDecideContractTags(ExtensionLoader &loader, const case_insensitive_set_t &preexisting);
 
 } // namespace anofox
 } // namespace duckdb

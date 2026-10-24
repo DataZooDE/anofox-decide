@@ -30,6 +30,7 @@ struct Docs {
 		db.LoadStaticExtension<AnofoxDecideExtension>();
 		Run("CREATE TABLE tickets AS SELECT 'The bill is wrong.' AS body, 1 AS id");
 		Run("CREATE TABLE labeled AS SELECT 0.8 AS p, 1::BIGINT AS y");
+		Run("CREATE TABLE scored AS SELECT * FROM (VALUES ('a', 0.8, true), ('a', 0.3, false)) t(model, p, y)");
 	}
 	void Run(const std::string &sql) {
 		auto result = con.Query(sql);
