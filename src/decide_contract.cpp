@@ -221,7 +221,7 @@ unique_ptr<CreateMacroInfo> TableMacro(const string &name, const string &alias_o
 	SetEntryName(*info, name, 0);
 	info->temporary = true;
 	info->internal = true;
-	info->alias_of = alias_of;
+	info->alias_of = decltype(info->alias_of)(alias_of); // string on 1.x, Identifier on 2.0
 	info->macros.push_back(std::move(function));
 
 	FunctionDescription desc;
@@ -234,7 +234,8 @@ unique_ptr<CreateMacroInfo> TableMacro(const string &name, const string &alias_o
 }
 
 void ContractVersionFunction(DataChunk &, ExpressionState &, Vector &result) {
-	result.Reference(Value(ANOFOX_CONTRACT_VERSION));
+	result.SetVectorType(VectorType::CONSTANT_VECTOR);
+	result.SetValue(0, Value(ANOFOX_CONTRACT_VERSION));
 }
 
 } // namespace
