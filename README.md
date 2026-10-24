@@ -674,8 +674,8 @@ example.
 
 ## Status & scope
 
-The extension is calendar-versioned (`2026.10.14` is the fourteenth of October 2026) and is built and tested
-on Linux (amd64, arm64), macOS (arm64) and Windows (amd64) against DuckDB 1.5.6. What works today:
+The extension is calendar-versioned (`2026.10.24` is the twenty-fourth of October 2026) and is built and tested
+on Linux (amd64, arm64), macOS (arm64) and Windows (amd64) against DuckDB 1.5.6, and on DuckDB 2.0. What works today:
 
 | Provider | Models | Questions | Runs where |
 |---|---|---|---|

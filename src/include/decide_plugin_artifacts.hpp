@@ -27,7 +27,7 @@ namespace anofox {
 //! version, so an older plugin of the same ABI loads and runs (and a release without plugin assets 404s for
 //! decide_accelerate()). What prevents a stale pin is the release gate (tools/ci/check_plugin_pin.sh, run by
 //! gpu_release_gate.yml), which fails any tag that does not equal this constant.
-static constexpr const char *DECIDE_PLUGIN_RELEASE_TAG = "v2026.10.14";
+static constexpr const char *DECIDE_PLUGIN_RELEASE_TAG = "v2026.10.24";
 
 //! Shared-library suffix for plugins on the platform being asked about.
 inline string DecidePluginLibrarySuffix(const string &os) {
