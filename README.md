@@ -238,6 +238,11 @@ Every function is available as `anofox_decide_<name>` and as the short alias `de
 | `decide_accuracy(p, outcome[, threshold])` | `DOUBLE` | share of rows where thresholding `p` reproduces the label (aggregate) |
 | `decide_brier_score(p, outcome)` | `DOUBLE` | mean squared error of the probabilities; 0 is perfect, 0.25 a constant 0.5 (aggregate) |
 | `decide_ece(p, outcome)` | `DOUBLE` | expected calibration error over ten equal-width bins (aggregate) |
+| `decide_log_loss(p, outcome)` | `DOUBLE` | mean binary cross-entropy, `p` clipped to [1e-15, 1 - 1e-15] (aggregate) |
+| `decide_auc(p, outcome)` | `DOUBLE` | area under the ROC curve, ties count one half; NULL with one outcome only (aggregate) |
+| `decide_roc_curve_by(source, group, p, outcome)` | table | the ROC curve per group, ready for `anofox_plot` ([Plot](#plot-with-anofox-visualization)) |
+| `decide_calibration_curve_by(source, group, p, outcome[, n_bins := 10])` | table | the calibration curve per group, with Wilson intervals ([Plot](#plot-with-anofox-visualization)) |
+| `decide_metrics_by(source, group, p, outcome)` | table | accuracy, auc, brier, ece and log loss per group, one row each ([Plot](#plot-with-anofox-visualization)) |
 | `decide_fit_calibration(p, outcome)` | `VARCHAR` | fits Platt scaling to a model's raw probabilities and returns the `'platt:a,b'` spec for `decide_register_model` ([Calibration](#calibration)) (aggregate) |
 | `decide_download(model)` | table | download a local model's weights from Hugging Face into the cache directory, verified and resumable ([Local models](#local-models)) |
 | `decide_devices()` | table | the devices this machine can score local models on (cpu, and any NVIDIA, AMD or Apple GPU found), with `usable` and why not ([GPU](#gpu-acceleration)) |
@@ -412,7 +417,28 @@ FROM runs GROUP BY model ORDER BY brier;     -- see examples/04_compare_models.s
 
 `decide_accuracy` thresholds at 0.5 unless you pass a threshold. NULL rows are skipped and empty input
 returns NULL; probabilities outside 0 to 1, NaN, or labels that are not 0/1 raise an error that says what
-to fix.
+to fix. `decide_auc` and `decide_log_loss` complete the set.
+
+### Plot with anofox-visualization
+
+`decide_roc_curve_by`, `decide_calibration_curve_by` and `decide_metrics_by` return the long tables of the
+anofox integration contract (the `curve` and `summary` schemas), so
+[anofox-visualization](https://github.com/DataZooDE/anofox-visualization) plots them with no reshaping. Each
+takes a table name, the column that tells the models (or groups) apart, the probability and the outcome:
+
+```sql
+LOAD anofox_visualization;
+SELECT anofox_plot(t) FROM decide_roc_curve_by('runs', model, p, refund) t;          -- one ROC curve per model
+SELECT anofox_plot(t) FROM decide_calibration_curve_by('runs', model, p, refund) t;  -- reliability diagram
+SELECT anofox_plot(t) FROM decide_metrics_by('runs', model, p, refund) t;            -- model comparison
+```
+
+The curves have the same columns as anofox-statistics' `roc_curve_by` / `calibration_curve_by`, so they
+`UNION ALL` with them into one plot. The calibration curve bins on P(yes) (`floor(p * n_bins)`, the edges
+`decide_ece` uses); `decide_ece` itself bins on the confidence of the decided answer, so the two are related but
+not the same number. The producers carry `duckdb_functions()` tags (`anofox.contract = '1'`,
+`anofox.output = 'curve'` / `'summary'`), every decide function `anofox.family = 'decide'`, and
+`anofox_contract_version()` returns `'1'`.
 
 Measured on 200 labelled tickets from the public Bitext customer-support dataset (60 refund requests,
 140 not; routing into billing / orders / account / other). Full method, caveats and per-class results:

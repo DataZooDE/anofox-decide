@@ -72,6 +72,7 @@ set(EXTENSION_SOURCES
         src/decide_devices.cpp
         src/decide_accelerate.cpp
         src/decide_gpu_precompile.cpp
+        src/decide_contract.cpp
         ${DECIDE_BUNDLED_RESOURCES_SRC}
 )
 

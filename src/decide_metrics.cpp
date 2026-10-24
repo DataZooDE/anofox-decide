@@ -1,8 +1,8 @@
 //===----------------------------------------------------------------------===//
 // decide_metrics.cpp — calibration aggregates.
 //
-// decide_brier_score(prob, label), decide_ece(prob, label), and
-// decide_accuracy(prob, label[, threshold]): the SQL surface for "publish
+// decide_brier_score(prob, label), decide_ece(prob, label), decide_log_loss(prob, label),
+// decide_auc(prob, label) and decide_accuracy(prob, label[, threshold]): the SQL surface for "publish
 // Brier score or ECE by model and task; validate thresholds on held-out
 // data". The 2-arg accuracy decides at a documented 0.5 boundary; the 3-arg
 // form takes an explicit threshold through the shared provider gate (Q2).
@@ -32,6 +32,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/types/value.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 namespace duckdb {
@@ -137,6 +138,38 @@ struct ECEOp {
 			ece += (static_cast<double>(state.n[m]) / total) * std::fabs(acc - conf);
 		}
 		target = ece;
+	}
+	static bool IgnoreNull() {
+		return true;
+	}
+};
+
+// Log-loss state: running sum of the clipped binary cross-entropy plus valid-row count.
+struct LogLossState {
+	double sum = 0.0;
+	int64_t n = 0;
+};
+
+// Probabilities are clipped to [eps, 1 - eps] before the log, as scikit-learn's log_loss
+// (eps = 1e-15), so a confident miss is large but finite.
+constexpr double LOG_LOSS_EPS = 1e-15;
+
+struct LogLossOp {
+	static void Initialize(LogLossState &state) {
+		new (&state) LogLossState();
+	}
+	template <class STATE, class OP>
+	static void Combine(const STATE &src, STATE &tgt, AggregateInputData &) {
+		tgt.sum += src.sum;
+		tgt.n += src.n;
+	}
+	template <class T, class STATE>
+	static void Finalize(STATE &state, T &target, AggregateFinalizeData &finalize_data) {
+		if (state.n == 0) {
+			finalize_data.ReturnNull();
+		} else {
+			target = state.sum / static_cast<double>(state.n);
+		}
 	}
 	static bool IgnoreNull() {
 		return true;
@@ -286,6 +319,25 @@ void ECEUpdateImpl(const char *func, Vector inputs[], idx_t count, Vector &state
 	}
 }
 
+void LogLossUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vector, idx_t count) {
+	UnifiedVectorFormat sdata, prob_data, label_data;
+	state_vector.ToUnifiedFormat(count, sdata);
+	inputs[0].ToUnifiedFormat(count, prob_data);
+	inputs[1].ToUnifiedFormat(count, label_data);
+	for (idx_t i = 0; i < count; i++) {
+		double p;
+		int y;
+		if (!ValidPair("decide_log_loss", inputs[1].GetType(), prob_data, prob_data.sel->get_index(i), label_data,
+		               label_data.sel->get_index(i), p, y)) {
+			continue;
+		}
+		auto &state = RowState<LogLossState>(state_vector, sdata, i);
+		double c = std::min(std::max(p, LOG_LOSS_EPS), 1.0 - LOG_LOSS_EPS);
+		state.sum -= y ? std::log(c) : std::log(1.0 - c);
+		state.n++;
+	}
+}
+
 void BrierUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vector, idx_t count) {
 	BrierUpdateImpl("decide_brier_score", inputs, count, state_vector);
 }
@@ -304,13 +356,13 @@ void ECEUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vecto
 
 // decide_fit_calibration(probability, outcome): Platt scaling fitted from labelled data. The state keeps
 // every valid (probability, outcome) pair (the fit is iterative, so it needs the data, not running sums)
-// on the heap; the destructor frees it.
+// on the heap; the destructor frees it. decide_auc ranks the same pairs.
 struct FitState {
 	vector<double> *p = nullptr;
 	vector<uint8_t> *y = nullptr;
 };
 
-void FitUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vector, idx_t count) {
+void PairsUpdateImpl(const char *func, Vector inputs[], idx_t count, Vector &state_vector) {
 	UnifiedVectorFormat sdata, prob_data, label_data;
 	state_vector.ToUnifiedFormat(count, sdata);
 	inputs[0].ToUnifiedFormat(count, prob_data);
@@ -318,14 +370,22 @@ void FitUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vecto
 	for (idx_t i = 0; i < count; i++) {
 		double p;
 		int y;
-		if (!ValidPair("decide_fit_calibration", inputs[1].GetType(), prob_data, prob_data.sel->get_index(i),
-		               label_data, label_data.sel->get_index(i), p, y)) {
+		if (!ValidPair(func, inputs[1].GetType(), prob_data, prob_data.sel->get_index(i), label_data,
+		               label_data.sel->get_index(i), p, y)) {
 			continue;
 		}
 		auto &state = RowState<FitState>(state_vector, sdata, i);
 		state.p->push_back(p);
 		state.y->push_back((uint8_t)y);
 	}
+}
+
+void FitUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vector, idx_t count) {
+	PairsUpdateImpl("decide_fit_calibration", inputs, count, state_vector);
+}
+
+void AucUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vector, idx_t count) {
+	PairsUpdateImpl("decide_auc", inputs, count, state_vector);
 }
 
 struct FitOp {
@@ -367,6 +427,44 @@ struct FitOp {
 	}
 };
 
+// Area under the ROC curve from the ranks of the positives (Mann-Whitney U / (P * N)); tied
+// probabilities share their average rank, so a tie counts one half (scikit-learn roc_auc_score).
+// Undefined, so NULL, when only one outcome occurs.
+struct AucOp : FitOp {
+	template <class T, class STATE>
+	static void Finalize(STATE &state, T &target, AggregateFinalizeData &finalize_data) {
+		auto &p = *state.p;
+		auto &y = *state.y;
+		vector<idx_t> order(p.size());
+		for (idx_t i = 0; i < order.size(); i++) {
+			order[i] = i;
+		}
+		std::sort(order.begin(), order.end(), [&](idx_t a, idx_t b) { return p[a] < p[b]; });
+		double rank_sum = 0.0;
+		double positives = 0.0;
+		for (idx_t i = 0; i < order.size();) {
+			idx_t j = i;
+			while (j < order.size() && p[order[j]] == p[order[i]]) {
+				j++;
+			}
+			double rank = (static_cast<double>(i + 1) + static_cast<double>(j)) / 2.0;
+			for (idx_t k = i; k < j; k++) {
+				if (y[order[k]]) {
+					rank_sum += rank;
+					positives += 1.0;
+				}
+			}
+			i = j;
+		}
+		double negatives = static_cast<double>(p.size()) - positives;
+		if (positives == 0.0 || negatives == 0.0) {
+			finalize_data.ReturnNull();
+			return;
+		}
+		target = (rank_sum - positives * (positives + 1.0) / 2.0) / (positives * negatives);
+	}
+};
+
 // Telemetry (tabfm convention): one aggregated call per function at bind time.
 #define DECIDE_METRIC_TELEMETRY_BIND(FN, NAME)                                                                  \
 	unique_ptr<FunctionData> FN##Body() {                                                                       \
@@ -378,6 +476,8 @@ DECIDE_METRIC_TELEMETRY_BIND(BrierBind, "decide_brier_score")
 DECIDE_METRIC_TELEMETRY_BIND(ECEBind, "decide_ece")
 DECIDE_METRIC_TELEMETRY_BIND(AccuracyBind, "decide_accuracy")
 DECIDE_METRIC_TELEMETRY_BIND(FitCalibrationBind, "decide_fit_calibration")
+DECIDE_METRIC_TELEMETRY_BIND(LogLossBind, "decide_log_loss")
+DECIDE_METRIC_TELEMETRY_BIND(AucBind, "decide_auc")
 
 // One set per metric with (DOUBLE, BOOLEAN) and (DOUBLE, BIGINT) overloads
 // (plus a threshold overload for accuracy). The set is registered under the
@@ -386,14 +486,15 @@ void RegisterMetric(const string &primary, const string &alias, aggregate_size_t
                     aggregate_initialize_t init, aggregate_update_t update, aggregate_combine_t combine,
                     aggregate_finalize_t finalize, bind_aggregate_function_t bind, ExtensionLoader &loader,
                     const string &description, const string &example_bool, const string &example_int,
-                    aggregate_update_t update3 = nullptr, const string &example_threshold = "") {
+                    aggregate_update_t update3 = nullptr, const string &example_threshold = "",
+                    aggregate_destructor_t destroy = nullptr) {
 	const auto D = LogicalType::DOUBLE;
 	const auto B = LogicalType::BOOLEAN;
 	const auto I = LogicalType::BIGINT;
 	AggregateFunctionSet set(duckdb_compat::FunctionName(primary));
 	auto add = [&](vector<LogicalType> args, aggregate_update_t fn_update) {
 		set.AddFunction(AggregateFunction(duckdb_compat::FunctionName(primary), args, D, state_size, init, fn_update, combine, finalize, nullptr,
-		                                  bind, nullptr));
+		                                  bind, destroy));
 	};
 	add({D, B}, update);
 	add({D, I}, update);
@@ -428,6 +529,24 @@ void RegisterDecideMetrics(ExtensionLoader &loader) {
 	               "average confidence and accuracy (lower is better). Rows with a NULL probability or outcome are "
 	               "skipped; empty input returns NULL.",
 	               "SELECT decide_ece(p, y) FROM labeled;", "SELECT decide_ece(p, y::BIGINT) FROM labeled;");
+	RegisterMetric("anofox_decide_log_loss", "decide_log_loss", AggregateFunction::StateSize<LogLossState>,
+	               AggregateFunction::StateInitialize<LogLossState, LogLossOp>, LogLossUpdate,
+	               AggregateFunction::StateCombine<LogLossState, LogLossOp>,
+	               AggregateFunction::StateFinalize<LogLossState, double, LogLossOp>, LogLossBind, loader,
+	               "Log loss (mean binary cross-entropy) of predicted probabilities against observed outcomes, with "
+	               "the probability clipped to [1e-15, 1 - 1e-15] as scikit-learn's log_loss (lower is better). Rows "
+	               "with a NULL probability or outcome are skipped; empty input returns NULL.",
+	               "SELECT decide_log_loss(p, y) FROM labeled;", "SELECT decide_log_loss(p, y::BIGINT) FROM labeled;");
+	RegisterMetric("anofox_decide_auc", "decide_auc", AggregateFunction::StateSize<FitState>,
+	               AggregateFunction::StateInitialize<FitState, AucOp>, AucUpdate,
+	               AggregateFunction::StateCombine<FitState, AucOp>,
+	               AggregateFunction::StateFinalize<FitState, double, AucOp>, AucBind, loader,
+	               "Area under the ROC curve of predicted probabilities against observed outcomes: the chance that a "
+	               "random positive gets a higher probability than a random negative, ties counting one half "
+	               "(scikit-learn roc_auc_score; higher is better, 0.5 is chance). NULL when only one outcome "
+	               "occurs. Rows with a NULL probability or outcome are skipped; empty input returns NULL.",
+	               "SELECT decide_auc(p, y) FROM labeled;", "SELECT decide_auc(p, y::BIGINT) FROM labeled;", nullptr,
+	               "", AggregateFunction::StateDestroy<FitState, AucOp>);
 	RegisterMetric("anofox_decide_accuracy", "decide_accuracy", AggregateFunction::StateSize<AccuracyState>,
 	               AggregateFunction::StateInitialize<AccuracyState, AccuracyOp>, AccuracyUpdate,
 	               AggregateFunction::StateCombine<AccuracyState, AccuracyOp>,

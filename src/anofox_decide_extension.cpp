@@ -77,6 +77,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 	                      "structured state: decide_probability / decide_choice / decide_score / decide_many over a remote "
 	                      "decision service or a local NLI model.");
 
+	// The functions that exist before this load (DuckDB's, other extensions'): the contract tags skip them.
+	auto preexisting = anofox::SnapshotSystemFunctionNames(loader);
+
 	// Register telemetry options first so they exist before any event is emitted.
 	RegisterTelemetryOptions(loader);
 
@@ -130,6 +133,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 	anofox::RegisterDecideDevices(loader);
 	anofox::RegisterDecideAccelerate(loader);
 	anofox::RegisterDecideGpuPrecompile(loader);
+	anofox::RegisterDecideContract(loader);
+	anofox::ApplyDecideContractTags(loader, preexisting);
 
 	datazoo::RegisterBannerOption(loader);
 	// Last, so a load that fails earlier never advertises itself. Silent unless

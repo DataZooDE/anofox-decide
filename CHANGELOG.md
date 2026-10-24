@@ -6,6 +6,20 @@ All notable changes to `anofox_decide` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **anofox integration contract** (#34): decide's evaluation results plot in
+  [anofox-visualization](https://github.com/DataZooDE/anofox-visualization) with no hand-written SQL.
+  `decide_roc_curve_by(source, group, p, outcome[, drop_intermediate := true])` (scikit-learn `roc_curve`) and
+  `decide_calibration_curve_by(source, group, p, outcome[, n_bins := 10])` (equal-width bins on P(yes), 95% Wilson
+  intervals) return the contract's `curve` schema, column for column like anofox-statistics' `roc_curve_by`;
+  `decide_metrics_by(source, group, p, outcome)` returns the `summary` schema (accuracy, auc, brier, ece,
+  log_loss per group). They are tagged in `duckdb_functions()` (`anofox.contract = '1'`, `anofox.output`), every
+  decide function carries `anofox.family = 'decide'`, and `anofox_contract_version()` returns `'1'` (registered
+  only if no other anofox extension did). New aggregates `decide_auc` and `decide_log_loss`.
+- **Visualization pickup check** (`scripts/visualization_pickup.py`, `make test_visualization`, a CI job that deploy
+  waits for): the built extension next to a released anofox_visualization in the official DuckDB CLI; both load
+  orders, the tags, and every producer's output through `anofox_plot`, which must auto-detect its schema.
+
 ## [2026.10.14] - 2026-10-14
 
 GPU acceleration for the local models through plugins (NVIDIA CUDA, AMD ROCm/MIGraphX, Apple MLX), cross-row
