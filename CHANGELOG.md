@@ -6,6 +6,13 @@ All notable changes to `anofox_decide` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **`row_order` on the contract producers** (`decide_roc_curve_by`, `decide_calibration_curve_by`,
+  `decide_metrics_by`): a last column, the contract's optional 1-based ordinal over the whole table in the
+  producer's own order (DataZooDE/anofox-statistics#242, DataZooDE/anofox-visualization#445). The curves still
+  combine with anofox-statistics' with `UNION ALL BY NAME`; a positional `UNION ALL` needs the same column on
+  both sides.
+
 ## [2026.10.24] - 2026-10-24
 
 ### Added
