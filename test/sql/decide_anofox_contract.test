@@ -55,6 +55,7 @@ y_high	DOUBLE
 threshold	DOUBLE
 weight	DOUBLE
 n_censor	BIGINT
+row_order	BIGINT
 
 # Both curves have one shape, so they UNION into one plot input.
 query I
@@ -74,6 +75,28 @@ metric	VARCHAR
 value	DOUBLE
 conf_low	DOUBLE
 conf_high	DOUBLE
+row_order	BIGINT
+
+# row_order: the producer's display order, 1-based over the whole table (the contract's optional ordinal,
+# so a consumer that aggregates rows can restore it). It numbers the rows in the order they come out.
+query I
+SELECT count(*) FROM (
+    SELECT 'roc' AS f, row_order, row_number() OVER () AS pos, count(*) OVER () AS n FROM decide_roc_curve_by('scored', model, p, y)
+    UNION ALL SELECT 'cal', row_order, row_number() OVER (), count(*) OVER () FROM decide_calibration_curve_by('scored', model, p, y, n_bins := 4)
+    UNION ALL SELECT 'met', row_order, row_number() OVER (), count(*) OVER () FROM decide_metrics_by('scored', model, p, y))
+WHERE row_order <> pos OR row_order < 1 OR row_order > n;
+----
+0
+
+# Within a model, the ROC points run along the curve (threshold descending) and the metrics alphabetically.
+query I
+SELECT bool_and(ok) FROM (
+    SELECT threshold <= lag(threshold, 1, 'inf'::DOUBLE) OVER (PARTITION BY model_id ORDER BY row_order) AS ok
+    FROM decide_roc_curve_by('scored', model, p, y)
+    UNION ALL SELECT metric >= lag(metric, 1, '') OVER (PARTITION BY model_id ORDER BY row_order)
+    FROM decide_metrics_by('scored', model, p, y));
+----
+true
 
 # ── ROC: scikit-learn roc_curve(y, p, drop_intermediate=True) ──────────────
 
