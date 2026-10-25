@@ -433,8 +433,10 @@ SELECT anofox_plot(t) FROM decide_calibration_curve_by('runs', model, p, refund)
 SELECT anofox_plot(t) FROM decide_metrics_by('runs', model, p, refund) t;            -- model comparison
 ```
 
-The curves have the same columns as anofox-statistics' `roc_curve_by` / `calibration_curve_by`, so they
-`UNION ALL` with them into one plot. The calibration curve bins on P(yes) (`floor(p * n_bins)`, the edges
+The curves have the columns of anofox-statistics' `roc_curve_by` / `calibration_curve_by`, so they
+`UNION ALL BY NAME` with them into one plot. Every producer ends with `row_order`, the contract's optional
+1-based ordinal: the order the rows come out in (along the curve, by bin, metrics alphabetically), so a
+consumer that aggregates the rows can keep it. The calibration curve bins on P(yes) (`floor(p * n_bins)`, the edges
 `decide_ece` uses); `decide_ece` itself bins on the confidence of the decided answer, so the two are related but
 not the same number. The producers carry `duckdb_functions()` tags (`anofox.contract = '1'`,
 `anofox.output = 'curve'` / `'summary'`), every decide function `anofox.family = 'decide'`, and

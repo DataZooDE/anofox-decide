@@ -16,7 +16,9 @@
 // The producers are table macros (anofox-statistics' roc_curve_by /
 // calibration_curve_by shape: the group column, model_id, series, curve_type,
 // x, y, y_low, y_high, threshold, weight, n_censor), so decide's curves UNION
-// with statistics' into one plot. They are plain SQL over DuckDB built-ins and
+// (BY NAME) with statistics' into one plot. Every producer ends with row_order:
+// the contract's optional 1-based ordinal over the whole table, in the order the
+// rows come out, so a consumer that aggregates them can restore it. They are plain SQL over DuckDB built-ins and
 // the decide metric aggregates, so they build the same on every DuckDB line.
 //
 // Discovery: every function this extension registers is tagged
@@ -147,7 +149,7 @@ string RocSql() {
 	       "WINDOW _w AS (PARTITION BY group_col ORDER BY _i)) "
 	       "SELECT group_col, group_col::VARCHAR AS model_id, NULL::VARCHAR AS series, 'roc'::VARCHAR AS curve_type, "
 	       "x, y, NULL::DOUBLE AS y_low, NULL::DOUBLE AS y_high, threshold, NULL::DOUBLE AS weight, "
-	       "NULL::BIGINT AS n_censor FROM ("
+	       "NULL::BIGINT AS n_censor, row_number() OVER (ORDER BY group_col, _i) AS row_order FROM ("
 	       "SELECT group_col, 0 AS _i, 0::DOUBLE AS x, 0::DOUBLE AS y, 'inf'::DOUBLE AS threshold FROM _pts "
 	       "WHERE _i = 1 AND _n_pos > 0 AND _n_neg > 0 "
 	       "UNION ALL SELECT group_col, _i, _fps / _n_neg, _tps / _n_pos, _thr FROM _pts "
@@ -161,7 +163,7 @@ string CalibrationSql() {
 	return "SELECT group_col, group_col::VARCHAR AS model_id, NULL::VARCHAR AS series, "
 	       "'calibration'::VARCHAR AS curve_type, _x AS x, _f AS y, greatest(0::DOUBLE, _c - _h) AS y_low, "
 	       "least(1::DOUBLE, _c + _h) AS y_high, NULL::DOUBLE AS threshold, _n::DOUBLE AS weight, "
-	       "NULL::BIGINT AS n_censor "
+	       "NULL::BIGINT AS n_censor, row_number() OVER (ORDER BY group_col, _b) AS row_order "
 	       "FROM (SELECT *, (_f + _z2 / (2 * _n)) / (1 + _z2 / _n) AS _c, "
 	       "sqrt(_z2 * (_f * (1 - _f) / _n + _z2 / (4 * _n * _n))) / (1 + _z2 / _n) AS _h "
 	       "FROM (SELECT group_col, _b, avg(_p) AS _x, avg(_y) AS _f, count(*) AS _n, "
@@ -184,7 +186,8 @@ string MetricsSql() {
 		           "(_p, _y::BIGINT)}";
 	}
 	return "SELECT group_col, group_col::VARCHAR AS model_id, (_m).metric AS metric, (_m).value AS value, "
-	       "NULL::DOUBLE AS conf_low, NULL::DOUBLE AS conf_high "
+	       "NULL::DOUBLE AS conf_low, NULL::DOUBLE AS conf_high, "
+	       "row_number() OVER (ORDER BY group_col, (_m).metric) AS row_order "
 	       "FROM (SELECT group_col, unnest([" +
 	       metrics + "]) AS _m FROM (" + ValidatedRows("decide_metrics_by") +
 	       ") GROUP BY group_col) WHERE (_m).value IS NOT NULL ORDER BY group_col, metric";
@@ -272,7 +275,7 @@ void RegisterDecideContract(ExtensionLoader &loader) {
 	     "(scikit-learn roc_curve; the anofox integration contract's `curve` schema, curve_type 'roc', for "
 	     "anofox_plot). One row per point: the group column, model_id (the group), series, curve_type, x (false "
 	     "positive rate), y (true positive rate), y_low, y_high, threshold (the probability; +inf for the (0, 0) "
-	     "start), weight, n_censor. Tied probabilities form one point; drop_intermediate (default true) drops the "
+	     "start), weight, n_censor, row_order (1-based, along the curve). Tied probabilities form one point; drop_intermediate (default true) drops the "
 	     "points on straight segments. Rows with a NULL probability or outcome are skipped; a group with only one "
 	     "outcome has no curve.",
 	     "SELECT * FROM decide_roc_curve_by('scored', model, p, y)"},
@@ -284,14 +287,14 @@ void RegisterDecideContract(ExtensionLoader &loader) {
 	     "anofox_plot). Probabilities fall in n_bins equal-width bins on P(yes) (default 10; decide_ece's edges); "
 	     "one row per non-empty bin: the group column, model_id (the group), series, curve_type, x (mean "
 	     "probability), y (fraction of positives), y_low / y_high (95% Wilson interval), threshold, weight (rows "
-	     "in the bin), n_censor. Rows with a NULL probability or outcome are skipped.",
+	     "in the bin), n_censor, row_order (1-based, by bin). Rows with a NULL probability or outcome are skipped.",
 	     "SELECT * FROM decide_calibration_curve_by('scored', model, p, y, n_bins := 10)"},
 	    {"metrics_by",
 	     {},
 	     MetricsSql(),
 	     "Table macro: decide's quality metrics per group of source, one row per metric (the anofox integration "
 	     "contract's `summary` schema, for anofox_plot): the group column, model_id (the group), metric "
-	     "(accuracy at 0.5, auc, brier, ece, log_loss), value, conf_low, conf_high. A metric that is undefined "
+	     "(accuracy at 0.5, auc, brier, ece, log_loss), value, conf_low, conf_high, row_order (1-based). A metric that is undefined "
 	     "for a group (auc with one outcome) is left out. Rows with a NULL probability or outcome are skipped.",
 	     "SELECT * FROM decide_metrics_by('scored', model, p, y)"},
 	};
