@@ -6,6 +6,8 @@ All notable changes to `anofox_decide` are documented here. The format follows
 
 ## [Unreleased]
 
+## [2026.10.26] - 2026-10-26
+
 ### Added
 - **`row_order` on the contract producers** (`decide_roc_curve_by`, `decide_calibration_curve_by`,
   `decide_metrics_by`): a last column, the contract's optional 1-based ordinal over the whole table in the
@@ -279,7 +281,8 @@ First public release.
 - Platforms: Linux (amd64, arm64), macOS (arm64) and Windows (amd64) against DuckDB 1.5.6. Not built:
   macOS on Intel (ONNX Runtime ships no archive after v1.23.2), WebAssembly, musl and MinGW.
 
-[Unreleased]: https://github.com/DataZooDE/anofox-decide/compare/v2026.10.24...HEAD
+[Unreleased]: https://github.com/DataZooDE/anofox-decide/compare/v2026.10.26...HEAD
+[2026.10.26]: https://github.com/DataZooDE/anofox-decide/compare/v2026.10.24...v2026.10.26
 [2026.10.24]: https://github.com/DataZooDE/anofox-decide/compare/v2026.10.14...v2026.10.24
 [2026.10.14]: https://github.com/DataZooDE/anofox-decide/compare/v2026.10.04...v2026.10.14
 [2026.10.04]: https://github.com/DataZooDE/anofox-decide/compare/v2026.10.03...v2026.10.04
