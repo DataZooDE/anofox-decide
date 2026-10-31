@@ -18,7 +18,7 @@ CREATE OR REPLACE TABLE tickets AS
 SELECT * FROM read_csv('examples/data/support_tickets.csv');   -- id, text, refund (label), team (label)
 
 -- One scalar call per question. A table of rows is scored together: identical texts are sent once and
--- remote requests run concurrently (see "Scoring many rows" in the README).
+-- remote requests run concurrently (see "Scoring many rows" in docs/api/01-functions.md).
 CREATE OR REPLACE TABLE scored AS
 SELECT id, text, refund AS refund_label, team AS team_label,
        decide_probability(text, 'A refund is requested.')                                  AS p_refund,

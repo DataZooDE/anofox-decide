@@ -6,8 +6,8 @@ Method: single-user `EXPLAIN ANALYZE`, median of 5 runs unless noted.
 Telemetry disabled (`DATAZOO_DISABLE_TELEMETRY=1`).
 
 > This report covers the local, in-process measurements. Hosted-model accuracy is in
-> [EVALUATION.md](EVALUATION.md), and request concurrency and latency are in the README section
-> "Scoring many rows". To measure your own provider, use `make test-live` (needs the provider's key)
+> [EVALUATION.md](EVALUATION.md), and request concurrency and latency are in
+> [Scoring many rows](api/01-functions.md#scoring-many-rows). To measure your own provider, use `make test-live` (needs the provider's key)
 > plus the SQL recipes below.
 
 ## 1. Calibration: SQL recipe + measured values

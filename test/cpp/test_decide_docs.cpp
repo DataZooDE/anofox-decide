@@ -1,5 +1,6 @@
 // The documentation cannot drift from the extension: every example a function documents binds, the offline
-// example files run, the others parse, and every function and setting the README names exists.
+// example files run, the others parse, and every function and setting the README and the guide and API pages
+// under docs/ name exists.
 #include "catch.hpp"
 #include "anofox_decide_extension.hpp"
 
@@ -88,7 +89,7 @@ TEST_CASE("the example files run (offline ones) or parse (the rest)", "[anofox_d
 	}
 }
 
-TEST_CASE("every function and setting the README names exists", "[anofox_decide][docs]") {
+TEST_CASE("every function and setting the documentation names exists", "[anofox_decide][docs]") {
 	Docs docs;
 	std::set<std::string> functions, settings;
 	auto fn = docs.con.Query("SELECT DISTINCT function_name FROM duckdb_functions() WHERE function_name LIKE '%decide_%'");
@@ -101,23 +102,36 @@ TEST_CASE("every function and setting the README names exists", "[anofox_decide]
 	for (idx_t i = 0; i < st->RowCount(); i++) {
 		settings.insert(duckdb_compat::ResultValue(*st, 0, i).ToString());
 	}
-	const auto readme = ReadFile("README.md");
-	// name( : a function call (the documentation only mentions decide_* and anofox_decide_* functions)
-	{
-		std::regex call(R"(\b((?:anofox_)?decide_[a-z_]+)\()");
-		for (std::sregex_iterator it(readme.begin(), readme.end(), call), end; it != end; ++it) {
-			const auto name = (*it)[1].str();
-			INFO("README calls " << name << "() which does not exist");
-			REQUIRE(functions.count(name) == 1);
+	const char *pages[] = {"README.md",
+	                       "docs/guides/01-getting-started.md",
+	                       "docs/guides/02-choosing-a-model.md",
+	                       "docs/guides/03-evaluate-and-calibrate.md",
+	                       "docs/api/01-functions.md",
+	                       "docs/api/02-providers.md",
+	                       "docs/api/03-local-models.md",
+	                       "docs/api/04-gpu.md",
+	                       "docs/api/05-settings.md",
+	                       "docs/api/06-troubleshooting.md"};
+	for (auto page : pages) {
+		const auto text = ReadFile(page);
+		INFO("page: " << page);
+		// name( : a function call (the documentation only mentions decide_* and anofox_decide_* functions)
+		{
+			std::regex call(R"(\b((?:anofox_)?decide_[a-z_]+)\()");
+			for (std::sregex_iterator it(text.begin(), text.end(), call), end; it != end; ++it) {
+				const auto name = (*it)[1].str();
+				INFO("the page calls " << name << "() which does not exist");
+				REQUIRE(functions.count(name) == 1);
+			}
 		}
-	}
-	// anofox_decide_* / anofox_telemetry_* / datazoo_*: a setting (or a function written without the call)
-	{
-		std::regex setting(R"(\b(anofox_decide_[a-z_]+|anofox_telemetry_[a-z_]+|datazoo_banner)\b)");
-		for (std::sregex_iterator it(readme.begin(), readme.end(), setting), end; it != end; ++it) {
-			const auto name = (*it)[1].str();
-			INFO("README names " << name << " which is neither a setting nor a function");
-			REQUIRE((settings.count(name) == 1 || functions.count(name) == 1));
+		// anofox_decide_* / anofox_telemetry_* / datazoo_*: a setting (or a function written without the call)
+		{
+			std::regex setting(R"(\b(anofox_decide_[a-z_]+|anofox_telemetry_[a-z_]+|datazoo_banner)\b)");
+			for (std::sregex_iterator it(text.begin(), text.end(), setting), end; it != end; ++it) {
+				const auto name = (*it)[1].str();
+				INFO("the page names " << name << " which is neither a setting nor a function");
+				REQUIRE((settings.count(name) == 1 || functions.count(name) == 1));
+			}
 		}
 	}
 }

@@ -6,6 +6,9 @@ All notable changes to `anofox_decide` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- Documentation restructured: short README, guides and API pages under docs/.
+
 ## [2026.10.26] - 2026-10-26
 
 ### Added
