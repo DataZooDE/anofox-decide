@@ -184,10 +184,12 @@ void DecideRegistry::RegisterModel(ClientContext &context, const string &id, con
 		    "'<tokenizer.json>', 'laya');"));
 	}
 	const bool has_options = !options.endpoint.empty() || !options.path.empty() || !options.wire_model.empty() ||
-	                         !options.key_env.empty() || !options.criteria.empty() || !options.account_id.empty();
+	                         !options.key_env.empty() || !options.criteria.empty() || !options.account_id.empty() ||
+	                         !options.input_mode.empty() || options.prompt_cache_key_set;
 	if (has_options && !remote_profile) {
 		throw InvalidInputException(DecideMsg(
-		    fn, "the options MAP (endpoint, path, model, key_env, criteria, account_id) only applies to remote providers, but "
+		    fn, "the options MAP (endpoint, path, model, key_env, criteria, account_id, input, prompt_cache_key) only "
+		        "applies to remote providers, but "
 		        "the provider is '" + provider + "'",
 		    "drop the MAP, or use a remote provider: SELECT decide_register_model('" + id + "', 'typesafe', "
 		    "MAP {'endpoint': 'https://api.typesafe.ai'}); (remote providers: " + DecideRemoteProviderList() + ")"));
@@ -209,6 +211,29 @@ void DecideRegistry::RegisterModel(ClientContext &context, const string &id, con
 			            (!graph_path.empty() ? graph_path : tokenizer_path) + "' as a path argument)",
 			    "remote providers are configured with an options MAP: SELECT decide_register_model('" + id + "', '" +
 			        provider + "', MAP {'endpoint': 'https://host'}); file paths are only for provider 'local'."));
+		}
+		const bool openai = remote_profile->wire == DecideWire::OPENAI_DECISIONS;
+		if (openai && !options.criteria.empty()) {
+			throw InvalidInputException(DecideMsg(
+			    fn, "option 'criteria' does not apply to provider 'openai'",
+			    "drop it: OpenAI Decisions always sends each option with its own text as the description"));
+		}
+		for (auto &opt : {std::make_pair("input", !options.input_mode.empty()),
+		                  std::make_pair("prompt_cache_key", options.prompt_cache_key_set)}) {
+			if (opt.second && !openai) {
+				throw InvalidInputException(DecideMsg(
+				    fn, string("option '") + opt.first + "' only applies to provider 'openai', but the provider is '" +
+				            provider + "'",
+				    "drop it, or register an OpenAI Decisions model: SELECT decide_register_model('gpt-6-luna', "
+				    "'openai');"));
+			}
+		}
+		if (!options.input_mode.empty() && options.input_mode != "auto" && options.input_mode != "text" &&
+		    options.input_mode != "json") {
+			throw InvalidInputException(DecideMsg(
+			    fn, "option 'input' must be 'auto', 'text' or 'json', got '" + options.input_mode + "'",
+			    "'auto' (the default) sends a state that is a JSON object or array as structured data and anything "
+			    "else as text; 'text' always sends text; 'json' requires JSON state, e.g. to_json({ticket: body})"));
 		}
 		if (!options.criteria.empty() && options.criteria != "null" && options.criteria != "name") {
 			throw InvalidInputException(DecideMsg(
@@ -288,6 +313,9 @@ void DecideRegistry::RegisterModel(ClientContext &context, const string &id, con
 	entry.criteria = options.criteria;
 	entry.calibration = calibration;
 	entry.account_id = options.account_id;
+	entry.input_mode = options.input_mode;
+	entry.prompt_cache_key = options.prompt_cache_key;
+	entry.prompt_cache_key_set = options.prompt_cache_key_set;
 	if (provider == "local") {
 		string tokenizer_hint;
 		if (!tokenizer_path.empty()) {
@@ -491,6 +519,9 @@ static DecideRemoteTarget TargetOf(const DecideModelEntry &entry) {
 	target.key_env = entry.key_env;
 	target.criteria_names = entry.criteria == "name" ? 1 : (entry.criteria == "null" ? 0 : -1);
 	target.account_id = entry.account_id;
+	target.input_mode = entry.input_mode;
+	target.prompt_cache_key = entry.prompt_cache_key;
+	target.prompt_cache_key_set = entry.prompt_cache_key_set;
 	return target;
 }
 

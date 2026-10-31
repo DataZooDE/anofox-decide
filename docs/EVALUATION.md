@@ -181,3 +181,26 @@ Accuracy is identical: 85.0% refund, 88.0% routing, refund AUROC 0.951, and the 
 choices of all 200 tickets equal the earlier run's. Use `--concurrency N` to set `anofox_decide_max_concurrency`
 for a run.
 
+
+## OpenAI gpt-6-luna (31 Oct 2026)
+
+The same 200 tickets and the same two questions, through provider `openai` (`gpt-6-luna`), scored in the same
+run as TypeSafe Jev and Cloudflare Clef (`run_eval.py --models luna,jev,clef`). Jev's and Clef's numbers in this
+run match the tables above within one ticket.
+
+| Model | Refund accuracy [95% CI] | Balanced acc | Recall | Specificity | AUROC | Brier | ECE | Routing accuracy [95% CI] | Routing macro recall |
+|---|---|---|---|---|---|---|---|---|---|
+| TypeSafe Jev | 95.5% [92-98] | 95.4% | 95% | 96% | 0.992 | 0.054 | 0.131 | 90.5% [86-94] | 89.5% |
+| OpenAI gpt-6-luna | 89.0% [84-93] | 84.5% | 73% | 96% | 0.952 | 0.088 | 0.079 | 89.0% [84-93] | 87.6% |
+| Cloudflare Clef | 83.5% [78-88] | 76.8% | 60% | 94% | 0.949 | 0.117 | 0.116 | 87.0% [82-91] | 86.0% |
+
+- Refund: gpt-6-luna is significantly behind Jev (exact McNemar p = 0.004) and ahead of Clef. It is
+  conservative: specificity matches Jev's, but at the 0.5 cut-off it finds 73% of the refund requests. Its
+  probabilities are the best calibrated of the three (ECE 0.079), so a lower threshold, or `decide_fit_calibration`,
+  is the lever.
+- Routing: not significantly different from Jev (p = 0.629). It routes account tickets better than Jev (85% vs 72%)
+  and order tickets worse (70% vs 90%).
+- **One refusal** in 200 tickets: for ticket 195 ("where do I get a reimbursement?") the model answered the
+  routing question but refused the refund question, reproducibly. The extension returns NULL for it
+  (`kind = 'refusal'` in `decide_table`); the evaluation scores a refusal as a wrong answer.
+- Wall time for the 200 tickets with the default concurrency (8): 5 s, the same as Jev.

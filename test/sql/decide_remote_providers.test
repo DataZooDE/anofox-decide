@@ -67,9 +67,9 @@ SELECT decide_register_model('opt-local', 'stub', MAP {'endpoint': 'https://x.ex
 
 # Unknown providers list the supported ones, including the new remote ones.
 statement error
-SELECT decide_register_model('nope', 'openai')
+SELECT decide_register_model('nope', 'anthropic')
 ----
-<REGEX>:.*not supported.*liquid.*systemone.*
+<REGEX>:.*not supported.*liquid.*openai.*systemone.*
 
 # Calls stay behind the explicit allow_remote opt-in.
 statement error
@@ -196,3 +196,46 @@ query TT
 SELECT ready, hint LIKE '%no Cloudflare account id for model ''clef-noacct''%' FROM decide_models() WHERE model = 'clef-noacct'
 ----
 false	true
+
+# --- OpenAI Decisions (gpt-6-luna) ---
+
+query I
+SELECT decide_register_model('gpt-6-luna', 'openai')
+----
+1
+
+query T
+SELECT endpoint FROM decide_models() WHERE model = 'gpt-6-luna'
+----
+https://api.openai.com/v1/decisions
+
+query I
+SELECT decide_register_model('luna-json', 'openai', MAP {'model': 'gpt-6-luna', 'input': 'json', 'prompt_cache_key': 'tickets-v1'})
+----
+1
+
+statement error
+SELECT decide_register_model('luna-xml', 'openai', MAP {'input': 'xml'})
+----
+<REGEX>:.*option 'input' must be 'auto', 'text' or 'json', got 'xml'.*
+
+statement error
+SELECT decide_register_model('d1-input', 'liquid', MAP {'input': 'json'})
+----
+<REGEX>:.*option 'input' only applies to provider 'openai', but the provider is 'liquid'.*
+
+statement error
+SELECT decide_register_model('d1-cache', 'liquid', MAP {'prompt_cache_key': 'x'})
+----
+<REGEX>:.*option 'prompt_cache_key' only applies to provider 'openai'.*
+
+statement error
+SELECT decide_register_model('luna-criteria', 'openai', MAP {'criteria': 'name'})
+----
+<REGEX>:.*option 'criteria' does not apply to provider 'openai'.*
+
+# Hermetic: the offline suite runs with OPENAI_API_KEY unset, so the next missing piece is the key.
+statement error
+SELECT decide_probability('x', 'y', model := 'gpt-6-luna')
+----
+<REGEX>:.*no API key for OpenAI at api\.openai\.com.*export OPENAI_API_KEY.*

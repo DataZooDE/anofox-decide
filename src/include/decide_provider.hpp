@@ -61,10 +61,14 @@ struct DecideModelEntry {
 	// `set` is false when the model is uncalibrated.
 	DecidePlatt calibration;
 	string account_id; // cloudflare only: the Workers AI account id ("" = the CLOUDFLARE_ACCOUNT_ID env var)
+	// openai only: how the state is sent ("" = auto) and the prompt_cache_key (unset = the model id).
+	string input_mode;
+	string prompt_cache_key;
+	bool prompt_cache_key_set = false;
 };
 
 // Per-model remote options from decide_register_model's options MAP
-// (keys: endpoint, path, model, key_env, criteria, calibration).
+// (keys: endpoint, path, model, key_env, criteria, calibration, account_id, input, prompt_cache_key).
 struct DecideRegisterOptions {
 	string endpoint;
 	string path;
@@ -73,6 +77,9 @@ struct DecideRegisterOptions {
 	string criteria;
 	string calibration; // "platt:a,b" (any provider) or ""
 	string account_id;
+	string input_mode;       // openai only: auto, text or json
+	string prompt_cache_key; // openai only; set with an empty value to send none
+	bool prompt_cache_key_set = false;
 };
 
 // DB-instance-level model registry (tabfm TabFMState pattern): lives in

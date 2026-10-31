@@ -145,5 +145,27 @@ class EndToEnd(unittest.TestCase):
         self.assertFalse((self.out / "results_laya-multilingual.csv").exists())
 
 
+
+class RefusalTest(unittest.TestCase):
+    """A refused answer (empty probability / choice in the results) is scored as wrong and reported."""
+
+    def test_refusal_counts_as_wrong_and_is_listed(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "tickets.csv").write_text(
+                "id,text,refund,routing\n1,a,true,billing\n2,b,false,orders\n3,c,true,billing\n4,d,false,other\n")
+            (d / "results_m.csv").write_text(
+                "id,qid,probability,choice\n"
+                "1,refund,,\n1,routing,,billing\n2,refund,0.1,\n2,routing,,orders\n"
+                "3,refund,0.9,\n3,routing,,billing\n4,refund,0.2,\n4,routing,,\n")
+            report, truth = run_eval.analyse(d / "tickets.csv", d, ["m"], {"m": "Model"})
+            r = report["m"]
+            self.assertEqual(r["refusals"], {"refund": [1], "routing": [4]})
+            self.assertAlmostEqual(r["refund_acc"], 0.75)   # ticket 1 refused -> wrong
+            self.assertAlmostEqual(r["routing_acc"], 0.75)  # ticket 4 refused -> wrong
+            md = run_eval.render(report, truth, {})
+            self.assertIn("## Refusals", md)
+            self.assertIn("| Model | 1 | 1 | 1, 4 |", md)
+
 if __name__ == "__main__":
     unittest.main()

@@ -594,6 +594,18 @@ LogicalType DecideAnswerStructType() {
 
 Value DecideAnswerStructValue(const DecideAnswer &a, const string &fallback_model) {
 	child_list_t<Value> children;
+	if (a.refused) {
+		// The service declined to answer: the row says so, every answer field is NULL.
+		children.emplace_back("question_id", Value(a.id));
+		children.emplace_back("kind", Value("refusal"));
+		children.emplace_back("probability", Value(LogicalType::DOUBLE));
+		children.emplace_back("choice", Value(LogicalType::VARCHAR));
+		children.emplace_back("confidence", Value(LogicalType::DOUBLE));
+		children.emplace_back("model", Value(a.model.empty() ? fallback_model : a.model));
+		children.emplace_back("score", Value(LogicalType::DOUBLE));
+		children.emplace_back("distribution", Value(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::DOUBLE)));
+		return Value::STRUCT(std::move(children));
+	}
 	children.emplace_back("question_id", Value(a.id));
 	children.emplace_back("kind", Value(a.kind == "noul" ? "binary" : (a.kind == "score" ? "score" : "choice")));
 	children.emplace_back("probability", Value::DOUBLE(a.probability));

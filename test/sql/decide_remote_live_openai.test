@@ -1,0 +1,96 @@
+# name: test/sql/decide_remote_live_openai.test
+# description: LIVE OpenAI Decisions E2E (gpt-6-luna). Requires OPENAI_API_KEY in the environment and outbound HTTPS
+#              to api.openai.com. NOT part of the default suite: run via `make test-live` (explicit SKIP without the
+#              key, never fake-green).
+# group: [anofox_decide]
+
+require anofox_decide
+
+require-env OPENAI_API_KEY
+
+statement ok
+LOAD anofox_decide
+
+statement ok
+SET anofox_decide_allow_remote=true
+
+statement ok
+SELECT decide_register_model('gpt-6-luna', 'openai')
+
+query I
+SELECT (p > 0.5)::INTEGER FROM (
+  SELECT decide_probability('Checkout has been failing for every customer for the last hour.', 'Is this support request urgent?', model := 'gpt-6-luna') AS p
+)
+----
+1
+
+query T
+SELECT decide_choice('My invoice charges twice the agreed amount.', 'Which team should handle this request?', ['billing','technical','sales'], model := 'gpt-6-luna')
+----
+billing
+
+query I
+SELECT decide_score('This is the third time and I am furious, nobody answers!', 'How frustrated is the writer?', ['calm','frustrated','angry'], model := 'gpt-6-luna')
+     > decide_score('Thanks a lot, everything works great now.', 'How frustrated is the writer?', ['calm','frustrated','angry'], model := 'gpt-6-luna')
+----
+true
+
+# The distribution covers every option and sums to 1.
+query I
+SELECT abs(list_sum(map_values(d)) - 1.0) < 0.02 AND cardinality(d) = 3 FROM (
+  SELECT decide_choice_distribution('My invoice charges twice the agreed amount.', 'Which team should handle this request?', ['billing','technical','sales'], model := 'gpt-6-luna') AS d
+)
+----
+true
+
+# Several questions in one request, with ids that are not plain identifiers (they travel as the question names).
+query TT
+SELECT question_id, kind FROM decide_table('Checkout has been failing for every customer for the last hour.',
+  '[{"id":"is urgent?","kind":"binary","instruction":"Is this support request urgent?"},{"id":"team.v2","kind":"choice","instruction":"Which team should handle this request?","options":["billing","technical","sales"]},{"id":"sev-1","kind":"score","instruction":"How severe is the customer impact?","levels":["No impact","Minor","Major","Critical"]}]',
+  model := 'gpt-6-luna')
+ORDER BY question_id
+----
+is urgent?	binary
+sev-1	score
+team.v2	choice
+
+# Structured state: a JSON object (in SQL usually to_json(row); a literal here, the test runner has no json
+# extension) goes as an input_json part and is understood as data.
+query I
+SELECT (decide_probability('{"ticket": "The package arrived crushed and the screen is cracked.", "order_total": 899}',
+                           'The customer reports physical damage to the product.', model := 'gpt-6-luna') > 0.5)::INTEGER
+----
+1
+
+statement ok
+SELECT decide_register_model('luna-text', 'openai', MAP {'model': 'gpt-6-luna', 'input': 'text', 'prompt_cache_key': ''})
+
+query I
+SELECT (decide_probability('{"ticket": "The package arrived crushed and the screen is cracked."}',
+                           'The customer reports physical damage to the product.', model := 'luna-text') > 0.5)::INTEGER
+----
+1
+
+# A labelled chunk scored together (concurrently): the model must discriminate, not merely return numbers.
+query I
+SELECT decide_accuracy(decide_probability(text, 'A refund is requested.', model := 'gpt-6-luna'), refund, 0.5) >= 0.85
+FROM read_csv('test/fixtures/support_tickets.csv')
+----
+true
+
+query I
+SELECT count(*) >= 6 FROM (
+  SELECT team, decide_choice(text, 'Which team owns this?', ['billing','defect','other'], model := 'gpt-6-luna') AS got
+  FROM read_csv('test/fixtures/support_tickets.csv')
+) WHERE got = team
+----
+true
+
+# A wrong key: the message names the provider and OPENAI_API_KEY, never the key.
+statement ok
+CREATE SECRET bad_openai (TYPE anofox_decide, API_KEY 'sk-not-a-real-key', SCOPE 'api.openai.com')
+
+statement error
+SELECT decide_probability('x', 'y', model := 'gpt-6-luna')
+----
+<REGEX>:.*OpenAI.*rejected the API key \(HTTP 401\).*
