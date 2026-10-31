@@ -5,7 +5,11 @@ that caused it. Run `SELECT * FROM decide_doctor();` first when something does n
 not tell you what to do, please [open an issue](https://github.com/DataZooDE/anofox-decide/issues) with the
 output of `decide_doctor()` and the failing call (without your key).
 
-- [Choosing and calling a model](#choosing-and-calling-a-model), [Providers, keys and endpoints](#providers-keys-and-endpoints), [Local models](#local-models), [GPU](#gpu), [Values and types](#values-and-types)
+- [Choosing and calling a model](#choosing-and-calling-a-model)
+- [Providers, keys and endpoints](#providers-keys-and-endpoints)
+- [Local models](#local-models)
+- [GPU](#gpu)
+- [Values and types](#values-and-types)
 
 ## Choosing and calling a model
 

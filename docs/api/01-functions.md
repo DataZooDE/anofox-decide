@@ -104,7 +104,7 @@ table and get `decide_table`'s columns, unnest it (this runs concurrently, unlik
 
 ```sql
 SELECT id, question_id, probability, choice
-FROM (SELECT id, unnest(decide_answers(body, '[{"id": "refund", "kind": "binary", "instruction": "A refund is requested."}]',
+FROM (SELECT id, unnest(decide_answers(text, '[{"id": "refund", "kind": "binary", "instruction": "A refund is requested."}]',
                                         model := 'd1:free'), recursive := true)
       FROM tickets);
 ```
@@ -131,7 +131,7 @@ Measured on the real Liquid D1 service (8 tickets, three questions each): 176.7 
 slightly from call to call). The [triage example](../guides/01-getting-started.md#3-decide) takes about 11 s.
 
 ```sql
-SET anofox_decide_max_concurrency = 4;   -- 0 = automatic (default): 8 hosted, 1 for the local strands server; 1 = one at a time
+SET anofox_decide_max_concurrency = 4;   -- requests in flight; 1 = one at a time (default: automatic, see Settings)
 SET anofox_decide_timeout_ms = 60000;    -- slow models: more time per request
 SET anofox_decide_max_retries = 5;       -- retries after a 429, a 5xx or a connection failure
 ```
@@ -140,6 +140,6 @@ Lower the limit if your provider rate limits you. The query already halves its w
 honours `Retry-After`, and stops starting new requests after the first error (the error of the first
 failing row is the one reported). Two identical `(text, question)` pairs in one chunk cost one request;
 nothing is shared across chunks or queries, because a service need not answer the same question the same
-way twice. Local models run one after another (or in batches with
+way twice. The defaults and ranges of these settings: [Settings](05-settings.md). Local models run one after another (or in batches with
 [`anofox_decide_batch_tokens`](03-local-models.md#batching-rows)). See
 [`examples/03_scoring_many_rows.sql`](../../examples/03_scoring_many_rows.sql).

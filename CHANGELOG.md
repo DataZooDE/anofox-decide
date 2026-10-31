@@ -8,6 +8,8 @@ All notable changes to `anofox_decide` are documented here. The format follows
 
 ### Changed
 - Documentation restructured: short README, guides and API pages under docs/.
+- Error messages and `decide_doctor()` hints link to the new pages under docs/ instead of README anchors
+  (the old `#local-models` and `#models-and-providers` anchors still lead there).
 
 ## [2026.10.26] - 2026-10-26
 

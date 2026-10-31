@@ -12,15 +12,25 @@ in one session with no `SET` in between. Which one to pick: [Choosing a model](.
 
 ## Overview
 
-| Provider | Service | Runs | Default endpoint | Key |
+Every provider answers all three question kinds (`binary`, `choice`, `score`).
+
+| Provider | Service and model ids | Runs | Default endpoint | Key |
 |---|---|---|---|---|
-| `typesafe` | TypeSafe Jev | hosted API | `https://api.typesafe.ai` | `TYPESAFE_API_KEY` |
-| `liquid` | Liquid AI D1 | hosted API | `https://api.liquid.ai` | `LIQUID_API_KEY` |
-| `cloudflare` | Cloudflare Clef, Clef-flash | hosted API (Workers AI) | `https://api.cloudflare.com` | `CLOUDFLARE_API_TOKEN` |
-| `strands` | [strands-decider](https://github.com/strands-labs/strands-decider) 2B | local server | `http://127.0.0.1:8000` | none |
-| `systemone` | any compatible server, e.g. [Kev](https://github.com/jaredpalmer/kev) | your server | you set it | optional (`key_env`) |
-| `local` | Julia-1, Laya | in-process, offline | — | none ([Local models](03-local-models.md)) |
-| `stub` | built-in test model | in-process | — | none |
+| `typesafe` | TypeSafe Jev (`jev-latest`) | hosted API; opt-in via `anofox_decide_allow_remote` | `https://api.typesafe.ai` | `TYPESAFE_API_KEY` |
+| `liquid` | Liquid AI D1 (`d1:free`) | hosted API; same opt-in | `https://api.liquid.ai` | `LIQUID_API_KEY` |
+| `cloudflare` | Cloudflare Clef (`clef`), Clef-flash (`clef-flash`) | hosted API (Workers AI); same opt-in | `https://api.cloudflare.com` | `CLOUDFLARE_API_TOKEN` |
+| `strands` | [strands-decider](https://github.com/strands-labs/strands-decider) 2B | local server on loopback; same opt-in | `http://127.0.0.1:8000` | none |
+| `systemone` | any System One compatible server, e.g. [Kev](https://github.com/jaredpalmer/kev) | your endpoint (`https://`, or `http://` on loopback); same opt-in | you set it | required (any value for keyless servers such as Kev; or use provider `strands`): [Local servers](#local-servers) |
+| `local` | Julia-1, Laya multilingual, Laya typed-decisions | in-process on CPU (or a [GPU](04-gpu.md)), offline after setup | — | none ([Local models](03-local-models.md)) |
+| `stub` | deterministic placeholder (0.5 / first option / middle level) | in-process, for tests and demos | — | none |
+
+`score` is verified for parity with each model's upstream implementation and against the live services;
+unlike refund and routing it has not been scored for accuracy on labelled data.
+
+**Not yet:** images (Cloudflare Clef accepts them, our functions take text only); half-precision GPU
+execution (the GPU backends are fp32; see [GPU acceleration](04-gpu.md)); the Von model (it needs
+order-invariant attention in the export); on macOS only Apple silicon is built (ONNX Runtime ships no Intel
+macOS archive after v1.23.2), and WebAssembly, musl and MinGW are not built.
 
 ## Registering a model
 
@@ -53,8 +63,8 @@ hosts only. `decide_unregister_model('<id>')` removes a model so the id can be r
 
 ## Hosted providers
 
-Each hosted provider receives the text you score. The quality numbers below come from the 200-ticket
-evaluation in [Choosing a model](../guides/02-choosing-a-model.md#how-the-models-compare).
+Each hosted provider receives the text you score. How they compare on a 200-ticket evaluation:
+[Choosing a model](../guides/02-choosing-a-model.md#how-the-models-compare).
 
 ### TypeSafe Jev
 
@@ -74,7 +84,7 @@ SELECT decide_register_model('jev-latest', 'typesafe');
 SELECT decide_probability('I want my money back.', 'A refund is requested.', model := 'jev-latest');
 ```
 
-Jev was the most accurate model in the 200-ticket evaluation. Two legacy settings apply to this provider
+Two legacy settings apply to this provider
 only: `anofox_decide_api_key` (kept in plain text and visible through `current_setting`, so prefer a secret
 or the env var) and `anofox_decide_endpoint`; other providers take a per-model `endpoint`.
 
@@ -96,8 +106,8 @@ SELECT decide_register_model('d1:free', 'liquid');               -- the id is th
 SELECT decide_register_model('d1', 'liquid', MAP {'model': 'd1:free'});   -- or a shorter id
 ```
 
-D1 routes as well as Jev, but at the 0.5 cut-off over-predicts refunds (its ranking is fine, AUROC 0.970);
-a fitted [calibration](../guides/03-evaluate-and-calibrate.md#calibration) cut its refund error from 23% to 9% on that evaluation.
+At the 0.5 cut-off D1 over-predicts refunds; a fitted
+[calibration](../guides/03-evaluate-and-calibrate.md#calibration) corrects the cut-off.
 
 ### Cloudflare Clef
 
@@ -122,10 +132,9 @@ Things worth knowing:
 - **Cost and speed:** $0.24 per million input tokens for `clef` and $0.09 for `clef-flash`; one call took about
   0.3 to 1 s in our runs. A request takes at most **64 questions** (a call with more is refused before anything is
   sent) and a 64k-token text.
-- **Quality:** on the 200-ticket evaluation `clef` is the third-best router (88%) and a solid refund detector (85%);
-  `clef-flash` is much weaker on refund (70%). `clef` errs towards "no" at the 0.5 cut-off (recall 62%, specificity
-  95%); [Calibration](../guides/03-evaluate-and-calibrate.md#calibration) shows how to fit the cut-off to your own
-  data. See [How the models compare](../guides/02-choosing-a-model.md#how-the-models-compare).
+- **Quality:** see [How the models compare](../guides/02-choosing-a-model.md#how-the-models-compare). `clef`
+  errs towards "no" at the 0.5 cut-off (specificity 95%); [Calibration](../guides/03-evaluate-and-calibrate.md#calibration)
+  shows how to fit the cut-off to your own data.
 - **Errors:** Cloudflare answers a wrong token and a valid token of a different account with the same
   "Authentication error", so the message names both causes. A wrong model name is an HTTP 400 "No route for
   that URI"; the message says the models are `clef` and `clef-flash`.
@@ -138,8 +147,8 @@ Things worth knowing:
   ADD MORE HOSTED PROVIDERS HERE.
   One "### <Service name>" section per provider, in the same shape as the ones above:
   a short table (provider, model ids, default endpoint, key), the export + register + call snippet,
-  and "things worth knowing". Also add a row to the Overview table at the top of this page, to the
-  "Hosted providers" link list, to the model table in README.md, and to docs/guides/02-choosing-a-model.md.
+  and "things worth knowing". Then add a row to the Overview table at the top of this page, a link to
+  the "Hosted providers" list, and a row to the Models table in README.md.
 -->
 
 ## API keys and secrets
@@ -158,7 +167,7 @@ overrides them. Precedence, highest first:
 
 A key is never sent to a host it was not configured for: a redirected endpoint gets nothing from the
 environment, and a secret scoped to one host is not used for another. Cleartext `http://` works for
-loopback hosts only. Behind a proxy, set `HTTPS_PROXY`.
+loopback hosts only. Behind a proxy, see [Environment variables](05-settings.md#environment-variables).
 
 ## Local servers
 
@@ -185,5 +194,4 @@ since it ignores the value but the provider requires one:
 `CREATE SECRET (TYPE anofox_decide, API_KEY 'local', SCOPE '127.0.0.1')`. Kev-4B, 9B and 27B are more
 accurate than 0.8B and need a GPU or a large Mac.
 
-By default the strands server gets one request at a time (`anofox_decide_max_concurrency = 0` means 8 for
-hosted models and 1 for the local strands server); see [Scoring many rows](01-functions.md#scoring-many-rows).
+How many requests run at once, per provider: [`anofox_decide_max_concurrency`](05-settings.md).

@@ -20,39 +20,39 @@ SELECT id,
 FROM tickets;
 ```
 
-## ✨ Key Features
+## Key Features
 
-### 🎯 Three kinds of question
+### Three kinds of question
 - **binary**: the probability that a statement holds (`decide_probability`, `decide_decision`)
 - **choice**: the best of a list of options, with the probability of each (`decide_choice`, `decide_choice_distribution`)
 - **score**: the expected level on an ordered rubric (`decide_score`)
 - **Many at once**: several questions about one text in one request (`decide_table`, `decide_answers`, `decide_many`)
 
-### 🧠 Hosted or on your machine
+### Hosted or on your machine
 - **Hosted**: TypeSafe **Jev**, Liquid AI **D1**, Cloudflare **Clef**
 - **Local servers**: **strands-decider**, **Kev** (or any System One compatible server)
 - **In-process, fully offline**: **Julia-1** and **Laya** on ONNX Runtime, optional GPU (CUDA, ROCm, Apple MLX)
 - **One SQL surface**: swap the model without touching the query, compare models on your own data in one statement
 
-### 📊 Measure and calibrate
+### Measure and calibrate
 - **Metrics**: accuracy, Brier score, calibration error, log loss, AUC as aggregates
 - **Curves**: ROC, calibration and metrics tables ready for [anofox-visualization](https://github.com/DataZooDE/anofox-visualization)
 - **Calibration**: per-model Platt scaling fitted in SQL
 
-### 🔒 Safe by default
+### Safe by default
 - **No weights shipped, nothing called** until you register a model
 - **Explicit opt-in** before any text leaves your machine; keys as DuckDB secrets, never sent to another host
 - **Errors that say what to run**, and `decide_doctor()` for the whole setup
 
-## 📋 Table of Contents
+## Table of Contents
 
 - [Installation](#installation)
-- [Quick Start](#-quick-start)
-- [Models](#-models)
-- [Documentation](#-documentation)
+- [Quick Start](#quick-start)
+- [Models](#models)
+- [Documentation](#documentation)
 - [Status](#status)
-- [Development](#-development)
-- [License](#-license)
+- [Development](#development)
+- [License](#license)
 - [Telemetry](#telemetry)
 - [Feedback](#feedback)
 
@@ -63,17 +63,16 @@ INSTALL anofox_decide FROM community;
 LOAD anofox_decide;
 ```
 
-> **Latest builds from DataZoo.** The community build is signed but can trail a release by days. The
-> DataZoo repository has a release the moment it is out; its builds are **unsigned**, so start DuckDB with
-> `duckdb -unsigned`, and **install `httpfs` first** (otherwise DuckDB autoloads `httpfs` from
-> `get.anofox.com`, which does not serve it):
->
-> ```sql
-> INSTALL httpfs; LOAD httpfs;
-> SET custom_extension_repository = 'https://get.anofox.com';
-> INSTALL anofox_decide;
-> LOAD anofox_decide;
-> ```
+**Latest builds:** the community build can trail a release by days. The DataZoo repository has it the
+moment it is out, but its builds are unsigned: start DuckDB with `duckdb -unsigned`, and install `httpfs`
+**first** ([why](docs/guides/01-getting-started.md#1-install-and-load)):
+
+```sql
+INSTALL httpfs; LOAD httpfs;
+SET custom_extension_repository = 'https://get.anofox.com';
+INSTALL anofox_decide;
+LOAD anofox_decide;
+```
 
 Check which build you got:
 
@@ -81,9 +80,7 @@ Check which build you got:
 SELECT extension_version FROM duckdb_extensions() WHERE extension_name = 'anofox_decide';
 ```
 
-Details and the errors these two gotchas produce: [Getting Started](docs/guides/01-getting-started.md).
-
-## 🚀 Quick Start
+## Quick Start
 
 ```sql
 -- 1. What is ready, and the fix for what is not
@@ -92,32 +89,35 @@ SELECT * FROM decide_doctor();
 -- 2. Try the SQL on the built-in stub (it returns constants, so it can never pass for a real answer)
 SELECT decide_probability('I want my money back.', 'A refund is requested.', model := 'stub');
 
--- 3. A real model: Liquid D1 (export LIQUID_API_KEY=... before starting DuckDB)
+-- 3a. A hosted model: Liquid D1 (export LIQUID_API_KEY=... before starting DuckDB)
 SET anofox_decide_allow_remote = true;                 -- explicit opt-in: the text goes to the provider
 SELECT decide_register_model('d1:free', 'liquid');     -- registrations last for this process only
 SET anofox_decide_model = 'd1:free';                   -- the default for calls that name no model
 
--- 4. Several questions over a small table, one row per question
-CREATE TABLE tickets AS SELECT * FROM (VALUES
-  (1, 'I was charged twice for my March invoice, please refund the extra 49 EUR.'),
-  (2, 'The app crashes every time I open the export dialog on version 3.2.'),
-  (3, 'Cancel my subscription and reimburse the unused months.')
-) t(id, body);
+-- 3b. Or, with no key: a model that runs inside DuckDB, offline after a 0.7 GB download
+-- CALL decide_download('laya-multilingual');
+-- SET anofox_decide_model = 'laya-multilingual';
 
-SELECT t.id, d.question_id, round(d.probability, 3) AS probability, d.choice
-FROM tickets t, LATERAL decide_table(t.body,
-  '[{"id": "refund", "kind": "binary", "instruction": "A refund is requested."},
-    {"id": "team",   "kind": "choice", "instruction": "Which team owns this?", "options": ["billing", "defect", "other"]}]') d
-ORDER BY t.id, d.question_id;
+-- 4. Three questions over a small table, on whichever default you set
+CREATE OR REPLACE TABLE tickets AS SELECT * FROM (VALUES
+  (1, 'I was charged twice for my March invoice, please refund the extra 49 EUR.', true,  'billing'),
+  (2, 'The app crashes every time I open the export dialog on version 3.2.',       false, 'defect'),
+  (3, 'Cancel my subscription and reimburse the unused months.',                   true,  'billing')
+) t(id, text, refund, team);
+
+SELECT id,
+       round(decide_probability(text, 'A refund is requested.'), 3)                          AS p_refund,
+       decide_choice(text, 'Which team owns this?', ['billing', 'defect', 'other'])          AS team,
+       round(decide_score(text, 'How frustrated is the writer?', ['calm', 'frustrated', 'angry']), 2) AS frustration
+FROM tickets ORDER BY id;
 ```
 
-No key? `CALL decide_download('laya-multilingual');` fetches a model that runs inside DuckDB, offline
-after the 0.7 GB download, then use `model := 'laya-multilingual'`. For many rows use `decide_answers`
-instead of the lateral join: it runs concurrently ([Scoring many rows](docs/api/01-functions.md#scoring-many-rows)).
-The full walk-through with real output and metrics: [Getting Started](docs/guides/01-getting-started.md);
-runnable files in [`examples/`](examples/README.md).
+The scalar functions score the rows concurrently. Several questions per text in one request, with one row
+per question: [`decide_answers`](docs/api/01-functions.md#several-questions-at-once). The full walk-through
+with real output and metrics: [Getting Started](docs/guides/01-getting-started.md); runnable files in
+[`examples/`](examples/README.md).
 
-## 🧠 Models
+## Models
 
 | Model | Provider | Runs | Needs |
 |---|---|---|---|
@@ -125,13 +125,19 @@ runnable files in [`examples/`](examples/README.md).
 | Liquid AI D1 | `liquid` | hosted API | `LIQUID_API_KEY` |
 | Cloudflare Clef, Clef-flash | `cloudflare` | hosted API (Workers AI) | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` |
 | strands-decider 2B | `strands` | local server | no key |
-| Kev, or any System One server | `systemone` | your server | optional key |
+| Kev, or any System One server | `systemone` | your server | a key: required (any value for keyless servers such as Kev; or use provider `strands`) |
 | Julia-1, Laya multilingual, Laya typed-decisions | `local` | in-process, offline | `decide_download` once |
 | built-in test model | `stub` | in-process | nothing |
 
 Which one to pick, and how they did on a 200-ticket evaluation: [Choosing a model](docs/guides/02-choosing-a-model.md).
 
-## 📚 Documentation
+<a id="models-and-providers"></a>
+**Models and providers** moved to [docs/api/02-providers.md](docs/api/02-providers.md).
+
+<a id="local-models"></a>
+**Local models** moved to [docs/api/03-local-models.md](docs/api/03-local-models.md).
+
+## Documentation
 
 ### Guides
 
@@ -154,20 +160,23 @@ Which one to pick, and how they did on a 200-ticket evaluation: [Choosing a mode
 
 ### Background
 
-[docs/EVALUATION.md](docs/EVALUATION.md) (the 200-ticket evaluation),
-[docs/SPIKE_RESULTS.md](docs/SPIKE_RESULTS.md) (provider contracts),
-[docs/CALIBRATION_PERF.md](docs/CALIBRATION_PERF.md) (calibration and performance),
-[docs/REVIEW_FOLLOWUP.md](docs/REVIEW_FOLLOWUP.md) (design decisions and model investigations),
-[docs/GPU_BACKENDS.md](docs/GPU_BACKENDS.md) and [docs/GPU_ROCM.md](docs/GPU_ROCM.md) (GPU backends),
-[CHANGELOG.md](CHANGELOG.md).
+| Document | What it is |
+|---|---|
+| [docs/EVALUATION.md](docs/EVALUATION.md) | Reference: the 200-ticket evaluation, method and how to reproduce it |
+| [docs/GPU_BACKENDS.md](docs/GPU_BACKENDS.md), [docs/GPU_ROCM.md](docs/GPU_ROCM.md) | Reference: GPU requirements, measurements, limits; the ROCm shape buckets |
+| [docs/BUILDING.md](docs/BUILDING.md) | Reference: building and testing from source |
+| [docs/CALIBRATION_PERF.md](docs/CALIBRATION_PERF.md) | Report: calibration and local performance measurements |
+| [docs/SPIKE_RESULTS.md](docs/SPIKE_RESULTS.md) | History: provider contract spikes |
+| [docs/REVIEW_FOLLOWUP.md](docs/REVIEW_FOLLOWUP.md) | History: design decisions and model investigations |
+| [CHANGELOG.md](CHANGELOG.md) | Every release |
 
 ## Status
 
 The extension is calendar-versioned (`2026.10.26` is the twenty-sixth of October 2026) and is built and
 tested on Linux (amd64, arm64), macOS (arm64) and Windows (amd64) against DuckDB 1.5.6, and on DuckDB 2.0.
-What works today and what does not yet: [Choosing a model](docs/guides/02-choosing-a-model.md#status-and-scope).
+What works today and what does not yet: [Providers](docs/api/02-providers.md#overview).
 
-## 📦 Development
+## Development
 
 ```bash
 git clone --recurse-submodules https://github.com/DataZooDE/anofox-decide.git
@@ -178,7 +187,7 @@ make test_release           # offline suite: SQL tests + Catch2 (no network, no 
 
 Prerequisites, faster local builds, live tests and tests that need weights: [docs/BUILDING.md](docs/BUILDING.md).
 
-## 📄 License
+## License
 
 - **This extension's code:** MIT, see [LICENSE](LICENSE).
 - **Models:** the extension ships **no model weights**, and never redistributes any: `decide_download` fetches the

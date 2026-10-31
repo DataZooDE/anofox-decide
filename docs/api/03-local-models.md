@@ -30,7 +30,7 @@ fixed revision, checks size and SHA-256 of every file, resumes an interrupted do
 your machine. `SELECT model, ready, hint FROM decide_models();` lists the three with `ready = false` and the
 call to run until they are downloaded, `decide_doctor()` reports them, and naming a model that is not
 downloaded fails with `model 'laya-multilingual' is not downloaded. Fix: CALL decide_download('laya-multilingual');`.
-Behind a proxy, set `HTTPS_PROXY` as for the hosted models.
+Behind a proxy, set `HTTPS_PROXY` as for the hosted models ([Environment variables](05-settings.md#environment-variables)).
 
 The first call in a session loads the model (4.0 s for `laya-multilingual`, 5.5 s for
 `laya-typed-decisions`, 1.4 s for `julia-1` on the test machine, files in the page cache); later calls reuse it.
@@ -77,7 +77,7 @@ question. Find the long rows first with `decide_token_count`, or accept the cut 
 `SET anofox_decide_on_truncate = 'ignore';`:
 
 ```sql
-SELECT id, decide_token_count(body, model := 'julia-1') AS tokens FROM tickets ORDER BY tokens DESC LIMIT 10;
+SELECT id, decide_token_count(text, model := 'julia-1') AS tokens FROM tickets ORDER BY tokens DESC LIMIT 10;
 SET anofox_decide_on_truncate = 'ignore';  -- score the shortened text instead of failing
 ```
 

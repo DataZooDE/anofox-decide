@@ -35,8 +35,8 @@ string FirstLine(const string &msg) {
 }
 
 const char *EXPORT_FIX = "export the model again with tools/export_julia (see "
-                         "https://github.com/DataZooDE/anofox-decide#local-models) and register the .onnx file it "
-                         "writes";
+                         "https://github.com/DataZooDE/anofox-decide/blob/main/docs/api/03-local-models.md#your-own-exported-model"
+                         ") and register the .onnx file it writes";
 
 } // namespace
 

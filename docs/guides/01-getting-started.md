@@ -65,6 +65,17 @@ With nothing set up yet, use the built-in `stub` to try the SQL: `model := 'stub
 (0.5, the first option, the middle level) so it can never pass for a real answer. For a real model, see
 [Choosing a model](02-choosing-a-model.md): it has a "You have / Do this" table for every provider.
 
+The rest of this guide uses Liquid AI D1, a hosted model. Its key comes from the environment, so set it
+before starting DuckDB:
+
+```bash
+export LIQUID_API_KEY=...            # before starting DuckDB
+```
+
+(Another provider's key: [Providers](../api/02-providers.md). No key at all: `CALL decide_download('laya-multilingual');`
+and `SET anofox_decide_model = 'laya-multilingual';` instead of the three statements below; see
+[Local models](../api/03-local-models.md).)
+
 A hosted model sends the text you score to the provider, so it sits behind an explicit opt-in that is off
 by default. Register it once per database instance (registrations and settings are not stored: repeat them
 in each new process), then name it per call (`model := 'd1:free'`) or make it the default:
@@ -81,11 +92,11 @@ returns a constant.
 ## 3. Decide
 
 Eight support tickets with known answers, scored for three questions at once. This is real output from
-Liquid D1, so it needs the model from step 2 (`SET anofox_decide_model = 'd1:free'`); on the `stub` you get
-the same columns filled with constants.
+Liquid D1, so it needs the model from step 2 (`SET anofox_decide_model = 'd1:free'`); on Laya the numbers
+differ, and on the `stub` you get the same columns filled with constants.
 
 ```sql
-CREATE TABLE tickets AS SELECT * FROM (VALUES
+CREATE OR REPLACE TABLE tickets AS SELECT * FROM (VALUES
   (1, 'I was charged twice for my March invoice, please refund the extra 49 EUR.', true,  'billing'),
   (2, 'The app crashes every time I open the export dialog on version 3.2.',       false, 'defect'),
   (3, 'Thanks for the quick help yesterday, everything works now!',                false, 'other'),
@@ -96,7 +107,7 @@ CREATE TABLE tickets AS SELECT * FROM (VALUES
   (8, 'Cancel my subscription and reimburse the unused months.',                   true,  'billing')
 ) t(id, text, refund, team);                                  -- refund and team are the known answers
 
-CREATE TABLE scored AS
+CREATE OR REPLACE TABLE scored AS
 SELECT id, text, refund,
        decide_probability(text, 'A refund is requested.')                                   AS p_refund,
        decide_choice(text, 'Which team owns this?', ['billing', 'defect', 'other'])         AS team,

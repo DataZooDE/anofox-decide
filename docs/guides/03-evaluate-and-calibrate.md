@@ -5,28 +5,20 @@ them per model, and fix a model's cut-off before you act on it.
 
 ## Metrics
 
-The metric aggregates work on any `(probability, label)` pairs, so comparing models is one query:
+The metric aggregates (`decide_accuracy`, `decide_brier_score`, `decide_ece`, `decide_log_loss`,
+`decide_auc`; definitions in [Functions](../api/01-functions.md#evaluation-and-calibration)) work on any
+`(probability, label)` pairs. The examples on this page use the `runs(model, id, refund, p)` table that
+[Comparing models on your own data](02-choosing-a-model.md#comparing-models-on-your-own-data) builds,
+one row per model and ticket. A different cut-off for accuracy is the third argument:
 
 ```sql
-SELECT model,
-       decide_accuracy(p, refund)    AS accuracy,
-       decide_brier_score(p, refund) AS brier,
-       decide_ece(p, refund)         AS ece
-FROM runs GROUP BY model ORDER BY brier;     -- see examples/04_compare_models.sql
+SELECT model, decide_accuracy(p, refund, 0.7) AS accuracy_at_70, decide_auc(p, refund) AS auc
+FROM runs GROUP BY model;
 ```
-
-| Aggregate | Measures |
-|---|---|
-| `decide_accuracy(p, outcome[, threshold])` | share of rows where thresholding `p` reproduces the label |
-| `decide_brier_score(p, outcome)` | mean squared error of the probabilities; 0 is perfect, 0.25 a constant 0.5 |
-| `decide_ece(p, outcome)` | expected calibration error over ten equal-width bins |
-| `decide_log_loss(p, outcome)` | mean binary cross-entropy, `p` clipped to [1e-15, 1 - 1e-15] |
-| `decide_auc(p, outcome)` | area under the ROC curve, ties count one half; NULL with one outcome only |
 
 `decide_accuracy` thresholds at 0.5 unless you pass a threshold. NULL rows are skipped and empty input
 returns NULL; probabilities outside 0 to 1, NaN, or labels that are not 0/1 raise an error that says what
-to fix. `decide_auc` and `decide_log_loss` complete the set. How to build the `runs` table from several
-models: [Comparing models on your own data](02-choosing-a-model.md#comparing-models-on-your-own-data).
+to fix.
 
 ## Plot with anofox-visualization
 
@@ -64,7 +56,7 @@ the model with it:
 
 ```sql
 -- 1. fit on a labelled sample of that model's raw probabilities
-SELECT decide_fit_calibration(p, y) FROM labelled;                      -- 'platt:1.92,-0.72'
+SELECT decide_fit_calibration(p, refund) FROM runs WHERE model = 'd1:free';   -- e.g. 'platt:1.92,-0.72'
 -- 2. register the model with the fitted spec (any provider; local models take the MAP as 6th argument)
 SELECT decide_register_model('d1-cal', 'liquid', MAP {'model': 'd1:free', 'calibration': 'platt:1.92,-0.72'});
 SELECT decide_register_model('laya-cal', 'local', '/m/laya.onnx', '/m/tokenizer.json', 'laya', MAP {'calibration': 'platt:1.1,-0.3'});
@@ -86,11 +78,11 @@ A calibration is fitted to one data distribution: refit it for your own tickets.
 `MAP(VARCHAR, DOUBLE)` (it sums to 1), so you can threshold the winner's probability and abstain in plain SQL:
 
 ```sql
-SELECT body, decide_choice_distribution(body, 'Which team owns this?', ['billing','defect','other'], model := 'jev-latest') AS dist
+SELECT id, decide_choice_distribution(text, 'Which team owns this?', ['billing','defect','other'], model := 'jev-latest') AS dist
 FROM tickets;
 -- abstain below 60% confidence
 SELECT CASE WHEN list_max(map_values(d)) >= 0.6 THEN list_extract(map_keys(d), list_position(map_values(d), list_max(map_values(d)))) END AS team
-FROM (SELECT decide_choice_distribution(body, 'Which team owns this?', ['billing','defect','other'], model := 'jev-latest') AS d FROM tickets);
+FROM (SELECT decide_choice_distribution(text, 'Which team owns this?', ['billing','defect','other'], model := 'jev-latest') AS d FROM tickets);
 ```
 
 More on the calibration and performance measurements: [docs/CALIBRATION_PERF.md](../CALIBRATION_PERF.md).

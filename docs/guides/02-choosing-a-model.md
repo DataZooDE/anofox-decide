@@ -3,7 +3,8 @@
 Hosted and local models are profiles over one wire format (System One: `binary`, `choice` and `score`
 questions, probabilities back), so a model is just a registered id, and several can be used side by side
 in one session with no `SET` in between. All of them answer the same questions through the same
-functions, so you can swap the model without touching the query.
+functions, so you can swap the model without touching the query. What each provider supports, and what
+does not work yet: [Providers](../api/02-providers.md#overview).
 
 ## You have, do this
 
@@ -11,7 +12,7 @@ functions, so you can swap the model without touching the query.
 
 | You have | Do this |
 |---|---|
-| Nothing yet | Use the built-in `stub` to try the SQL: `model := 'stub'`. It returns constants (0.5, the first option, the middle level) so it can never pass for a real answer. |
+| Nothing yet | Use the built-in `stub` to try the SQL: `model := 'stub'` ([what it returns](01-getting-started.md#2-check-the-setup-and-pick-a-model)). |
 | A Liquid AI key ([D1](https://docs.liquid.ai/lfm/models/decision-models)) | `export LIQUID_API_KEY=...`, then register `d1:free` ([Getting Started](01-getting-started.md#2-check-the-setup-and-pick-a-model)). |
 | A Cloudflare account ([Clef](https://blog.cloudflare.com/clef-decision-models/) on Workers AI) | `export CLOUDFLARE_API_TOKEN=...` and `CLOUDFLARE_ACCOUNT_ID=...`, then `decide_register_model('clef', 'cloudflare')` ([Cloudflare Clef](../api/02-providers.md#cloudflare-clef)). |
 | A TypeSafe key (Jev) | `export TYPESAFE_API_KEY=...`, then `decide_register_model('jev-latest', 'typesafe')`. |
@@ -26,30 +27,8 @@ functions, so you can swap the model without touching the query.
 | Models | TypeSafe Jev, Liquid AI D1, Cloudflare Clef / Clef-flash | strands-decider, Kev, any System One server | Julia-1, Laya multilingual, Laya typed-decisions |
 | Your text goes to | the provider | your own server (`https://`, or `http://` on loopback) | nowhere: DuckDB scores it |
 | Setup | an API key and `SET anofox_decide_allow_remote = true` | start the server, register it, the same opt-in | `CALL decide_download('<model>')` once |
-| Speed | up to 8 requests at a time | 1 at a time for strands by default | CPU, or a GPU with a plugin ([GPU](../api/04-gpu.md)) |
+| Concurrency | several requests at once ([`anofox_decide_max_concurrency`](../api/05-settings.md)) | the same setting; strands gets one at a time by default | CPU, or a GPU with a plugin ([GPU](../api/04-gpu.md)) |
 | Reference | [Providers](../api/02-providers.md) | [Local servers](../api/02-providers.md#local-servers) | [Local models](../api/03-local-models.md) |
-
-## Status and scope
-
-What works today:
-
-| Provider | Models | Questions | Runs where |
-|---|---|---|---|
-| `stub` | deterministic placeholder (0.5 / first option / middle level) | `binary`, `choice`, `score` | in-process, for tests and demos |
-| `typesafe` | TypeSafe Jev (`jev-latest`) | `binary`, `choice`, `score` | hosted API; opt-in via `anofox_decide_allow_remote` |
-| `liquid` | Liquid AI D1 (`d1:free`) | `binary`, `choice`, `score` | hosted API; same opt-in |
-| `cloudflare` | Cloudflare Clef (`clef`), Clef-flash (`clef-flash`) | `binary`, `choice`, `score` | hosted API (Workers AI); same opt-in |
-| `systemone` | any System One compatible server, e.g. Kev | `binary`, `choice`, `score` | your endpoint (`https://`, or `http://` on loopback) |
-| `strands` | strands-decider 2B | `binary`, `choice`, `score` | local server on loopback, no key |
-| `local` | Julia-1, Laya multilingual, Laya typed-decisions | `binary`, `choice`, `score` | in-process on CPU, offline after setup |
-
-`score` is verified for parity with each model's upstream implementation and against the live services;
-unlike refund and routing it has not been scored for accuracy on labelled data.
-
-**Not yet:** images (Cloudflare Clef accepts them, our functions take text only); half-precision GPU
-execution (the GPU backends are fp32; see [GPU acceleration](../api/04-gpu.md)); the Von model (it needs
-order-invariant attention in the export); on macOS only Apple silicon is built (ONNX Runtime ships no Intel
-macOS archive after v1.23.2), and WebAssembly, musl and MinGW are not built.
 
 ## How the models compare
 
@@ -95,7 +74,7 @@ SET anofox_decide_allow_remote = true;
 SELECT decide_register_model('jev-latest', 'typesafe');
 SELECT decide_register_model('d1:free', 'liquid');
 
-CREATE TABLE runs AS
+CREATE OR REPLACE TABLE runs AS
 SELECT 'jev-latest' AS model, id, refund,
        decide_probability(text, 'A refund is requested.', model := 'jev-latest') AS p FROM tickets
 UNION ALL

@@ -410,7 +410,8 @@ vector<vector<float>> DecideLocalSession::Score(const DecideLocalBatch &batch, c
 		        std::to_string(dims.size() > 0 ? dims[0] : -1) + ", " + std::to_string(dims.size() > 1 ? dims[1] : -1) +
 		        "], expected [" + std::to_string(batch.batch) + ", " + std::to_string(batch.markers) + "]",
 		    "export the model again with tools/export_julia (see "
-		    "https://github.com/DataZooDE/anofox-decide#local-models) and register the .onnx file it writes"));
+		    "https://github.com/DataZooDE/anofox-decide/blob/main/docs/api/03-local-models.md#your-own-exported-model"
+		    ") and register the .onnx file it writes"));
 	}
 	const float *scores = out[0].GetTensorData<float>();
 	vector<vector<float>> rows;

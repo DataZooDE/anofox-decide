@@ -55,15 +55,10 @@ nothing to compile); otherwise the first query that meets a shape pays for it, m
 
 ## Measured
 
-The 200-ticket evaluation, two questions per ticket, wall time including session start and model
-load, each CPU number from the same machine as its GPU number, so they are not comparable across machines:
-Laya multilingual took 97.0 s on a CPU and 11.8 s on an RTX 4090 (CUDA); 51-81 s against 9 s on an RX 9070 XT
-(ROCm, 9 s with `batch_tokens = 8192`); 80.8 s against 17.4 s on an Apple M3 (MLX; 9.5 s at `batch_tokens = 16384`).
-The CPU baselines came from a slow shared pod and a heavily loaded machine, so these ratios are upper bounds, not
-what a quiet machine would show. The largest probability difference to the CPU
-was 4e-5 or less on every device and model, no routing or refund decision changed, and accuracy is identical.
-Not every model gains as much (Julia-1 on the M3: 24.1 s against 14.2 s unbatched), and the gains depend on the
-machine. All numbers: [docs/GPU_BACKENDS.md](../GPU_BACKENDS.md).
+On the 200-ticket evaluation Laya multilingual ran several times faster on an RTX 4090 (CUDA), an RX 9070 XT
+(ROCm) and an Apple M3 (MLX) than on the CPU of the same machine, with probabilities within 4e-5 of the CPU
+and no decision changed. The gains depend on the model and the machine; every number, and why the ratios are
+upper bounds: [docs/GPU_BACKENDS.md](../GPU_BACKENDS.md).
 
 **Not yet:** half precision, CUDA on Windows, CUDA 13.
 Source: [`plugins/cuda`](../../plugins/cuda/README.md), `plugins/migraphx`, `plugins/mlx`.
