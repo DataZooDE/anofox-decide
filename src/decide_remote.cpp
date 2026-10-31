@@ -1535,8 +1535,10 @@ DecideErrorInfo DecideFormatHttpError(const DecideRemoteConfig &cfg, int status,
 	} else if (cfg.provider == "liquid" && status == 404 && server.find("does not exist") != string::npos) {
 		// {"error": {"message": "The model `d1:free` does not exist.", "type": "not_found_error"}}
 		what = who + " does not know the model '" + cfg.model + "' (HTTP 404)" + srv;
+		// Registered under the wire name: register the right name. Under an own id: keep the id, fix the name.
 		fix = string("Liquid serves 'd1', 'd1.1' and 'd1-ultra' (d1:free was renamed to d1 in October 2026): ") +
-		      "SELECT decide_register_model('d1', 'liquid'); (use MAP {'model': 'd1.1'} to give the model another id)";
+		      (cfg.model == id ? string("SELECT decide_register_model('d1', 'liquid');")
+		                       : "SELECT decide_register_model('" + id + "', 'liquid', MAP {'model': 'd1'});");
 	} else if (cfg.wire == DecideWire::OPENAI_DECISIONS && status == 404 &&
 	           server.find("does not exist or you do not have access") != string::npos) {
 		// {"error": {"message": "The model `x` does not exist or you do not have access to it.", "code":
