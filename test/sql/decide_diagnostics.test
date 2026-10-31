@@ -38,19 +38,19 @@ stub	true	built-in test model: returns constants (probability 0.5, first option)
 # --- A remote model without the opt-in ---------------------------------------------------
 
 query I
-SELECT decide_register_model('d1:free', 'liquid')
+SELECT decide_register_model('d1', 'liquid')
 ----
 1
 
 query TT
-SELECT ready, hint FROM decide_models() WHERE model = 'd1:free'
+SELECT ready, hint FROM decide_models() WHERE model = 'd1'
 ----
 false	remote calls are off: your text would be sent to https://api.liquid.ai/decisions/v1/systemone. Fix: SET anofox_decide_allow_remote = true;
 
 query TTT
-SELECT item, status, fix FROM decide_doctor() WHERE item = 'model ''d1:free'''
+SELECT item, status, fix FROM decide_doctor() WHERE item = 'model ''d1'''
 ----
-model 'd1:free'	fail	SET anofox_decide_allow_remote = true;
+model 'd1'	fail	SET anofox_decide_allow_remote = true;
 
 query TT
 SELECT item, status FROM decide_doctor() WHERE item = 'remote calls'
@@ -62,7 +62,7 @@ SET anofox_decide_allow_remote = true
 
 # With the opt-in on and no key: the readiness check reports the key problem, not a stack of errors.
 query TT
-SELECT ready, hint LIKE '%no API key for Liquid AI at api.liquid.ai%' FROM decide_models() WHERE model = 'd1:free'
+SELECT ready, hint LIKE '%no API key for Liquid AI at api.liquid.ai%' FROM decide_models() WHERE model = 'd1'
 ----
 false	true
 

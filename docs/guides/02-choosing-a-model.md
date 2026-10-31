@@ -13,7 +13,7 @@ does not work yet: [Providers](../api/02-providers.md#overview).
 | You have | Do this |
 |---|---|
 | Nothing yet | Use the built-in `stub` to try the SQL: `model := 'stub'` ([what it returns](01-getting-started.md#2-check-the-setup-and-pick-a-model)). |
-| A Liquid AI key ([D1](https://docs.liquid.ai/lfm/models/decision-models)) | `export LIQUID_API_KEY=...`, then register `d1:free` ([Getting Started](01-getting-started.md#2-check-the-setup-and-pick-a-model)). |
+| A Liquid AI key ([D1](https://docs.liquid.ai/lfm/models/decision-models)) | `export LIQUID_API_KEY=...`, then register `d1` ([Getting Started](01-getting-started.md#2-check-the-setup-and-pick-a-model)). |
 | A Cloudflare account ([Clef](https://blog.cloudflare.com/clef-decision-models/) on Workers AI) | `export CLOUDFLARE_API_TOKEN=...` and `CLOUDFLARE_ACCOUNT_ID=...`, then `decide_register_model('clef', 'cloudflare')` ([Cloudflare Clef](../api/02-providers.md#cloudflare-clef)). |
 | A TypeSafe key (Jev) | `export TYPESAFE_API_KEY=...`, then `decide_register_model('jev-latest', 'typesafe')`. |
 | An OpenAI key ([Decisions](https://developers.openai.com/api/docs/guides/decisions)) | `export OPENAI_API_KEY=...`, then `decide_register_model('gpt-6-luna', 'openai')` ([OpenAI Decisions](../api/02-providers.md#openai-decisions)). |
@@ -78,14 +78,14 @@ Several models can be registered side by side and named per call, and the metric
 ```sql
 SET anofox_decide_allow_remote = true;
 SELECT decide_register_model('jev-latest', 'typesafe');
-SELECT decide_register_model('d1:free', 'liquid');
+SELECT decide_register_model('d1', 'liquid');
 
 CREATE OR REPLACE TABLE runs AS
 SELECT 'jev-latest' AS model, id, refund,
        decide_probability(text, 'A refund is requested.', model := 'jev-latest') AS p FROM tickets
 UNION ALL
-SELECT 'd1:free', id, refund,
-       decide_probability(text, 'A refund is requested.', model := 'd1:free') FROM tickets;
+SELECT 'd1', id, refund,
+       decide_probability(text, 'A refund is requested.', model := 'd1') FROM tickets;
 
 SELECT model,
        decide_accuracy(p, refund)    AS accuracy,

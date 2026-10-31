@@ -21,6 +21,8 @@ All notable changes to `anofox_decide` are documented here. The format follows
 - Usage tokens (cached and uncached input) are not recorded yet.
 
 ### Fixed
+- **Liquid D1**: Liquid renamed `d1:free` to `d1` (and added `d1.1` and `d1-ultra`); `d1:free` now answers HTTP 404.
+  Every example, page and test uses `d1`. A Liquid 404 names the current models and the registration that fixes it.
 - A server message that contains the API key is no longer replaced as a whole: the key is cut out of every
   response body before anything parses, quotes or truncates it, so neither the key nor a prefix of it can reach an
   error message.

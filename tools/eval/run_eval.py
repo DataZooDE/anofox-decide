@@ -83,7 +83,7 @@ def models(env, kev_url, strands_url):
         return missing
 
     return {
-        "d1": ("Liquid D1", "SELECT decide_register_model('d1:free', 'liquid');", "d1:free", ["LIQUID_API_KEY"]),
+        "d1": ("Liquid D1", "SELECT decide_register_model('d1', 'liquid');", "d1", ["LIQUID_API_KEY"]),
         "luna": ("OpenAI gpt-6-luna", "SELECT decide_register_model('gpt-6-luna', 'openai');", "gpt-6-luna",
                  ["OPENAI_API_KEY"]),
         "clef": ("Cloudflare Clef", "SELECT decide_register_model('clef', 'cloudflare');", "clef",

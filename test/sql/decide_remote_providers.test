@@ -16,12 +16,12 @@ SELECT decide_register_model('jev-latest', 'typesafe')
 1
 
 query I
-SELECT decide_register_model('d1:free', 'liquid')
+SELECT decide_register_model('d1', 'liquid')
 ----
 1
 
 query TT
-SELECT provider, mode FROM decide_models() WHERE model IN ('jev-latest', 'd1:free') ORDER BY model
+SELECT provider, mode FROM decide_models() WHERE model IN ('jev-latest', 'd1') ORDER BY model
 ----
 liquid	remote
 typesafe	remote
@@ -39,7 +39,7 @@ SELECT decide_register_model('kev-latest', 'systemone', MAP {'endpoint': 'http:/
 
 # Options can pick a different wire model / path / endpoint for a known provider.
 query I
-SELECT decide_register_model('d1-alias', 'liquid', MAP {'model': 'd1:free', 'path': '/decisions/v1/systemone'})
+SELECT decide_register_model('d1-alias', 'liquid', MAP {'model': 'd1', 'path': '/decisions/v1/systemone'})
 ----
 1
 
@@ -73,9 +73,9 @@ SELECT decide_register_model('nope', 'anthropic')
 
 # Calls stay behind the explicit allow_remote opt-in.
 statement error
-SELECT decide_probability('x', 'y', model := 'd1:free')
+SELECT decide_probability('x', 'y', model := 'd1')
 ----
-<REGEX>:.*model 'd1:free' is a Liquid AI model: calling it sends your text to https://api.liquid.ai, and remote calls are off.*
+<REGEX>:.*model 'd1' is a Liquid AI model: calling it sends your text to https://api.liquid.ai, and remote calls are off.*
 
 # With no key anywhere the error names the provider's own variable and the
 # secret recipe (hermetic: env LIQUID_API_KEY is unset in CI).
@@ -83,7 +83,7 @@ statement ok
 SET anofox_decide_allow_remote=true
 
 statement error
-SELECT decide_probability('x', 'y', model := 'd1:free')
+SELECT decide_probability('x', 'y', model := 'd1')
 ----
 <REGEX>:.*decide_probability: no API key for Liquid AI at api.liquid.ai\. Fix: provide a key: \(1\) export LIQUID_API_KEY=<key>.*CREATE SECRET.*SCOPE 'api.liquid.ai'.*
 

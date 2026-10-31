@@ -18,7 +18,7 @@ Every provider answers all three question kinds (`binary`, `choice`, `score`).
 | Provider | Service and model ids | Runs | Default endpoint | Key |
 |---|---|---|---|---|
 | `typesafe` | TypeSafe Jev (`jev-latest`) | hosted API; opt-in via `anofox_decide_allow_remote` | `https://api.typesafe.ai` | `TYPESAFE_API_KEY` |
-| `liquid` | Liquid AI D1 (`d1:free`) | hosted API; same opt-in | `https://api.liquid.ai` | `LIQUID_API_KEY` |
+| `liquid` | Liquid AI D1 (`d1`) | hosted API; same opt-in | `https://api.liquid.ai` | `LIQUID_API_KEY` |
 | `cloudflare` | Cloudflare Clef (`clef`), Clef-flash (`clef-flash`) | hosted API (Workers AI); same opt-in | `https://api.cloudflare.com` | `CLOUDFLARE_API_TOKEN` |
 | `openai` | OpenAI Decisions (`gpt-6-luna`) | hosted API; same opt-in | `https://api.openai.com` | `OPENAI_API_KEY` |
 | `strands` | [strands-decider](https://github.com/strands-labs/strands-decider) 2B | local server on loopback; same opt-in | `http://127.0.0.1:8000` | none |
@@ -43,10 +43,10 @@ them in each new process), then name it per call or make it the default with `SE
 ```sql
 SET anofox_decide_allow_remote = true;                       -- hosted and server models need the opt-in
 SELECT decide_register_model('jev-latest', 'typesafe');
-SELECT decide_register_model('d1:free', 'liquid');
+SELECT decide_register_model('d1', 'liquid');
 SELECT decide_register_model('clef', 'cloudflare');             -- Cloudflare Clef; 'clef-flash' is the smaller one
 SELECT decide_probability('...', '...', model := 'jev-latest');
-SELECT decide_probability('...', '...', model := 'd1:free');
+SELECT decide_probability('...', '...', model := 'd1');
 ```
 
 Per-model options go in a `MAP` (keys `endpoint`, `path`, `model`, `key_env`, `criteria`, `calibration`, `account_id`,
@@ -56,7 +56,7 @@ server, a different model name on the wire, an explicit key variable for a custo
 
 ```sql
 SELECT decide_register_model('kev-latest', 'systemone', MAP {'endpoint': 'http://127.0.0.1:8009'});
-SELECT decide_register_model('d1', 'liquid', MAP {'model': 'd1:free'});
+SELECT decide_register_model('liquid-d1', 'liquid', MAP {'model': 'd1.1'});   -- another model name on the wire
 SELECT decide_register_model('mine', 'systemone', MAP {'endpoint': 'https://llm.internal', 'key_env': 'MY_KEY_VAR'});
 ```
 
@@ -96,7 +96,7 @@ or the env var) and `anofox_decide_endpoint`; other providers take a per-model `
 | | |
 |---|---|
 | Provider | `liquid` |
-| Model id | `d1:free` ([D1](https://docs.liquid.ai/lfm/models/decision-models)) |
+| Model ids | `d1`, `d1.1`, `d1-ultra` ([D1](https://docs.liquid.ai/lfm/models/decision-models)) |
 | Default endpoint | `https://api.liquid.ai` |
 | Key | `LIQUID_API_KEY`, or a secret scoped to `api.liquid.ai` |
 
@@ -105,11 +105,12 @@ export LIQUID_API_KEY=...            # before starting DuckDB
 ```
 ```sql
 SET anofox_decide_allow_remote = true;
-SELECT decide_register_model('d1:free', 'liquid');               -- the id is the model name on the wire
-SELECT decide_register_model('d1', 'liquid', MAP {'model': 'd1:free'});   -- or a shorter id
+SELECT decide_register_model('d1', 'liquid');               -- the id is the model name on the wire
+SELECT decide_register_model('liquid-d1', 'liquid', MAP {'model': 'd1'});   -- or another id
 ```
 
-At the 0.5 cut-off D1 over-predicts refunds; a fitted
+Liquid renamed `d1:free` to `d1` in October 2026; the old id now answers HTTP 404, and the message names the
+current ones. The evaluation numbers were measured with `d1:free`. At the 0.5 cut-off D1 over-predicts refunds; a fitted
 [calibration](../guides/03-evaluate-and-calibrate.md#calibration) corrects the cut-off.
 
 ### Cloudflare Clef

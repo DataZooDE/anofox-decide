@@ -15,7 +15,7 @@ SELECT * FROM decide_doctor();
 
 -- REAL MODEL: register one, allow remote calls, and name it instead of 'stub' below.
 --   SET anofox_decide_allow_remote = true;                  -- remote models send your text to the provider
---   SELECT decide_register_model('d1:free', 'liquid');      -- key: export LIQUID_API_KEY=... first
+--   SELECT decide_register_model('d1', 'liquid');      -- key: export LIQUID_API_KEY=... first
 SET anofox_decide_model = 'stub';
 
 -- Binary: how likely is it that a statement holds? (0 to 1)

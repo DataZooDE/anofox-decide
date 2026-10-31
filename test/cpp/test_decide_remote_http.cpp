@@ -111,12 +111,13 @@ TEST_CASE("remote 401: names the service, the server's message and where the key
 	REQUIRE_THAT(msg, !Contains("invalid_api_key"));
 }
 
-TEST_CASE("remote 404: an unknown model points at the model option", "[anofox_decide][remote][http]") {
+TEST_CASE("remote 404: an unknown Liquid model names the current models and keeps the id", "[anofox_decide][remote][http]") {
 	LoopbackServer server({404, R"({"error":{"message":"The model `d1-typo` does not exist.","type":"not_found_error","param":null,"code":null}})"});
 	auto msg = Run(Cfg(server.port));
-	REQUIRE_THAT(msg, Contains("does not know the model 'd1-typo' or the path '/decisions/v1/systemone' (HTTP 404)"));
+	REQUIRE_THAT(msg, Contains("does not know the model 'd1-typo' (HTTP 404)"));
 	REQUIRE_THAT(msg, Contains("The model `d1-typo` does not exist."));
-	REQUIRE_THAT(msg, Contains("SELECT decide_register_model('my-d1', 'liquid', MAP {'model': '<provider model name>'})"));
+	REQUIRE_THAT(msg, Contains("Liquid serves 'd1', 'd1.1' and 'd1-ultra'"));
+	REQUIRE_THAT(msg, Contains("SELECT decide_register_model('my-d1', 'liquid', MAP {'model': 'd1'})"));
 	REQUIRE(server.hits == 1);
 }
 
@@ -199,7 +200,7 @@ TEST_CASE("remote connection refused on loopback: start the server, and do not r
 }
 
 TEST_CASE("remote success path still parses the answer", "[anofox_decide][remote][http]") {
-	LoopbackServer server({200, R"({"model":"d1:free","answers":{"q":{"type":"noul","noul":0.9983}},"usage":{"input_tokens":160,"output_tokens":0}})"});
+	LoopbackServer server({200, R"({"model":"d1","answers":{"q":{"type":"noul","noul":0.9983}},"usage":{"input_tokens":160,"output_tokens":0}})"});
 	auto cfg = Cfg(server.port);
 	auto answers = DecideRemoteEvaluateOverHttp(cfg, "I want my money back.", {Binary()});
 	REQUIRE(answers.size() == 1);

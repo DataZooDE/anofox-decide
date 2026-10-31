@@ -56,9 +56,9 @@ the model with it:
 
 ```sql
 -- 1. fit on a labelled sample of that model's raw probabilities
-SELECT decide_fit_calibration(p, refund) FROM runs WHERE model = 'd1:free';   -- e.g. 'platt:1.92,-0.72'
+SELECT decide_fit_calibration(p, refund) FROM runs WHERE model = 'd1';   -- e.g. 'platt:1.92,-0.72'
 -- 2. register the model with the fitted spec (any provider; local models take the MAP as 6th argument)
-SELECT decide_register_model('d1-cal', 'liquid', MAP {'model': 'd1:free', 'calibration': 'platt:1.92,-0.72'});
+SELECT decide_register_model('d1-cal', 'liquid', MAP {'model': 'd1', 'calibration': 'platt:1.92,-0.72'});
 SELECT decide_register_model('laya-cal', 'local', '/m/laya.onnx', '/m/tokenizer.json', 'laya', MAP {'calibration': 'platt:1.1,-0.3'});
 -- 3. every yes/no probability from that model (decide_probability, decide_decision, decide_many, decide_table) is calibrated
 SELECT calibration FROM decide_models();                                   -- the spec in use, NULL when none

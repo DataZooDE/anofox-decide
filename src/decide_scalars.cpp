@@ -415,7 +415,7 @@ void DecideRegisterModelFun(DataChunk &args, ExpressionState &state, Vector &res
 			if (args.data[1].GetValue(i).IsNull() || map_v.IsNull()) {
 				throw InvalidInputException(DecideMsg("decide_register_model", "the provider or the options MAP is NULL",
 				                                      "pass both, e.g. SELECT decide_register_model('m', 'liquid', "
-				                                      "MAP {'model': 'd1:free'});"));
+				                                      "MAP {'model': 'd1'});"));
 			}
 			for (auto &entry : MapValue::GetChildren(map_v)) {
 				auto &kv = StructValue::GetChildren(entry);

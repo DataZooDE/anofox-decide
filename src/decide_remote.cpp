@@ -137,7 +137,7 @@ void SplitEndpoint(const string &endpoint, string &host, int &port, bool &ssl, c
 }
 
 // Remote provider profiles. Most speak System One and differ only in the endpoint, path and key variable.
-// Liquid D1 verified live against POST https://api.liquid.ai/decisions/v1/systemone (model "d1:free").
+// Liquid D1 verified live against POST https://api.liquid.ai/decisions/v1/systemone (model "d1").
 constexpr DecideWire S1 = DecideWire::SYSTEM_ONE;
 const DecideRemoteProfile kRemoteProfiles[] = {
     {"typesafe", "TypeSafe", "https://api.typesafe.ai", "/v1/systemone", "TYPESAFE_API_KEY", true, false, 8, 0, S1},
@@ -1532,6 +1532,13 @@ DecideErrorInfo DecideFormatHttpError(const DecideRemoteConfig &cfg, int status,
 		      "': check that the token (" + (cfg.key_source.empty() ? string("CLOUDFLARE_API_TOKEN") : cfg.key_source) +
 		      ") has Workers AI - Read and Edit permission for that account and that the account id is right; replace "
 		      "the token with CREATE OR REPLACE SECRET (TYPE anofox_decide, API_KEY '<token>', SCOPE '" + cfg.host + "');";
+	} else if (cfg.provider == "liquid" && status == 404 && server.find("does not exist") != string::npos) {
+		// {"error": {"message": "The model `d1:free` does not exist.", "type": "not_found_error"}}
+		what = who + " does not know the model '" + cfg.model + "' (HTTP 404)" + srv;
+		// Registered under the wire name: register the right name. Under an own id: keep the id, fix the name.
+		fix = string("Liquid serves 'd1', 'd1.1' and 'd1-ultra' (d1:free was renamed to d1 in October 2026): ") +
+		      (cfg.model == id ? string("SELECT decide_register_model('d1', 'liquid');")
+		                       : "SELECT decide_register_model('" + id + "', 'liquid', MAP {'model': 'd1'});");
 	} else if (cfg.wire == DecideWire::OPENAI_DECISIONS && status == 404 &&
 	           server.find("does not exist or you do not have access") != string::npos) {
 		// {"error": {"message": "The model `x` does not exist or you do not have access to it.", "code":
