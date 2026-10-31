@@ -71,10 +71,24 @@ SELECT (decide_probability('{"ticket": "The package arrived crushed and the scre
 ----
 1
 
-# A labelled chunk scored together (concurrently): the model must discriminate, not merely return numbers.
+# A labelled chunk scored together (concurrently): the model must discriminate, not merely return numbers. A refusal
+# (NULL) is scored as the wrong answer: decide_accuracy alone would skip it and pass more easily.
 query I
-SELECT decide_accuracy(decide_probability(text, 'A refund is requested.', model := 'gpt-6-luna'), refund, 0.5) >= 0.85
-FROM read_csv('test/fixtures/support_tickets.csv')
+SELECT decide_accuracy(coalesce(p, CASE WHEN refund THEN 0.0 ELSE 1.0 END), refund, 0.5) >= 0.85 FROM (
+  SELECT refund, decide_probability(text, 'A refund is requested.', model := 'gpt-6-luna') AS p
+  FROM read_csv('test/fixtures/support_tickets.csv')
+)
+----
+true
+
+# A ticket the model refused in the 200-ticket evaluation (reproducibly, 31 Oct 2026): whether it refuses or not,
+# a refusal is a NULL probability with kind 'refusal', never an error.
+query I
+SELECT (kind = 'refusal' AND probability IS NULL) OR (kind = 'binary' AND probability BETWEEN 0 AND 1)
+FROM decide_table('where do I get a reimbursement?',
+  '[{"id":"refund","kind":"binary","instruction":"A refund is requested."},{"id":"routing","kind":"choice","instruction":"Which team should handle this request?","options":["billing","orders","account","other"]}]',
+  model := 'gpt-6-luna')
+WHERE question_id = 'refund'
 ----
 true
 

@@ -580,12 +580,15 @@ string DecideBuildOpenAIRequestJson(const string &state, const string &model, co
 	}
 	// Structured state (to_json(row), a JSON column) travels as an input_json part; anything else is text.
 	// Only an object or an array counts: a bare number or string is text.
-	YyjsonDoc state_doc(mode == "text" ? nullptr : yyjson_read(state.c_str(), state.size(), 0));
+	// A UTF-8 byte order mark (files exported by some tools) does not make JSON text.
+	const size_t bom = state.compare(0, 3, "\xEF\xBB\xBF") == 0 ? 3 : 0;
+	YyjsonDoc state_doc(mode == "text" ? nullptr : yyjson_read(state.c_str() + bom, state.size() - bom, 0));
 	auto state_root = state_doc.doc ? yyjson_doc_get_root(state_doc.doc) : nullptr;
 	const bool structured = state_root && (yyjson_is_obj(state_root) || yyjson_is_arr(state_root));
 	if (mode == "json" && !structured) {
+		const char *found = !state_doc.doc ? "text that does not parse as JSON" : "a JSON value that is not an object or an array";
 		throw InvalidInputException(DecideMsg(
-		    "decide", "the state '" + Truncate(CollapseWhitespace(state), 60) + "' is not JSON (an object or an array)",
+		    "decide", string("the state is not JSON (an object or an array): it is ") + found,
 		    "pass structured state such as to_json({ticket: body, total: amount}), or register the model with MAP "
 		    "{'input': 'auto'} to send text as text"));
 	}
@@ -739,11 +742,16 @@ vector<DecideAnswer> DecideParseOpenAIResponseJson(const string &body, const vec
 			auto label_v = yyjson_is_obj(entry) ? yyjson_obj_get(entry, "label") : nullptr;
 			size_t at = n;
 			string named;
-			if (q.kind == "score" && value_v && yyjson_is_int(value_v)) {
-				// Levels are named by their 0-based index; the label is informational.
-				const int64_t level = yyjson_get_sint(value_v);
-				named = std::to_string(level);
-				at = (level >= 0 && (size_t)level < n) ? (size_t)level : n;
+			if (q.kind == "score" && IsFiniteNum(value_v)) {
+				// Levels are named by their 0-based index (1 or 1.0); a label, when sent, must agree with it.
+				const double level = yyjson_get_num(value_v);
+				named = std::to_string((long long)level);
+				const bool index = level >= 0.0 && level == std::floor(level) && level < (double)n;
+				at = index ? (size_t)level : n;
+				if (at < n && label_v && yyjson_is_str(label_v) && ValStr(label_v) != q.options[at]) {
+					bad(q.id, "level " + named + " is labelled '" + ValStr(label_v) + "', but level " + named + " is '" +
+					               q.options[at] + "'");
+				}
 			} else {
 				auto name_v = (value_v && yyjson_is_str(value_v)) ? value_v : label_v;
 				named = (name_v && yyjson_is_str(name_v)) ? ValStr(name_v) : "";
@@ -771,7 +779,7 @@ vector<DecideAnswer> DecideParseOpenAIResponseJson(const string &body, const vec
 				if (q.kind == "score") {
 					bad(q.id, "no probability for level '" + q.options[i] + "'");
 				}
-				continue; // a choice answer may leave out options it gives no weight
+				p[i] = 0.0; // a choice answer may leave out options it gives no weight: every option is listed
 			}
 			sum += p[i];
 			derived += (double)i * p[i];
@@ -802,8 +810,9 @@ vector<DecideAnswer> DecideParseOpenAIResponseJson(const string &body, const vec
 			auto score_v = yyjson_obj_get(a, "score");
 			if (IsFiniteNum(score_v)) {
 				const double server = yyjson_get_num(score_v);
-				// The score is the probability-weighted level index; rounded probabilities move it a little.
-				const double tolerance = 0.01 + ProbSumTolerance(n) * (double)(n - 1);
+				// The score is the probability-weighted level index. Live answers match it exactly at 3 and 10
+				// levels; the tolerance leaves room for probabilities rounded to 2 decimals.
+				const double tolerance = 0.02 + 0.005 * (double)n;
 				if (std::fabs(server - derived) > tolerance) {
 					bad(q.id, "the score " + std::to_string(server) + " does not match its level probabilities (they give " +
 					               std::to_string(derived) + ")");
@@ -1464,11 +1473,12 @@ string DecideExtractServerMessage(const string &body, const string &api_key) {
 			}
 		}
 	}
-	msg = Truncate(CollapseWhitespace(msg), 240);
+	msg = CollapseWhitespace(msg);
+	// Before truncating: a key cut at the limit would otherwise leave a prefix behind.
 	if (!api_key.empty() && msg.find(api_key) != string::npos) {
 		return "<redacted>";
 	}
-	return msg;
+	return Truncate(msg, 240);
 }
 
 static string HostPort(const DecideRemoteConfig &cfg) {
@@ -2323,6 +2333,11 @@ vector<DecideAnswer> DecideRemoteEvaluateWithTransport(const DecideRemoteConfig 
 		// loopback port at once but lets the SYN time out, so report both the same way.
 		if (!last.transport_ok && last.error_kind == "timeout" && DecideHostIsLoopback(cfg.host)) {
 			last.error_kind = "connection";
+		}
+		// Nothing derived from a response (answer names, quoted text, server messages) may carry the key: it is
+		// removed from the body before the body is parsed, quoted or truncated anywhere.
+		if (last.transport_ok && !cfg.api_key.empty()) {
+			ReplaceAll(last.body, cfg.api_key, "<redacted>");
 		}
 		if (last.transport_ok && last.status == 200) {
 			const string &id = cfg.registered_id.empty() ? cfg.model : cfg.registered_id;

@@ -239,3 +239,11 @@ statement error
 SELECT decide_probability('x', 'y', model := 'gpt-6-luna')
 ----
 <REGEX>:.*no API key for OpenAI at api\.openai\.com.*export OPENAI_API_KEY.*
+
+# decide_models shows the OpenAI request options: the input mode and the prompt_cache_key (the model id by default).
+query TTT
+SELECT model, input, prompt_cache_key FROM decide_models() WHERE model IN ('gpt-6-luna', 'luna-json', 'clef') ORDER BY model
+----
+clef	NULL	NULL
+gpt-6-luna	auto	gpt-6-luna
+luna-json	json	tickets-v1
