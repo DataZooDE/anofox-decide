@@ -8,6 +8,7 @@
 #include "decide_remote.hpp"
 
 #include "duckdb.hpp"
+#include "duckdb_compat.hpp"
 
 #define CPPHTTPLIB_OPENSSL_SUPPORT
 #include "httplib.hpp"
@@ -466,7 +467,7 @@ TEST_CASE("openai models through SQL: registration options and refusals as NULL"
 	REQUIRE_THAT(criteria->GetError(), Contains("option 'criteria' does not apply to provider 'openai'"));
 	auto endpoint = con.Query("SELECT endpoint FROM decide_models() WHERE model = 'gpt-6-luna'");
 	REQUIRE_FALSE(endpoint->HasError());
-	REQUIRE(endpoint->GetValue(0, 0).ToString() == "https://api.openai.com/v1/decisions");
+	REQUIRE(duckdb_compat::ResultValue(*endpoint, 0, 0).ToString() == "https://api.openai.com/v1/decisions");
 }
 
 namespace {
@@ -522,44 +523,44 @@ TEST_CASE("openai refusals reach SQL as NULL and kind 'refusal'", "[anofox_decid
 
 	auto p = con.Query("SELECT decide_probability('text', 'A refund is requested.', model := 'luna')");
 	REQUIRE_FALSE(p->HasError());
-	REQUIRE(p->GetValue(0, 0).IsNull());
+	REQUIRE(duckdb_compat::ResultValue(*p, 0, 0).IsNull());
 	REQUIRE_THAT(server.LastBody(), Contains(R"("type":"predicate")"));
 
 	auto c = con.Query("SELECT decide_choice('text', 'Which team?', ['billing', 'other'], model := 'luna')");
 	REQUIRE_FALSE(c->HasError());
-	REQUIRE(c->GetValue(0, 0).IsNull());
+	REQUIRE(duckdb_compat::ResultValue(*c, 0, 0).IsNull());
 
 	auto d = con.Query("SELECT decide_decision('text', 'A refund is requested.', 0.5, model := 'luna')");
 	REQUIRE_FALSE(d->HasError());
-	REQUIRE(d->GetValue(0, 0).IsNull());
+	REQUIRE(duckdb_compat::ResultValue(*d, 0, 0).IsNull());
 
 	auto s = con.Query("SELECT decide_score('text', 'How bad?', ['low', 'high'], model := 'luna')");
 	REQUIRE_FALSE(s->HasError());
-	REQUIRE(s->GetValue(0, 0).IsNull());
+	REQUIRE(duckdb_compat::ResultValue(*s, 0, 0).IsNull());
 
 	auto m = con.Query("SELECT decide_choice_distribution('text', 'Which team?', ['billing', 'other'], model := 'luna')");
 	REQUIRE_FALSE(m->HasError());
-	REQUIRE(m->GetValue(0, 0).IsNull());
+	REQUIRE(duckdb_compat::ResultValue(*m, 0, 0).IsNull());
 
 	auto t = con.Query("SELECT a.kind, a.probability IS NULL FROM (SELECT unnest(decide_answers('text', "
 	                   "'[{\"id\":\"q\",\"kind\":\"binary\",\"instruction\":\"A refund is requested.\"}]', "
 	                   "model := 'luna')) AS a)");
 	REQUIRE_FALSE(t->HasError());
-	REQUIRE(t->GetValue(0, 0).ToString() == "refusal");
-	REQUIRE(t->GetValue(1, 0).GetValue<bool>());
+	REQUIRE(duckdb_compat::ResultValue(*t, 0, 0).ToString() == "refusal");
+	REQUIRE(duckdb_compat::ResultValue(*t, 1, 0).GetValue<bool>());
 
 	auto table = con.Query("SELECT kind, probability IS NULL, choice IS NULL, score IS NULL, distribution IS NULL FROM "
 	                       "decide_table('text', '[{\"id\":\"q\",\"kind\":\"choice\",\"instruction\":\"Which?\","
 	                       "\"options\":[\"a\",\"b\"]}]', model := 'luna')");
 	REQUIRE_FALSE(table->HasError());
-	REQUIRE(table->GetValue(0, 0).ToString() == "refusal");
+	REQUIRE(duckdb_compat::ResultValue(*table, 0, 0).ToString() == "refusal");
 	for (idx_t c = 1; c < 5; c++) {
-		REQUIRE(table->GetValue(c, 0).GetValue<bool>());
+		REQUIRE(duckdb_compat::ResultValue(*table, c, 0).GetValue<bool>());
 	}
 	auto many = con.Query("SELECT decide_many('text', '[{\"id\":\"q\",\"kind\":\"binary\",\"instruction\":\"x\"}]', "
 	                      "model := 'luna')");
 	REQUIRE_FALSE(many->HasError());
-	REQUIRE_THAT(many->GetValue(0, 0).ToString(), Contains(R"({"id":"q","kind":"refusal"})"));
+	REQUIRE_THAT(duckdb_compat::ResultValue(*many, 0, 0).ToString(), Contains(R"({"id":"q","kind":"refusal"})"));
 
 	// A calibrated model passes a refusal through untouched.
 	REQUIRE_FALSE(con.Query("SELECT decide_register_model('luna-cal', 'openai', MAP {'endpoint': 'http://127.0.0.1:" +
@@ -568,7 +569,7 @@ TEST_CASE("openai refusals reach SQL as NULL and kind 'refusal'", "[anofox_decid
 	                  ->HasError());
 	auto cal = con.Query("SELECT decide_probability('text', 'x', model := 'luna-cal')");
 	REQUIRE_FALSE(cal->HasError());
-	REQUIRE(cal->GetValue(0, 0).IsNull());
+	REQUIRE(duckdb_compat::ResultValue(*cal, 0, 0).IsNull());
 }
 
 TEST_CASE("openai through SQL: input json, the 400-question cap, decide_models and the doctor", "[anofox_decide][openai]") {
@@ -586,7 +587,7 @@ TEST_CASE("openai through SQL: input json, the 400-question cap, decide_models a
 
 	auto structured = con.Query(R"(SELECT decide_probability('{"ticket": "crushed box"}', 'x', model := 'luna-json'))");
 	REQUIRE_FALSE(structured->HasError());
-	REQUIRE(structured->GetValue(0, 0).GetValue<double>() == Approx(0.7));
+	REQUIRE(duckdb_compat::ResultValue(*structured, 0, 0).GetValue<double>() == Approx(0.7));
 	REQUIRE_THAT(server.LastBody(), Contains(R"("type":"input_json","data":{"ticket":"crushed box"})"));
 	REQUIRE_THAT(server.LastBody(), !Contains("prompt_cache_key"));
 	auto text = con.Query("SELECT decide_probability('plain words', 'x', model := 'luna-json')");
@@ -615,24 +616,24 @@ TEST_CASE("openai through SQL: input json, the 400-question cap, decide_models a
 	                        "('openai', 'stub') ORDER BY model");
 	REQUIRE_FALSE(models->HasError());
 	REQUIRE(models->RowCount() == 4);
-	REQUIRE(models->GetValue(0, 0).ToString() == "gpt-6-luna");
-	REQUIRE(models->GetValue(1, 0).ToString() == "auto");
-	REQUIRE(models->GetValue(2, 0).ToString() == "gpt-6-luna");
-	REQUIRE(models->GetValue(0, 1).ToString() == "luna-json");
-	REQUIRE(models->GetValue(1, 1).ToString() == "json");
-	REQUIRE(models->GetValue(2, 1).ToString() == "");
-	REQUIRE(models->GetValue(1, 2).ToString() == "text");
-	REQUIRE(models->GetValue(2, 2).ToString() == "tickets-v1");
-	REQUIRE(models->GetValue(0, 3).ToString() == "stub");
-	REQUIRE(models->GetValue(1, 3).IsNull());
-	REQUIRE(models->GetValue(2, 3).IsNull());
+	REQUIRE(duckdb_compat::ResultValue(*models, 0, 0).ToString() == "gpt-6-luna");
+	REQUIRE(duckdb_compat::ResultValue(*models, 1, 0).ToString() == "auto");
+	REQUIRE(duckdb_compat::ResultValue(*models, 2, 0).ToString() == "gpt-6-luna");
+	REQUIRE(duckdb_compat::ResultValue(*models, 0, 1).ToString() == "luna-json");
+	REQUIRE(duckdb_compat::ResultValue(*models, 1, 1).ToString() == "json");
+	REQUIRE(duckdb_compat::ResultValue(*models, 2, 1).ToString() == "");
+	REQUIRE(duckdb_compat::ResultValue(*models, 1, 2).ToString() == "text");
+	REQUIRE(duckdb_compat::ResultValue(*models, 2, 2).ToString() == "tickets-v1");
+	REQUIRE(duckdb_compat::ResultValue(*models, 0, 3).ToString() == "stub");
+	REQUIRE(duckdb_compat::ResultValue(*models, 1, 3).IsNull());
+	REQUIRE(duckdb_compat::ResultValue(*models, 2, 3).IsNull());
 
 	// The doctor names the missing OPENAI_API_KEY for the model that relies on it.
 	auto doctor = con.Query("SELECT status, concat_ws(' ', detail, fix) FROM decide_doctor() WHERE item = 'model ''gpt-6-luna'''");
 	REQUIRE_FALSE(doctor->HasError());
 	REQUIRE(doctor->RowCount() >= 1);
-	REQUIRE(doctor->GetValue(0, 0).ToString() == "fail");
-	REQUIRE_THAT(doctor->GetValue(1, 0).ToString(), Contains("OPENAI_API_KEY"));
+	REQUIRE(duckdb_compat::ResultValue(*doctor, 0, 0).ToString() == "fail");
+	REQUIRE_THAT(duckdb_compat::ResultValue(*doctor, 1, 0).ToString(), Contains("OPENAI_API_KEY"));
 }
 
 TEST_CASE("openai: recorded live answers and errors", "[anofox_decide][openai]") {
