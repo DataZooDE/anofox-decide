@@ -6,6 +6,8 @@ All notable changes to `anofox_decide` are documented here. The format follows
 
 ## [Unreleased]
 
+## [2026.10.31] - 2026-10-31
+
 ### Added
 - **OpenAI Decisions** (`gpt-6-luna`, `POST https://api.openai.com/v1/decisions`) as the provider `openai`:
   `export OPENAI_API_KEY=...`, then `SELECT decide_register_model('gpt-6-luna', 'openai');`. The same functions
