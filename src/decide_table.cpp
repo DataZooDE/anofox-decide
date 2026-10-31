@@ -200,7 +200,8 @@ unique_ptr<GlobalTableFunctionState> DecideDoctorInitGlobal(ClientContext &conte
 		rows.push_back({"registered models", "warn",
 		                "only the built-in test model 'stub' is registered (it returns constants)",
 		                "SELECT decide_register_model('jev-latest', 'typesafe'); for a hosted model, or register a "
-		                "local one (see https://github.com/DataZooDE/anofox-decide#local-models)"});
+		                "local one (see "
+		                "https://github.com/DataZooDE/anofox-decide/blob/main/docs/api/03-local-models.md)"});
 	} else {
 		rows.push_back({"registered models", "ok", std::to_string(real_models) + " real model(s) registered", ""});
 	}

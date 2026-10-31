@@ -15,6 +15,6 @@ SELECT model, ready, hint FROM decide_models() WHERE model LIKE 'laya%' OR model
 
 SELECT decide_probability('I want my money back.', 'A refund is requested.', model := 'laya-multilingual') AS p;
 
--- Your own exported ONNX graph (see "Your own exported model" in the README) is registered by hand:
+-- Your own exported ONNX graph (see docs/api/03-local-models.md) is registered by hand:
 -- SELECT decide_register_model('my-laya', 'local', '/models/laya/julia1.onnx',
 --                              '/models/laya/tokenizer/tokenizer.json', 'laya');

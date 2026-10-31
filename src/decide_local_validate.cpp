@@ -120,7 +120,8 @@ string DecideNonGraphMessage(const string &kind, const string &path, const strin
 	}
 	return DecideMsg(function, what,
 	                 "pass the .onnx file that tools/export_julia wrote from the checkpoint (weights are not loaded "
-	                 "directly); see https://github.com/DataZooDE/anofox-decide#local-models");
+	                 "directly); see "
+	                 "https://github.com/DataZooDE/anofox-decide/blob/main/docs/api/03-local-models.md#your-own-exported-model");
 }
 
 // First bytes of a file through DuckDB's filesystem (same access gate as read_csv), without reading a

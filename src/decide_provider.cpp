@@ -60,7 +60,7 @@ static string RoleFix(const char *role, const string &path) {
 		string fix = "pass the full path of the exported .onnx file (relative paths resolve against the DuckDB "
 		             "working directory), e.g. SELECT decide_register_model('my-model', 'local', "
 		             "'/models/julia1.onnx'). To create one, see "
-		             "https://github.com/DataZooDE/anofox-decide#local-models.";
+		             "https://github.com/DataZooDE/anofox-decide/blob/main/docs/api/03-local-models.md#your-own-exported-model.";
 		// A Hugging Face style id ("org/name" with no extension) is a common mix-up.
 		const auto slash = path.find('/');
 		if (slash != string::npos && slash > 0 && path.find('/', slash + 1) == string::npos &&
@@ -249,7 +249,7 @@ void DecideRegistry::RegisterModel(ClientContext &context, const string &id, con
 		throw InvalidInputException(DecideMsg(
 		    fn, "local models need the path of an ONNX graph file",
 		    "SELECT decide_register_model('" + id + "', 'local', '/models/julia1.onnx'); To create one, see "
-		    "https://github.com/DataZooDE/anofox-decide#local-models."));
+		    "https://github.com/DataZooDE/anofox-decide/blob/main/docs/api/03-local-models.md#your-own-exported-model."));
 	}
 	if (!profile.empty() && provider != "local") {
 		throw InvalidInputException(DecideMsg(
@@ -428,7 +428,8 @@ DecideModelEntry DecideResolveModel(ClientContext &context, const string &functi
 		    "default with SET anofox_decide_model = '" + example + "'. Registered now: " +
 		        DescribeRegisteredModels(entries) + ". To add a real model first: SELECT decide_register_model('" +
 		        example + "', 'typesafe'); (hosted API) or see "
-		        "https://github.com/DataZooDE/anofox-decide#models-and-providers and #local-models. "
+		        "https://github.com/DataZooDE/anofox-decide/blob/main/docs/api/02-providers.md and "
+		        "https://github.com/DataZooDE/anofox-decide/blob/main/docs/api/03-local-models.md. "
 		        "For tests only: model := 'stub' returns constants."));
 	}
 	DecideModelEntry entry;

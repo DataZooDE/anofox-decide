@@ -16,7 +16,7 @@ SET anofox_decide_allow_remote = true;
 SELECT decide_register_model('jev-latest', 'typesafe');
 SELECT decide_register_model('d1:free', 'liquid');
 SELECT decide_register_model('clef', 'cloudflare');
--- A local server, keyless (see "Models and providers" in the README):
+-- A local server, keyless (see docs/api/02-providers.md):
 --   SELECT decide_register_model('strands-decider', 'strands');
 
 CREATE OR REPLACE TABLE tickets AS SELECT * FROM read_csv('examples/data/support_tickets.csv');
