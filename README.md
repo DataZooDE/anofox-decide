@@ -173,7 +173,7 @@ Which one to pick, and how they did on a 200-ticket evaluation: [Choosing a mode
 
 ## Status
 
-The extension is calendar-versioned (`2026.10.26` is the twenty-sixth of October 2026) and is built and
+The extension is calendar-versioned (`2026.10.31` is the thirty-first of October 2026) and is built and
 tested on Linux (amd64, arm64), macOS (arm64) and Windows (amd64) against DuckDB 1.5.6, and on DuckDB 2.0.
 What works today and what does not yet: [Providers](docs/api/02-providers.md#overview).
 
