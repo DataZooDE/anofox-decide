@@ -91,8 +91,8 @@ SELECT decide_probability('I want my money back.', 'A refund is requested.', mod
 
 -- 3a. A hosted model: Liquid D1 (export LIQUID_API_KEY=... before starting DuckDB)
 SET anofox_decide_allow_remote = true;                 -- explicit opt-in: the text goes to the provider
-SELECT decide_register_model('d1:free', 'liquid');     -- registrations last for this process only
-SET anofox_decide_model = 'd1:free';                   -- the default for calls that name no model
+SELECT decide_register_model('d1', 'liquid');     -- registrations last for this process only
+SET anofox_decide_model = 'd1';                   -- the default for calls that name no model
 
 -- 3b. Or, with no key: a model that runs inside DuckDB, offline after a 0.7 GB download
 -- CALL decide_download('laya-multilingual');

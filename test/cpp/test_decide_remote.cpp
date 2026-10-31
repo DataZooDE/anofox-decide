@@ -400,7 +400,7 @@ TEST_CASE("liquid requests hit the D1 path with a bearer key and the wire model"
 	Connection con(db);
 	EnvGuard g({{"LIQUID_API_KEY", "env-liquid"}});
 	auto target = Target("liquid");
-	target.wire_model = "d1:free";
+	target.wire_model = "d1";
 	auto cfg = DecideResolveConfig(*con.context, target);
 	cfg.allow_remote = true;
 
@@ -418,15 +418,15 @@ TEST_CASE("liquid requests hit the D1 path with a bearer key and the wire model"
 		DecideHttpResponse r;
 		r.transport_ok = true;
 		r.status = 200;
-		// Response captured from the live D1 API (model d1:free).
-		r.body = R"({"model":"d1:free","answers":{"refund":{"type":"noul","noul":0.9983}},"usage":{"input_tokens":160,"output_tokens":0}})";
+		// Response captured from the live D1 API (model d1).
+		r.body = R"({"model":"d1","answers":{"refund":{"type":"noul","noul":0.9983}},"usage":{"input_tokens":160,"output_tokens":0}})";
 		return r;
 	};
 	auto answers = DecideRemoteEvaluateWithTransport(cfg, "I was charged twice.", {NoulQ()}, transport);
 	REQUIRE(seen_host == "api.liquid.ai");
 	REQUIRE(seen_path == "/decisions/v1/systemone");
 	REQUIRE(seen_auth == "Bearer env-liquid");
-	REQUIRE_THAT(seen_body, Contains("\"model\":\"d1:free\""));
+	REQUIRE_THAT(seen_body, Contains("\"model\":\"d1\""));
 	REQUIRE(answers.size() == 1);
 	REQUIRE(answers[0].probability == Approx(0.9983));
 
@@ -766,4 +766,22 @@ TEST_CASE("a connect timeout on loopback is reported as nothing listening and no
 		REQUIRE_THAT(msg, !Contains("did not answer"));
 	}
 	REQUIRE(calls == 1);
+}
+
+TEST_CASE("liquid: an unknown model names the current D1 models", "[anofox_decide][remote]") {
+	// Recorded live on 31 Oct 2026 after Liquid renamed d1:free to d1 (models now: d1, d1.1, d1-ultra).
+	const string body = R"({"error":{"message":"The model `d1:free` does not exist.","type":"not_found_error","param":null,"code":null}})";
+	DecideRemoteConfig cfg;
+	cfg.provider = "liquid";
+	cfg.display = "Liquid AI";
+	cfg.host = "api.liquid.ai";
+	cfg.path = "/decisions/v1/systemone";
+	cfg.model = "d1:free";
+	cfg.registered_id = "d1:free";
+	auto info = DecideFormatHttpError(cfg, 404, body, 1, 0.1);
+	REQUIRE(info.user_error);
+	REQUIRE_THAT(info.message, Contains("does not know the model 'd1:free' (HTTP 404)"));
+	REQUIRE_THAT(info.message, Contains("Liquid serves 'd1', 'd1.1' and 'd1-ultra'"));
+	REQUIRE_THAT(info.message, Contains("d1:free was renamed to d1"));
+	REQUIRE_THAT(info.message, Contains("SELECT decide_register_model('d1', 'liquid');"));
 }

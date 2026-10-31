@@ -113,7 +113,7 @@ SELECT count(*) FROM decide_models() WHERE model LIKE 'bad%'
 # --- remote and local registration accept it, and show it ---------------------
 
 query I
-SELECT decide_register_model('d1-cal', 'liquid', MAP {'model': 'd1:free', 'calibration': 'platt:0.8,-1.5'})
+SELECT decide_register_model('d1-cal', 'liquid', MAP {'model': 'd1', 'calibration': 'platt:0.8,-1.5'})
 ----
 1
 

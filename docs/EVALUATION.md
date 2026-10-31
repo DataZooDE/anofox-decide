@@ -149,7 +149,7 @@ Reproduce from the results of `run_eval.py`: `python3 tools/eval/crossfit_calibr
   the McNemar p-values compare models paired on the same tickets.
 - **Label definitions are ours.** "Refund requested" is the `get_refund` intent and the routing classes are
   our grouping of Bitext categories; a different definition would move the numbers.
-- **Hosted models change over time** (`jev-latest`, `d1:free`, `clef`, `clef-flash`); the run is a dated snapshot.
+- **Hosted models change over time** (`jev-latest`, `d1:free`, `clef`, `clef-flash`); the run is a dated snapshot. Liquid has since renamed `d1:free` to `d1` (and added `d1.1` and `d1-ultra`); `d1:free` now answers 404.
   Ticket text was sent to Liquid AI, TypeSafe and Cloudflare for those runs.
 - **Local models use the extension's own conversion.** Each local model was verified against its upstream
   Python reference on the original 8 tickets; the 200-ticket run did not re-verify that.

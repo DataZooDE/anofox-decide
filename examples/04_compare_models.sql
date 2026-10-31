@@ -14,7 +14,7 @@ LOAD anofox_decide;
 SET anofox_decide_allow_remote = true;
 
 SELECT decide_register_model('jev-latest', 'typesafe');
-SELECT decide_register_model('d1:free', 'liquid');
+SELECT decide_register_model('d1', 'liquid');
 SELECT decide_register_model('clef', 'cloudflare');
 -- A local server, keyless (see docs/api/02-providers.md):
 --   SELECT decide_register_model('strands-decider', 'strands');
@@ -25,8 +25,8 @@ CREATE OR REPLACE TABLE runs AS
 SELECT 'jev-latest' AS model, id, refund,
        decide_probability(text, 'A refund is requested.', model := 'jev-latest') AS p FROM tickets
 UNION ALL
-SELECT 'd1:free', id, refund,
-       decide_probability(text, 'A refund is requested.', model := 'd1:free') FROM tickets
+SELECT 'd1', id, refund,
+       decide_probability(text, 'A refund is requested.', model := 'd1') FROM tickets
 UNION ALL
 SELECT 'clef', id, refund,
        decide_probability(text, 'A refund is requested.', model := 'clef') FROM tickets;

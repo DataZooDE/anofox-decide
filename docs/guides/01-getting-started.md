@@ -78,12 +78,12 @@ and `SET anofox_decide_model = 'laya-multilingual';` instead of the three statem
 
 A hosted model sends the text you score to the provider, so it sits behind an explicit opt-in that is off
 by default. Register it once per database instance (registrations and settings are not stored: repeat them
-in each new process), then name it per call (`model := 'd1:free'`) or make it the default:
+in each new process), then name it per call (`model := 'd1'`) or make it the default:
 
 ```sql
 SET anofox_decide_allow_remote = true;                 -- explicit opt-in: the text goes to the provider
-SELECT decide_register_model('d1:free', 'liquid');     -- the id is the model name on the wire
-SET anofox_decide_model = 'd1:free';                   -- the default for calls that name no model
+SELECT decide_register_model('d1', 'liquid');     -- the id is the model name on the wire
+SET anofox_decide_model = 'd1';                   -- the default for calls that name no model
 ```
 
 A call that names no model, with no default set, fails and says how to choose one; it never quietly
@@ -92,7 +92,7 @@ returns a constant.
 ## 3. Decide
 
 Eight support tickets with known answers, scored for three questions at once. This is real output from
-Liquid D1, so it needs the model from step 2 (`SET anofox_decide_model = 'd1:free'`); on Laya the numbers
+Liquid D1, so it needs the model from step 2 (`SET anofox_decide_model = 'd1'`); on Laya the numbers
 differ, and on the `stub` you get the same columns filled with constants.
 
 ```sql

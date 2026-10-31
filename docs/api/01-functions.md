@@ -78,7 +78,7 @@ FROM decide_table('The bill is wrong and I want my money back.',
   '[{"id": "refund", "kind": "binary", "instruction": "A refund is requested."},
     {"id": "team",   "kind": "choice", "instruction": "Which team owns this?", "options": ["billing", "defect", "other"]},
     {"id": "mood",   "kind": "score",  "instruction": "How frustrated is the writer?", "levels": ["calm", "frustrated", "angry"]}]',
-  model := 'd1:free');
+  model := 'd1');
 ```
 
 At most `anofox_decide_max_questions` questions (default 100) go in one `decide_many` / `decide_table` call.
@@ -105,7 +105,7 @@ table and get `decide_table`'s columns, unnest it (this runs concurrently, unlik
 ```sql
 SELECT id, question_id, probability, choice
 FROM (SELECT id, unnest(decide_answers(text, '[{"id": "refund", "kind": "binary", "instruction": "A refund is requested."}]',
-                                        model := 'd1:free'), recursive := true)
+                                        model := 'd1'), recursive := true)
       FROM tickets);
 ```
 

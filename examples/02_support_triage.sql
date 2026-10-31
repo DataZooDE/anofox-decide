@@ -6,8 +6,8 @@
 -- REAL MODEL: replace the three lines below. A hosted model needs the opt-in and a key:
 --   export LIQUID_API_KEY=...                       -- or CREATE SECRET (TYPE anofox_decide, API_KEY '...', SCOPE 'api.liquid.ai')
 --   SET anofox_decide_allow_remote = true;
---   SELECT decide_register_model('d1:free', 'liquid');
---   SET anofox_decide_model = 'd1:free';
+--   SELECT decide_register_model('d1', 'liquid');
+--   SET anofox_decide_model = 'd1';
 -- Run from the repository root (the data path is relative to it).
 -- offline: yes (with the stub)
 

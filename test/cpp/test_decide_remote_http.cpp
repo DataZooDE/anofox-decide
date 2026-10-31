@@ -199,7 +199,7 @@ TEST_CASE("remote connection refused on loopback: start the server, and do not r
 }
 
 TEST_CASE("remote success path still parses the answer", "[anofox_decide][remote][http]") {
-	LoopbackServer server({200, R"({"model":"d1:free","answers":{"q":{"type":"noul","noul":0.9983}},"usage":{"input_tokens":160,"output_tokens":0}})"});
+	LoopbackServer server({200, R"({"model":"d1","answers":{"q":{"type":"noul","noul":0.9983}},"usage":{"input_tokens":160,"output_tokens":0}})"});
 	auto cfg = Cfg(server.port);
 	auto answers = DecideRemoteEvaluateOverHttp(cfg, "I want my money back.", {Binary()});
 	REQUIRE(answers.size() == 1);
