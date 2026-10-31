@@ -27,9 +27,9 @@ SELECT decide_register_model('j', 'local', 'test/fixtures/julia1_tiny_tensor_map
 <REGEX>:.*is a JSON file, not an ONNX graph \(a tokenizer\.json or a config\?\)\. Fix:.*
 
 statement error
-SELECT decide_register_model('r', 'local', 'README.md', 'test/fixtures/tiny_tokenizer.json')
+SELECT decide_register_model('r', 'local', 'CHANGELOG.md', 'test/fixtures/tiny_tokenizer.json')
 ----
-<REGEX>:.*the graph file 'README\.md' is a text file, not an ONNX graph.*
+<REGEX>:.*the graph file 'CHANGELOG\.md' is a text file, not an ONNX graph.*
 
 # A refused registration leaves nothing behind.
 query I
