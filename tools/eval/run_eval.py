@@ -9,7 +9,8 @@ run concurrently, see --concurrency):
 Results are written to <out>/results_<model>.csv; metrics to <out>/report.md/json.
 
 Models (all optional, pick with --models):
-  d1, jev, clef, clef-flash    hosted APIs (LIQUID_API_KEY / TYPESAFE_API_KEY / CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID;
+  d1, jev, clef, clef-flash,   hosted APIs (LIQUID_API_KEY / TYPESAFE_API_KEY / CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID /
+  luna                         OPENAI_API_KEY;
                                ticket text leaves the machine)
   laya-ml, laya-td, julia      local ONNX graphs (env: LAYA_ML_DIR/LAYA_ML_ONNX, LAYA_TD_DIR/LAYA_TD_ONNX,
                                JULIA_WEIGHTS_DIR/JULIA_ONNX)
@@ -83,6 +84,8 @@ def models(env, kev_url, strands_url):
 
     return {
         "d1": ("Liquid D1", "SELECT decide_register_model('d1:free', 'liquid');", "d1:free", ["LIQUID_API_KEY"]),
+        "luna": ("OpenAI gpt-6-luna", "SELECT decide_register_model('gpt-6-luna', 'openai');", "gpt-6-luna",
+                 ["OPENAI_API_KEY"]),
         "clef": ("Cloudflare Clef", "SELECT decide_register_model('clef', 'cloudflare');", "clef",
                  ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]),
         "clef-flash": ("Cloudflare Clef-flash", "SELECT decide_register_model('clef-flash', 'cloudflare');", "clef-flash",
@@ -228,12 +231,21 @@ def analyse(tickets, out, names, displays):
         f = out / f"results_{name}.csv"
         if not f.exists():
             continue
-        p, c = {}, {}
+        # A refusal (the model declined: NULL probability / choice) counts as a wrong answer, never as an
+        # abstention that improves the score; refusals are reported separately.
+        p, c, refused = {}, {}, {"refund": [], "routing": []}
         for r in csv.DictReader(open(f)):
+            i = int(r["id"])
             if r["qid"] == "refund":
-                p[int(r["id"])] = float(r["probability"])
+                if r["probability"] == "":
+                    refused["refund"].append(i)
+                    p[i] = 0.0 if truth[i]["refund"] == "true" else 1.0
+                else:
+                    p[i] = float(r["probability"])
             else:
-                c[int(r["id"])] = r["choice"]
+                if r["choice"] == "":
+                    refused["routing"].append(i)
+                c[i] = r["choice"]
         if set(p) != set(ids) or set(c) != set(ids):
             print(f"WARN {name}: incomplete results ({len(p)}/{len(c)} of {len(ids)})", file=sys.stderr)
             continue
@@ -261,6 +273,7 @@ def analyse(tickets, out, names, displays):
             "refund_ece": ece(probs, [1 if b else 0 for b in y]),
             "routing_acc": sum(ok_route) / len(ids), "routing_ci": wilson(sum(ok_route), len(ids)),
             "routing_macro": sum(recalls.values()) / len(recalls), "routing_recalls": recalls,
+            "refusals": {k: sorted(v) for k, v in refused.items()},
             "_ok_ref": ok_ref, "_ok_route": ok_route,
         }
     return report, truth
@@ -304,6 +317,15 @@ def render(report, truth, times, serving=None):
             pr = "best" if k == best_ref else f"{mcnemar_exact(report[best_ref]['_ok_ref'], report[k]['_ok_ref']):.3f}"
             pt = "best" if k == best_route else f"{mcnemar_exact(report[best_route]['_ok_route'], report[k]['_ok_route']):.3f}"
             L.append(f"| {report[k]['display']} | {pr} | {pt} |")
+    refusing = [k for k in order if any(report[k]["refusals"].values())]
+    if refusing:
+        L += ["", "## Refusals", "",
+              "A refused answer is scored as wrong (a refund refusal as the confident wrong answer).", "",
+              "| Model | Refund refusals | Routing refusals | Ticket ids |", "|---|---|---|---|"]
+        for k in refusing:
+            rf = report[k]["refusals"]
+            L.append(f"| {report[k]['display']} | {len(rf['refund'])} | {len(rf['routing'])} | "
+                     f"{', '.join(str(i) for i in sorted(set(rf['refund'] + rf['routing'])))} |")
     if times and serving:
         L += ["", "## Wall time for the whole sample, and the device that served it", "",
               "Wall time includes session start and model load.", "", "| Model | Device | Seconds |", "|---|---|---|"]

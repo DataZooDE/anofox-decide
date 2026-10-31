@@ -20,6 +20,7 @@
 #include <openssl/ssl.h>
 #include <openssl/x509_vfy.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <cstring>
@@ -135,22 +136,26 @@ void SplitEndpoint(const string &endpoint, string &host, int &port, bool &ssl, c
 	}
 }
 
-// Remote provider profiles. The wire format (System One) is shared; only the
-// endpoint, path and key variable differ. Liquid D1 verified live against
-// POST https://api.liquid.ai/decisions/v1/systemone (model "d1:free").
+// Remote provider profiles. Most speak System One and differ only in the endpoint, path and key variable.
+// Liquid D1 verified live against POST https://api.liquid.ai/decisions/v1/systemone (model "d1:free").
+constexpr DecideWire S1 = DecideWire::SYSTEM_ONE;
 const DecideRemoteProfile kRemoteProfiles[] = {
-    {"typesafe", "TypeSafe", "https://api.typesafe.ai", "/v1/systemone", "TYPESAFE_API_KEY", true, false, 8, 0},
-    {"liquid", "Liquid AI", "https://api.liquid.ai", "/decisions/v1/systemone", "LIQUID_API_KEY", true, false, 8, 0},
+    {"typesafe", "TypeSafe", "https://api.typesafe.ai", "/v1/systemone", "TYPESAFE_API_KEY", true, false, 8, 0, S1},
+    {"liquid", "Liquid AI", "https://api.liquid.ai", "/decisions/v1/systemone", "LIQUID_API_KEY", true, false, 8, 0, S1},
     // Cloudflare Clef on Workers AI: the URL carries the account id and the model ({account_id}, {model} are
     // filled in by DecideResolveConfig); the success body is wrapped in {"result": ...}; at most 64 questions.
     {"cloudflare", "Cloudflare Clef", "https://api.cloudflare.com",
-     "/client/v4/accounts/{account_id}/ai/run/@cf/cloudflare/{model}", "CLOUDFLARE_API_TOKEN", true, false, 8, 64},
+     "/client/v4/accounts/{account_id}/ai/run/@cf/cloudflare/{model}", "CLOUDFLARE_API_TOKEN", true, false, 8, 64, S1},
+    // OpenAI Decisions (gpt-6-luna): its own wire format (questions array, predicate answers, refusals);
+    // at most 400 questions per request.
+    {"openai", "OpenAI", "https://api.openai.com", "/v1/decisions", "OPENAI_API_KEY", true, false, 8, 400,
+     DecideWire::OPENAI_DECISIONS},
     // Generic System One-compatible server (e.g. Kev): the model supplies the endpoint.
-    {"systemone", "System One endpoint", "", "/v1/systemone", "", true, false, 8, 0},
+    {"systemone", "System One endpoint", "", "/v1/systemone", "", true, false, 8, 0, S1},
     // strands-decider (`strands-decider serve`): a local, keyless server on loopback whose schema
     // requires string criteria values for choice questions.
-    {"strands", "strands-decider", "http://127.0.0.1:8000", "/v1/systemone", "", false, true, 1,
-     0}, // one local model server: it serialises anyway
+    {"strands", "strands-decider", "http://127.0.0.1:8000", "/v1/systemone", "", false, true, 1, 0,
+     S1}, // one local model server: it serialises anyway
 };
 
 } // namespace
@@ -272,19 +277,11 @@ static double ProbSumTolerance(size_t n) {
 	return 1e-3 + 0.005 * (double)n;
 }
 
-string DecideBuildRequestJson(const string &state, const string &model, const vector<DecideQuestion> &questions,
-                              bool criteria_names) {
+// The checks every wire format shares, before any I/O: ids, kinds, instructions, options and rubrics.
+static void ValidateRemoteQuestions(const vector<DecideQuestion> &questions) {
 	if (questions.empty()) {
 		throw InvalidInputException("decide: refusing to send a remote request with no questions");
 	}
-	YyjsonMutDoc mdoc;
-	if (!mdoc.doc) {
-		throw InternalException("decide: failed to allocate remote request JSON");
-	}
-	auto root = yyjson_mut_obj(mdoc.doc);
-	yyjson_mut_obj_add_strcpy(mdoc.doc, root, "state", state.c_str());
-	yyjson_mut_obj_add_strcpy(mdoc.doc, root, "model", model.c_str());
-	auto qmap = yyjson_mut_obj(mdoc.doc);
 	std::set<string> seen;
 	for (auto &q : questions) {
 		if (q.id.empty()) {
@@ -303,9 +300,6 @@ string DecideBuildRequestJson(const string &state, const string &model, const ve
 		if (q.instruction.empty()) {
 			throw InvalidInputException("decide: question '%s' needs a non-empty instruction", q.id);
 		}
-		auto qobj = yyjson_mut_obj(mdoc.doc);
-		yyjson_mut_obj_add_strcpy(mdoc.doc, qobj, "type", q.kind.c_str());
-		yyjson_mut_obj_add_strcpy(mdoc.doc, qobj, "instructions", q.instruction.c_str());
 		if (q.kind == "choice") {
 			if (q.options.empty()) {
 				throw InvalidInputException("decide: choice question '%s' needs at least one option", q.id);
@@ -314,6 +308,39 @@ string DecideBuildRequestJson(const string &state, const string &model, const ve
 				throw InvalidInputException("decide: choice question '%s' has %d options (API limit is 255)",
 				                            q.id, (int)q.options.size());
 			}
+		} else if (q.kind == "score") {
+			DecideValidateScoreLevels("decide", q.id, q.options);
+		}
+	}
+}
+
+static string WriteJson(YyjsonMutDoc &mdoc, const char *what) {
+	size_t len = 0;
+	char *out = yyjson_mut_write(mdoc.doc, 0, &len);
+	if (!out) {
+		throw InternalException("decide: failed to serialize %s JSON", what);
+	}
+	string body(out, len);
+	free(out);
+	return body;
+}
+
+string DecideBuildRequestJson(const string &state, const string &model, const vector<DecideQuestion> &questions,
+                              bool criteria_names) {
+	ValidateRemoteQuestions(questions);
+	YyjsonMutDoc mdoc;
+	if (!mdoc.doc) {
+		throw InternalException("decide: failed to allocate remote request JSON");
+	}
+	auto root = yyjson_mut_obj(mdoc.doc);
+	yyjson_mut_obj_add_strcpy(mdoc.doc, root, "state", state.c_str());
+	yyjson_mut_obj_add_strcpy(mdoc.doc, root, "model", model.c_str());
+	auto qmap = yyjson_mut_obj(mdoc.doc);
+	for (auto &q : questions) {
+		auto qobj = yyjson_mut_obj(mdoc.doc);
+		yyjson_mut_obj_add_strcpy(mdoc.doc, qobj, "type", q.kind.c_str());
+		yyjson_mut_obj_add_strcpy(mdoc.doc, qobj, "instructions", q.instruction.c_str());
+		if (q.kind == "choice") {
 			auto crit = yyjson_mut_obj(mdoc.doc);
 			for (auto &opt : q.options) {
 				if (criteria_names) {
@@ -324,7 +351,6 @@ string DecideBuildRequestJson(const string &state, const string &model, const ve
 			}
 			yyjson_mut_obj_add_val(mdoc.doc, qobj, "criteria", crit);
 		} else if (q.kind == "score") {
-			DecideValidateScoreLevels("decide", q.id, q.options);
 			// Ordered rubric: a JSON array, ascending (index 0 is the low end).
 			auto crit = yyjson_mut_arr(mdoc.doc);
 			for (auto &level : q.options) {
@@ -336,14 +362,7 @@ string DecideBuildRequestJson(const string &state, const string &model, const ve
 	}
 	yyjson_mut_obj_add_val(mdoc.doc, root, "questions", qmap);
 	yyjson_mut_doc_set_root(mdoc.doc, root);
-	size_t len = 0;
-	char *out = yyjson_mut_write(mdoc.doc, 0, &len);
-	if (!out) {
-		throw InternalException("decide: failed to serialize remote request JSON");
-	}
-	string body(out, len);
-	free(out);
-	return body;
+	return WriteJson(mdoc, "remote request");
 }
 
 static string CollapseWhitespace(const string &in);
@@ -547,6 +566,267 @@ vector<DecideAnswer> DecideParseResponseJson(const string &body, const vector<De
 	return out;
 }
 
+//--- OpenAI Decisions ------------------------------------------------------
+// POST /v1/decisions: {"model", "input", "questions": [{"name", "type", "instructions", "choices"|"levels"}],
+// "prompt_cache_key"} -> {"model", "answers": [{"type", "name", ...}], "usage"}. Binary questions are
+// "predicate" questions; answers come back as an array matched by name; "refusal" is an answer type.
+
+string DecideBuildOpenAIRequestJson(const string &state, const string &model, const vector<DecideQuestion> &questions,
+                                    const DecideOpenAIRequestOptions &options) {
+	ValidateRemoteQuestions(questions);
+	const string &mode = options.input_mode.empty() ? string("auto") : options.input_mode;
+	if (mode != "auto" && mode != "text" && mode != "json") {
+		throw InvalidInputException("decide: input mode '%s' is not 'auto', 'text' or 'json'", mode);
+	}
+	// Structured state (to_json(row), a JSON column) travels as an input_json part; anything else is text.
+	// Only an object or an array counts: a bare number or string is text.
+	// A UTF-8 byte order mark (files exported by some tools) does not make JSON text.
+	const size_t bom = state.compare(0, 3, "\xEF\xBB\xBF") == 0 ? 3 : 0;
+	YyjsonDoc state_doc(mode == "text" ? nullptr : yyjson_read(state.c_str() + bom, state.size() - bom, 0));
+	auto state_root = state_doc.doc ? yyjson_doc_get_root(state_doc.doc) : nullptr;
+	const bool structured = state_root && (yyjson_is_obj(state_root) || yyjson_is_arr(state_root));
+	if (mode == "json" && !structured) {
+		const char *found = !state_doc.doc ? "text that does not parse as JSON" : "a JSON value that is not an object or an array";
+		throw InvalidInputException(DecideMsg(
+		    "decide", string("the state is not JSON (an object or an array): it is ") + found,
+		    "pass structured state such as to_json({ticket: body, total: amount}), or register the model with MAP "
+		    "{'input': 'auto'} to send text as text"));
+	}
+	YyjsonMutDoc mdoc;
+	if (!mdoc.doc) {
+		throw InternalException("decide: failed to allocate remote request JSON");
+	}
+	auto doc = mdoc.doc;
+	auto root = yyjson_mut_obj(doc);
+	yyjson_mut_obj_add_strcpy(doc, root, "model", model.c_str());
+	if (structured) {
+		auto part = yyjson_mut_obj(doc);
+		yyjson_mut_obj_add_str(doc, part, "type", "input_json");
+		yyjson_mut_obj_add_val(doc, part, "data", yyjson_val_mut_copy(doc, state_root));
+		auto content = yyjson_mut_arr(doc);
+		yyjson_mut_arr_add_val(content, part);
+		auto message = yyjson_mut_obj(doc);
+		yyjson_mut_obj_add_str(doc, message, "role", "user");
+		yyjson_mut_obj_add_val(doc, message, "content", content);
+		auto input = yyjson_mut_arr(doc);
+		yyjson_mut_arr_add_val(input, message);
+		yyjson_mut_obj_add_val(doc, root, "input", input);
+	} else {
+		yyjson_mut_obj_add_strcpy(doc, root, "input", state.c_str());
+	}
+	auto qarr = yyjson_mut_arr(doc);
+	for (auto &q : questions) {
+		auto qobj = yyjson_mut_obj(doc);
+		yyjson_mut_obj_add_strcpy(doc, qobj, "name", q.id.c_str());
+		yyjson_mut_obj_add_str(doc, qobj, "type", q.kind == "noul" ? "predicate" : q.kind.c_str());
+		yyjson_mut_obj_add_strcpy(doc, qobj, "instructions", q.instruction.c_str());
+		if (q.kind == "choice" || q.kind == "score") {
+			// The option (level) text is both the value the answer names and its description.
+			const bool choice = q.kind == "choice";
+			auto list = yyjson_mut_arr(doc);
+			for (auto &opt : q.options) {
+				auto item = yyjson_mut_obj(doc);
+				yyjson_mut_obj_add_strcpy(doc, item, choice ? "value" : "label", opt.c_str());
+				yyjson_mut_obj_add_strcpy(doc, item, "description", opt.c_str());
+				yyjson_mut_arr_add_val(list, item);
+			}
+			yyjson_mut_obj_add_val(doc, qobj, choice ? "choices" : "levels", list);
+		}
+		yyjson_mut_arr_add_val(qarr, qobj);
+	}
+	yyjson_mut_obj_add_val(doc, root, "questions", qarr);
+	if (!options.prompt_cache_key.empty()) {
+		yyjson_mut_obj_add_strcpy(doc, root, "prompt_cache_key", options.prompt_cache_key.c_str());
+	}
+	yyjson_mut_doc_set_root(doc, root);
+	return WriteJson(mdoc, "remote request");
+}
+
+vector<DecideAnswer> DecideParseOpenAIResponseJson(const string &body, const vector<DecideQuestion> &questions,
+                                                   const string &function, const string &service,
+                                                   const string &model_id) {
+	auto kind_name = [](const string &kind) { return kind == "noul" ? string("binary") : kind; };
+	auto bad = [&](const string &qid, const string &what, const string &fix = "") {
+		string where = service + (model_id.empty() ? "" : " (model '" + model_id + "')");
+		throw InvalidInputException(DecideMsg(
+		    function, where + " " + (qid.empty() ? "" : "answered question '" + qid + "' wrongly: ") + what,
+		    fix.empty() ? "check the endpoint and path of the model (SELECT * FROM decide_models()); if they are right "
+		                  "this is a problem on the service side"
+		                : fix));
+	};
+	YyjsonDoc doc(yyjson_read(body.c_str(), body.size(), 0));
+	if (!doc.doc) {
+		const string peek = DecideBodyLooksLikeHtml(body) ? string("an HTML page")
+		                                                  : "text starting '" + Truncate(CollapseWhitespace(body), 60) + "'";
+		bad("", "answered HTTP 200 but not with JSON (" + peek + ")",
+		    "this endpoint or path is probably not the OpenAI Decisions API; check them in SELECT * FROM decide_models()");
+	}
+	auto root = yyjson_doc_get_root(doc.doc);
+	if (!root || !yyjson_is_obj(root)) {
+		bad("", "answered with a JSON value that is not an object");
+	}
+	string model;
+	auto model_v = yyjson_obj_get(root, "model");
+	if (model_v && yyjson_is_str(model_v)) {
+		model = ValStr(model_v);
+	}
+	auto answers_v = yyjson_obj_get(root, "answers");
+	if (!answers_v || !yyjson_is_arr(answers_v)) {
+		const string server = DecideExtractServerMessage(body);
+		bad("", "answered without an 'answers' array" + (server.empty() ? string() : ": \"" + server + "\""));
+	}
+	// Index the answers by name; the order of the array is not relied on.
+	std::map<string, yyjson_val *> by_name;
+	string present;
+	size_t idx, max;
+	yyjson_val *item;
+	yyjson_arr_foreach(answers_v, idx, max, item) {
+		auto name_v = yyjson_is_obj(item) ? yyjson_obj_get(item, "name") : nullptr;
+		if (!name_v || !yyjson_is_str(name_v)) {
+			bad("", "sent an answer without a 'name'");
+		}
+		const string name = ValStr(name_v);
+		if (!by_name.emplace(name, item).second) {
+			bad(name, "answered it twice");
+		}
+		present += (present.empty() ? "" : ", ") + name;
+	}
+	vector<DecideAnswer> out;
+	for (auto &q : questions) {
+		auto found = by_name.find(q.id);
+		if (found == by_name.end()) {
+			bad(q.id, "sent no answer for it (answers present: " + (present.empty() ? string("none") : present) + ")");
+		}
+		auto a = found->second;
+		auto type_v = yyjson_obj_get(a, "type");
+		const string atype = (type_v && yyjson_is_str(type_v)) ? ValStr(type_v) : "";
+		DecideAnswer ans;
+		ans.id = q.id;
+		ans.kind = q.kind;
+		ans.model = model;
+		if (atype == "refusal") {
+			ans.refused = true;
+			ans.probability = std::numeric_limits<double>::quiet_NaN();
+			out.push_back(std::move(ans));
+			continue;
+		}
+		const string wanted = q.kind == "noul" ? "predicate" : q.kind;
+		if (atype != wanted) {
+			bad(q.id, "it answered with type '" + (atype.empty() ? string("(missing)") : atype) + "' but the question is a " +
+			               kind_name(q.kind) + " question");
+		}
+		auto conf_v = yyjson_obj_get(a, "confidence");
+		if (IsFiniteNum(conf_v)) {
+			ans.confidence = yyjson_get_num(conf_v);
+		}
+		if (q.kind == "noul") {
+			auto p = yyjson_obj_get(a, "probability");
+			if (!IsFiniteNum(p) || yyjson_get_num(p) < 0.0 || yyjson_get_num(p) > 1.0) {
+				bad(q.id, "the probability is missing or not a number between 0 and 1");
+			}
+			ans.probability = yyjson_get_num(p);
+			out.push_back(std::move(ans));
+			continue;
+		}
+		auto probs_v = yyjson_obj_get(a, "probabilities");
+		if (!probs_v || !yyjson_is_arr(probs_v)) {
+			bad(q.id, "no 'probabilities' array (the answer lacks the per-option distribution)");
+		}
+		const size_t n = q.options.size();
+		vector<double> p(n, -1.0);
+		size_t pidx, pmax;
+		yyjson_val *entry;
+		yyjson_arr_foreach(probs_v, pidx, pmax, entry) {
+			auto prob_v = yyjson_is_obj(entry) ? yyjson_obj_get(entry, "probability") : nullptr;
+			auto value_v = yyjson_is_obj(entry) ? yyjson_obj_get(entry, "value") : nullptr;
+			auto label_v = yyjson_is_obj(entry) ? yyjson_obj_get(entry, "label") : nullptr;
+			size_t at = n;
+			string named;
+			if (q.kind == "score" && IsFiniteNum(value_v)) {
+				// Levels are named by their 0-based index (1 or 1.0); a label, when sent, must agree with it.
+				const double level = yyjson_get_num(value_v);
+				named = std::to_string((long long)level);
+				const bool index = level >= 0.0 && level == std::floor(level) && level < (double)n;
+				at = index ? (size_t)level : n;
+				if (at < n && label_v && yyjson_is_str(label_v) && ValStr(label_v) != q.options[at]) {
+					bad(q.id, "level " + named + " is labelled '" + ValStr(label_v) + "', but level " + named + " is '" +
+					               q.options[at] + "'");
+				}
+			} else {
+				auto name_v = (value_v && yyjson_is_str(value_v)) ? value_v : label_v;
+				named = (name_v && yyjson_is_str(name_v)) ? ValStr(name_v) : "";
+				for (size_t i = 0; i < n; i++) {
+					if (q.options[i] == named) {
+						at = i;
+					}
+				}
+			}
+			if (at == n) {
+				bad(q.id, "it names " + string(q.kind == "score" ? "level" : "option") + " '" + named +
+				               "', which was not requested (requested: " + DecideJoinQuoted(q.options) + ")",
+				    "the service changed an option name or ignored the question; retry, or report it with the query");
+			}
+			if (!IsFiniteNum(prob_v) || yyjson_get_num(prob_v) < 0.0 || yyjson_get_num(prob_v) > 1.0) {
+				bad(q.id, "the probability for '" + q.options[at] + "' is not a number between 0 and 1");
+			}
+			p[at] = yyjson_get_num(prob_v);
+		}
+		double sum = 0.0;
+		double derived = 0.0;
+		size_t top = n;
+		for (size_t i = 0; i < n; i++) {
+			if (p[i] < 0.0) {
+				if (q.kind == "score") {
+					bad(q.id, "no probability for level '" + q.options[i] + "'");
+				}
+				p[i] = 0.0; // a choice answer may leave out options it gives no weight: every option is listed
+			}
+			sum += p[i];
+			derived += (double)i * p[i];
+			if (top == n || p[i] > p[top]) {
+				top = i;
+			}
+			ans.distribution.emplace_back(q.options[i], p[i]);
+		}
+		if (top == n || std::fabs(sum - 1.0) > ProbSumTolerance(ans.distribution.size())) {
+			bad(q.id, "the " + string(q.kind == "score" ? "level" : "option") + " probabilities sum to " +
+			               std::to_string(sum) + ", not 1");
+		}
+		if (q.kind == "choice") {
+			auto choice_v = yyjson_obj_get(a, "choice");
+			if (!choice_v || !yyjson_is_str(choice_v)) {
+				bad(q.id, "no 'choice' field (the selected option is missing)");
+			}
+			ans.choice = ValStr(choice_v);
+			auto chosen = std::find_if(ans.distribution.begin(), ans.distribution.end(),
+			                           [&](const std::pair<string, double> &kv) { return kv.first == ans.choice; });
+			if (chosen == ans.distribution.end()) {
+				bad(q.id, "it selects '" + ans.choice + "', which has no probability entry (options: " +
+				               DecideJoinQuoted(q.options) + ")");
+			}
+			ans.probability = chosen->second;
+		} else {
+			ans.probability = p[top];
+			auto score_v = yyjson_obj_get(a, "score");
+			if (IsFiniteNum(score_v)) {
+				const double server = yyjson_get_num(score_v);
+				// The score is the probability-weighted level index. Live answers match it exactly at 3 and 10
+				// levels; the tolerance leaves room for probabilities rounded to 2 decimals.
+				const double tolerance = 0.02 + 0.005 * (double)n;
+				if (std::fabs(server - derived) > tolerance) {
+					bad(q.id, "the score " + std::to_string(server) + " does not match its level probabilities (they give " +
+					               std::to_string(derived) + ")");
+				}
+				ans.expected = server;
+			} else {
+				ans.expected = derived;
+			}
+		}
+		out.push_back(std::move(ans));
+	}
+	return out;
+}
+
 vector<DecideQuestion> DecideParseManyQuestions(const string &json_arg, idx_t max_questions,
                                                const string &func_name) {
 	YyjsonDoc doc(yyjson_read(json_arg.c_str(), json_arg.size(), 0));
@@ -656,6 +936,11 @@ string DecideBuildManyResultJson(const string &model, const vector<DecideQuestio
 	for (size_t i = 0; i < questions.size() && i < answers.size(); i++) {
 		auto robj = yyjson_mut_obj(mdoc.doc);
 		yyjson_mut_obj_add_strcpy(mdoc.doc, robj, "id", answers[i].id.c_str());
+		if (answers[i].refused) {
+			yyjson_mut_obj_add_str(mdoc.doc, robj, "kind", "refusal");
+			yyjson_mut_arr_add_val(arr, robj);
+			continue;
+		}
 		const char *shown_kind =
 		    answers[i].kind == "noul" ? "binary" : (answers[i].kind == "score" ? "score" : "choice");
 		yyjson_mut_obj_add_str(mdoc.doc, robj, "kind", shown_kind);
@@ -890,6 +1175,14 @@ DecideRemoteConfig DecideResolveConfig(ClientContext &context, const DecideRemot
 	cfg.env_key = profile->env_key;
 	cfg.path = target.path.empty() ? profile->path : target.path;
 	cfg.max_questions = profile->max_questions;
+	cfg.wire = profile->wire;
+	if (cfg.wire == DecideWire::OPENAI_DECISIONS) {
+		cfg.input_mode = target.input_mode.empty() ? "auto" : target.input_mode;
+		// One cache key per model by default: rows of one query share the cache routing.
+		cfg.prompt_cache_key = target.prompt_cache_key_set ? target.prompt_cache_key
+		                                                   : (target.registered_id.empty() ? target.wire_model
+		                                                                                   : target.registered_id);
+	}
 	ExpandPathTemplate(target, cfg, function);
 	cfg.criteria_names = target.criteria_names < 0 ? profile->criteria_names : target.criteria_names == 1;
 
@@ -1180,11 +1473,12 @@ string DecideExtractServerMessage(const string &body, const string &api_key) {
 			}
 		}
 	}
-	msg = Truncate(CollapseWhitespace(msg), 240);
+	msg = CollapseWhitespace(msg);
+	// Before truncating: a key cut at the limit would otherwise leave a prefix behind.
 	if (!api_key.empty() && msg.find(api_key) != string::npos) {
 		return "<redacted>";
 	}
-	return msg;
+	return Truncate(msg, 240);
 }
 
 static string HostPort(const DecideRemoteConfig &cfg) {
@@ -1238,6 +1532,14 @@ DecideErrorInfo DecideFormatHttpError(const DecideRemoteConfig &cfg, int status,
 		      "': check that the token (" + (cfg.key_source.empty() ? string("CLOUDFLARE_API_TOKEN") : cfg.key_source) +
 		      ") has Workers AI - Read and Edit permission for that account and that the account id is right; replace "
 		      "the token with CREATE OR REPLACE SECRET (TYPE anofox_decide, API_KEY '<token>', SCOPE '" + cfg.host + "');";
+	} else if (cfg.wire == DecideWire::OPENAI_DECISIONS && status == 404 &&
+	           server.find("does not exist or you do not have access") != string::npos) {
+		// {"error": {"message": "The model `x` does not exist or you do not have access to it.", "code":
+		// "model_not_found"}}
+		what = who + " does not know the model '" + cfg.model + "' or this key may not use it (HTTP 404)" + srv;
+		fix = "OpenAI Decisions serves the model 'gpt-6-luna': SELECT decide_register_model('gpt-6-luna', 'openai'); "
+		      "(use MAP {'model': 'gpt-6-luna'} to give the model another id); if the name is right, check that the "
+		      "key's project has access to it";
 	} else if (cloudflare_route) {
 		what = who + " does not know the model '" + cfg.model + "' (HTTP " + std::to_string(status) + ")" + srv;
 		fix = "Cloudflare serves the models 'clef' and 'clef-flash': SELECT decide_register_model('clef', 'cloudflare'); "
@@ -1268,8 +1570,10 @@ DecideErrorInfo DecideFormatHttpError(const DecideRemoteConfig &cfg, int status,
 			fix = "the answer options were refused; register the model with MAP {'criteria': 'name'} (each option "
 			      "sent as its own description) or MAP {'criteria': 'null'}";
 		} else {
-			fix = "the request was built from your question and options; check them, and that this endpoint speaks "
-			      "the System One protocol (SELECT * FROM decide_models())";
+			fix = string("the request was built from your question and options; check them, and that this endpoint "
+			             "speaks the ") +
+			      (cfg.wire == DecideWire::OPENAI_DECISIONS ? "OpenAI Decisions API" : "System One protocol") +
+			      " (SELECT * FROM decide_models())";
 		}
 	} else if (status == 429) {
 		info.user_error = false;
@@ -1981,7 +2285,15 @@ vector<DecideAnswer> DecideRemoteEvaluateWithTransport(const DecideRemoteConfig 
 		    "split the questions across several calls (anofox_decide_max_questions caps one call; this model's own "
 		    "limit is " + std::to_string(cfg.max_questions) + ")"));
 	}
-	string body = DecideBuildRequestJson(state, cfg.model, questions, cfg.criteria_names);
+	string body;
+	if (cfg.wire == DecideWire::OPENAI_DECISIONS) {
+		DecideOpenAIRequestOptions options;
+		options.input_mode = cfg.input_mode;
+		options.prompt_cache_key = cfg.prompt_cache_key;
+		body = DecideBuildOpenAIRequestJson(state, cfg.model, questions, options);
+	} else {
+		body = DecideBuildRequestJson(state, cfg.model, questions, cfg.criteria_names);
+	}
 	// NOTE: no Content-Type here — httplib's Post(path, headers, body,
 	// content_type) sets it, and a duplicate header makes some servers
 	// ignore the body content type (observed as HTTP 422).
@@ -2022,9 +2334,17 @@ vector<DecideAnswer> DecideRemoteEvaluateWithTransport(const DecideRemoteConfig 
 		if (!last.transport_ok && last.error_kind == "timeout" && DecideHostIsLoopback(cfg.host)) {
 			last.error_kind = "connection";
 		}
+		// Nothing derived from a response (answer names, quoted text, server messages) may carry the key: it is
+		// removed from the body before the body is parsed, quoted or truncated anywhere.
+		if (last.transport_ok && !cfg.api_key.empty()) {
+			ReplaceAll(last.body, cfg.api_key, "<redacted>");
+		}
 		if (last.transport_ok && last.status == 200) {
-			return DecideParseResponseJson(last.body, questions, cfg.function, Who(cfg),
-			                               cfg.registered_id.empty() ? cfg.model : cfg.registered_id);
+			const string &id = cfg.registered_id.empty() ? cfg.model : cfg.registered_id;
+			if (cfg.wire == DecideWire::OPENAI_DECISIONS) {
+				return DecideParseOpenAIResponseJson(last.body, questions, cfg.function, Who(cfg), id);
+			}
+			return DecideParseResponseJson(last.body, questions, cfg.function, Who(cfg), id);
 		}
 		bool retryable =
 		    !last.transport_ok || DecideStatusRetryable(last.status) || last.status < 0 || last.status >= 500;

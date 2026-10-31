@@ -1,7 +1,7 @@
 #pragma once
 
-// DecideRemote — System One remote providers (TypeSafe Jev, Liquid AI D1, any
-// compatible server).
+// DecideRemote — remote providers: System One (TypeSafe Jev, Liquid AI D1,
+// Cloudflare Clef, any compatible server) and OpenAI Decisions (gpt-6-luna).
 //
 // Uses DuckDB's bundled libraries only: cpp-httplib (third_party/httplib,
 // namespace duckdb_httplib_openssl) for HTTPS and yyjson
@@ -61,6 +61,9 @@ struct DecideAnswer {
 	double confidence = std::numeric_limits<double>::quiet_NaN();
 	double expected = std::numeric_limits<double>::quiet_NaN(); // score only
 	string model;
+	// The service declined to answer (OpenAI Decisions: an answer of type "refusal"): probability and
+	// expected are NaN, choice and distribution empty; every SQL surface returns NULL for it.
+	bool refused = false;
 };
 
 // The answer row shared by decide_table and decide_answers (question_id, kind, probability, choice,
@@ -73,9 +76,14 @@ Value DecideAnswerStructValue(const DecideAnswer &answer, const string &fallback
 // actionable error naming `func_name` and the question id.
 void DecideValidateScoreLevels(const string &func_name, const string &id, const vector<string> &levels);
 
-// A remote provider profile: everything that differs between System One
-// compatible services (the wire format itself is shared). Single source of
-// truth for the provider whitelist, default endpoints and env-var keys.
+// The request/answer format a provider speaks. SYSTEM_ONE: {"state", "questions": {id: ...}} with answers
+// keyed by id. OPENAI_DECISIONS: {"input", "questions": [{name, ...}]} with an answers array, predicate /
+// choice / score / refusal answers.
+enum class DecideWire { SYSTEM_ONE, OPENAI_DECISIONS };
+
+// A remote provider profile: everything that differs between the remote
+// services. Single source of truth for the provider whitelist, default
+// endpoints, env-var keys and wire formats.
 struct DecideRemoteProfile {
 	const char *name;             // provider id used by decide_register_model
 	const char *display;          // human name for error messages
@@ -87,12 +95,13 @@ struct DecideRemoteProfile {
 	                              // string criteria values instead of null)
 	int default_concurrency;      // requests in flight per chunk when anofox_decide_max_concurrency is 0 (auto)
 	int max_questions;            // the provider's own cap on questions per request; 0 = none known
+	DecideWire wire;              // the request/answer format
 };
 // nullptr when `provider` is not a remote profile.
 const DecideRemoteProfile *DecideFindRemoteProfile(const string &provider);
 // Comma-separated remote provider ids, for error messages.
 string DecideRemoteProviderList();
-// The remote provider ids (typesafe, liquid, cloudflare, systemone, strands).
+// The remote provider ids (typesafe, liquid, cloudflare, openai, systemone, strands).
 vector<string> DecideRemoteProviderNames();
 
 // Per-model remote target (from decide_register_model); empty fields fall
@@ -106,6 +115,11 @@ struct DecideRemoteTarget {
 	int criteria_names = -1; // -1 follow the profile, 0 send null descriptions, 1 send the option names
 	string registered_id; // the id the model is registered under (for messages)
 	string account_id;    // cloudflare only: the Workers AI account id (else env CLOUDFLARE_ACCOUNT_ID)
+	// openai only: how the state is sent ("auto", "text", "json"; "" = auto) and the prompt_cache_key
+	// (the registered id unless set; set to "" to send none).
+	string input_mode;
+	string prompt_cache_key;
+	bool prompt_cache_key_set = false;
 };
 
 // Limits how many HTTP requests are in flight at once and backs off when the service rate limits.
@@ -158,6 +172,10 @@ struct DecideRemoteConfig {
 	// one, the account id that was put into the path (for messages).
 	int max_questions = 0;
 	string account_id;
+	// The wire format, and for OPENAI_DECISIONS the input mode and the prompt_cache_key ("" = none).
+	DecideWire wire = DecideWire::SYSTEM_ONE;
+	string input_mode = "auto";
+	string prompt_cache_key;
 	// Set by DecideRemoteRunJobs for the workers of one chunk; null = no limiting.
 	std::shared_ptr<DecideInflightGate> gate;
 };
@@ -210,6 +228,20 @@ vector<DecideAnswer> DecideParseResponseJson(const string &body, const vector<De
                                              const string &function = "decide",
                                              const string &service = "the remote service",
                                              const string &model_id = "");
+// OpenAI Decisions mapping (pure). input_mode "text" sends the state as the input string, "json" as an
+// input_json part (the state must be a JSON object or array), "auto" picks json when the state is one.
+// prompt_cache_key is sent when non-empty.
+struct DecideOpenAIRequestOptions {
+	string input_mode = "auto";
+	string prompt_cache_key;
+};
+string DecideBuildOpenAIRequestJson(const string &state, const string &model, const vector<DecideQuestion> &questions,
+                                    const DecideOpenAIRequestOptions &options = DecideOpenAIRequestOptions());
+// Answers in question order; a refusal is an answer with refused = true.
+vector<DecideAnswer> DecideParseOpenAIResponseJson(const string &body, const vector<DecideQuestion> &questions,
+                                                   const string &function = "decide",
+                                                   const string &service = "the remote service",
+                                                   const string &model_id = "");
 // decide_many batch JSON (also pure): parse the questions argument, render results.
 // func_name attributes validation errors (default "decide_many"; the table
 // surface passes "decide_table").

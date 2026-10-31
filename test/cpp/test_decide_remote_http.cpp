@@ -211,7 +211,8 @@ TEST_CASE("server messages never echo the API key", "[anofox_decide][remote][htt
 	// A service that reflects the key back in its error text.
 	LoopbackServer server({401, R"({"error":{"message":"Incorrect API key provided: liquid_secret_key_123."}})"});
 	auto msg = Run(Cfg(server.port));
-	REQUIRE_THAT(msg, Contains("rejected the API key (HTTP 401): \"<redacted>\""));
+	// The key is cut out of the body before anything reads it; the rest of the message stays useful.
+	REQUIRE_THAT(msg, Contains("rejected the API key (HTTP 401): \"Incorrect API key provided: <redacted>.\""));
 	REQUIRE_THAT(msg, !Contains("liquid_secret_key_123"));
 }
 

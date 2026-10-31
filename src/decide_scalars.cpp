@@ -123,7 +123,8 @@ void DecideProbabilityFun(DataChunk &args, ExpressionState &state, Vector &resul
 		    return true;
 	    },
 	    [&](idx_t i, const DecideBatchRequest &, const vector<DecideAnswer> &answers) {
-		    result.SetValue(i, Value::DOUBLE(answers[0].probability));
+		    // A refused answer (the service declined) is NULL, like a NULL input.
+		    result.SetValue(i, answers[0].refused ? Value(LogicalType::DOUBLE) : Value::DOUBLE(answers[0].probability));
 	    });
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 }
@@ -167,6 +168,10 @@ void DecideScoreFun(DataChunk &args, ExpressionState &state, Vector &result) {
 		    return true;
 	    },
 	    [&](idx_t i, const DecideBatchRequest &request, const vector<DecideAnswer> &answers) {
+		    if (answers[0].refused) {
+			    result.SetValue(i, Value(LogicalType::DOUBLE));
+			    return;
+		    }
 		    if (!std::isfinite(answers[0].expected)) {
 			    throw InvalidInputException(DecideMsg(
 			        "decide_score", "model '" + request.entry.id + "' returned an invalid score (NaN or infinity)",
@@ -209,6 +214,10 @@ void DecideDecisionFun(DataChunk &args, ExpressionState &state, Vector &result) 
 		    return true;
 	    },
 	    [&](idx_t i, const DecideBatchRequest &request, const vector<DecideAnswer> &answers) {
+		    if (answers[0].refused) {
+			    result.SetValue(i, Value(LogicalType::BOOLEAN));
+			    return;
+		    }
 		    const double p = answers[0].probability;
 		    if (!std::isfinite(p)) {
 			    throw InvalidInputException(DecideMsg(
@@ -271,6 +280,11 @@ static void DecideChoiceCore(const char *func, bool as_map, DataChunk &args, Exp
 		    return true;
 	    },
 	    [&](idx_t i, const DecideBatchRequest &request, const vector<DecideAnswer> &answers) {
+		    if (answers[0].refused) {
+			    result.SetValue(i, as_map ? Value(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::DOUBLE))
+			                              : Value(LogicalType::VARCHAR));
+			    return;
+		    }
 		    if (!as_map) {
 			    result.SetValue(i, Value(answers[0].choice));
 			    return;
@@ -382,7 +396,8 @@ void DecideRegisterModelFun(DataChunk &args, ExpressionState &state, Vector &res
 	const idx_t ncols = args.ColumnCount();
 	const bool has_map = ncols >= 3 && args.data[ncols - 1].GetType().id() == LogicalTypeId::MAP;
 	const idx_t positional_end = has_map ? ncols - 1 : ncols; // columns [1, positional_end) are positional
-	static const char *option_names[] = {"endpoint", "path", "model", "key_env", "criteria", "calibration", "account_id"};
+	static const char *option_names[] = {"endpoint",    "path",       "model", "key_env",         "criteria",
+	                                     "calibration", "account_id", "input", "prompt_cache_key"};
 	for (idx_t i = 0; i < count; i++) {
 		auto id_v = args.data[0].GetValue(i);
 		if (id_v.IsNull()) {
@@ -425,6 +440,11 @@ void DecideRegisterModelFun(DataChunk &args, ExpressionState &state, Vector &res
 					options.calibration = value;
 				} else if (key == "account_id") {
 					options.account_id = value;
+				} else if (key == "input") {
+					options.input_mode = value;
+				} else if (key == "prompt_cache_key") {
+					options.prompt_cache_key = value;
+					options.prompt_cache_key_set = true;
 				} else {
 					string what = "unknown option '" + key + "'";
 					const string close =
@@ -434,7 +454,8 @@ void DecideRegisterModelFun(DataChunk &args, ExpressionState &state, Vector &res
 					}
 					throw InvalidInputException(DecideMsg(
 					    "decide_register_model", what,
-					    "supported options: endpoint, path, model, key_env, criteria, calibration, account_id, e.g. MAP "
+					    "supported options: endpoint, path, model, key_env, criteria, calibration, account_id, input, "
+					    "prompt_cache_key, e.g. MAP "
 					    "{'endpoint': 'https://host', 'model': 'my-model'} (API keys go in CREATE SECRET or an env "
 					    "var, not here)"));
 				}
@@ -714,7 +735,9 @@ void RegisterDecideScalars(ExtensionLoader &loader) {
 		    "Register a model id for this database instance and return true. Providers: 'stub' (deterministic), "
 		    "'local' (ONNX graph and tokenizer paths, optional profile 'julia-1' or 'laya'), and the remote "
 		    "providers 'typesafe', 'liquid', 'cloudflare' (Clef on Workers AI: models 'clef' and 'clef-flash', "
-		    "account id from the account_id option or CLOUDFLARE_ACCOUNT_ID), 'systemone' and 'strands' (optional "
+		    "account id from the account_id option or CLOUDFLARE_ACCOUNT_ID), 'openai' (OpenAI Decisions, model "
+		    "'gpt-6-luna', key OPENAI_API_KEY; options input ('auto', 'text' or 'json': JSON state is sent as "
+		    "structured data) and prompt_cache_key; a refused answer is NULL), 'systemone' and 'strands' (optional "
 		    "options MAP with endpoint, path, model, key_env, criteria, account_id). The options MAP also takes "
 		    "calibration, 'platt:a,b', for any provider: it rescales that model's yes/no probabilities (fit a and b "
 		    "with decide_fit_calibration). Duplicate ids, unsupported providers and unreadable files raise "

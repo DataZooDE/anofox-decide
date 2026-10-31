@@ -20,14 +20,15 @@ SELECT item, status FROM decide_doctor() WHERE item = 'registered models'
 ----
 registered models	warn
 
-# decide_models(): the original four columns first, readiness columns appended, the serving device last.
+# decide_models(): the original four columns first, readiness columns appended, then the serving device and the
+# OpenAI request options.
 statement ok
 CREATE VIEW models_shape AS SELECT * FROM decide_models()
 
 query T
 SELECT string_agg(name, ',' ORDER BY cid) FROM pragma_table_info('models_shape')
 ----
-model,provider,mode,path,is_default,ready,hint,profile,endpoint,wire_model,calibration,device
+model,provider,mode,path,is_default,ready,hint,profile,endpoint,wire_model,calibration,device,input,prompt_cache_key
 
 query TTT
 SELECT model, ready, hint FROM decide_models() WHERE model = 'stub'

@@ -6,6 +6,25 @@ All notable changes to `anofox_decide` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **OpenAI Decisions** (`gpt-6-luna`, `POST https://api.openai.com/v1/decisions`) as the provider `openai`:
+  `export OPENAI_API_KEY=...`, then `SELECT decide_register_model('gpt-6-luna', 'openai');`. The same functions
+  and the same questions as for the other models; up to 400 questions per request (raise
+  `anofox_decide_max_questions`, default 100, to send more than 100). A state that is a JSON object
+  or array (`to_json(row)`, a JSON column) is sent as structured data (`input_json`); the model option
+  `input` ('auto', 'text', 'json') overrides that. `prompt_cache_key` defaults to the model id (so the rows of one
+  query share OpenAI's prompt cache) and can be set, or set to `''` to send none.
+- **Refusals**: when a model declines to answer (OpenAI's `refusal` answer type) the scalars return NULL, and
+  `decide_table` / `decide_answers` return the row with `kind = 'refusal'` and NULL answer fields, instead of
+  failing the query. `decide_accuracy` and the other metrics skip NULLs; to score a refusal as wrong, coalesce it.
+- `decide_models()` has two more columns, `input` and `prompt_cache_key` (OpenAI models only).
+- Usage tokens (cached and uncached input) are not recorded yet.
+
+### Fixed
+- A server message that contains the API key is no longer replaced as a whole: the key is cut out of every
+  response body before anything parses, quotes or truncates it, so neither the key nor a prefix of it can reach an
+  error message.
+
 ### Changed
 - Documentation restructured: short README, guides and API pages under docs/.
 - Error messages and `decide_doctor()` hints link to the new pages under docs/ instead of README anchors

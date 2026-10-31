@@ -70,6 +70,12 @@ unique_ptr<FunctionData> DecideModelsBind(ClientContext &context, TableFunctionB
 	// ready or whose explicit device cannot serve it (decide_doctor() says why).
 	names.emplace_back("device");
 	return_types.emplace_back(LogicalType::VARCHAR);
+	// OpenAI Decisions models only (NULL otherwise): how the state is sent ('auto', 'text', 'json') and the
+	// prompt_cache_key sent with every request ('' = none; by default the model id).
+	names.emplace_back("input");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	names.emplace_back("prompt_cache_key");
+	return_types.emplace_back(LogicalType::VARCHAR);
 	return make_uniq<DecideModelsData>();
 }
 
@@ -131,6 +137,12 @@ void DecideModelsScan(ClientContext &context, TableFunctionInput &data, DataChun
 		                row.calibration.set ? Value(DecideFormatPlatt(row.calibration.a, row.calibration.b))
 		                                    : Value(LogicalType::VARCHAR));
 		output.SetValue(11, row_count, gstate.device[gstate.offset]);
+		auto profile = DecideFindRemoteProfile(row.provider);
+		const bool openai = profile && profile->wire == DecideWire::OPENAI_DECISIONS;
+		output.SetValue(12, row_count,
+		                openai ? Value(row.input_mode.empty() ? string("auto") : row.input_mode) : Value(LogicalType::VARCHAR));
+		output.SetValue(13, row_count,
+		                openai ? Value(row.prompt_cache_key_set ? row.prompt_cache_key : row.id) : Value(LogicalType::VARCHAR));
 		gstate.offset++;
 		row_count++;
 	}
@@ -594,6 +606,18 @@ LogicalType DecideAnswerStructType() {
 
 Value DecideAnswerStructValue(const DecideAnswer &a, const string &fallback_model) {
 	child_list_t<Value> children;
+	if (a.refused) {
+		// The service declined to answer: the row says so, every answer field is NULL.
+		children.emplace_back("question_id", Value(a.id));
+		children.emplace_back("kind", Value("refusal"));
+		children.emplace_back("probability", Value(LogicalType::DOUBLE));
+		children.emplace_back("choice", Value(LogicalType::VARCHAR));
+		children.emplace_back("confidence", Value(LogicalType::DOUBLE));
+		children.emplace_back("model", Value(a.model.empty() ? fallback_model : a.model));
+		children.emplace_back("score", Value(LogicalType::DOUBLE));
+		children.emplace_back("distribution", Value(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::DOUBLE)));
+		return Value::STRUCT(std::move(children));
+	}
 	children.emplace_back("question_id", Value(a.id));
 	children.emplace_back("kind", Value(a.kind == "noul" ? "binary" : (a.kind == "score" ? "score" : "choice")));
 	children.emplace_back("probability", Value::DOUBLE(a.probability));
