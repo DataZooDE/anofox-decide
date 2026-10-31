@@ -88,7 +88,7 @@ At most `anofox_decide_max_questions` questions (default 100) go in one `decide_
 | Column | Type | Meaning |
 |---|---|---|
 | `question_id` | `VARCHAR` | the `id` you gave the question |
-| `kind` | `VARCHAR` | `binary`, `choice` or `score` |
+| `kind` | `VARCHAR` | `binary`, `choice` or `score`; `refusal` when the model declined to answer (then every answer column is `NULL`) |
 | `probability` | `DOUBLE` | `binary`: P(yes). `choice`: probability of the chosen option. `score`: probability of the most likely level |
 | `choice` | `VARCHAR` | the chosen option (`choice` only) |
 | `confidence` | `DOUBLE` | the model's own confidence when the service reports one, otherwise `NULL` |
@@ -113,6 +113,16 @@ FROM (SELECT id, unnest(decide_answers(text, '[{"id": "refund", "kind": "binary"
 
 A NULL text, question, option list or threshold gives a NULL result: no model is resolved and nothing is
 sent. A NULL `model` argument falls back to the session default.
+
+A model can also decline to answer (OpenAI Decisions has a `refusal` answer). The scalar functions then return
+NULL for that row, and `decide_table` / `decide_answers` return the row with `kind = 'refusal'`. The query goes
+on. Metrics such as `decide_accuracy` skip NULLs, so to count refusals as wrong answers, say so:
+
+```sql
+SELECT decide_accuracy(coalesce(p, CASE WHEN refund THEN 0.0 ELSE 1.0 END), refund, 0.5) AS accuracy,
+       count(*) FILTER (WHERE p IS NULL) AS refusals
+FROM (SELECT refund, decide_probability(text, 'A refund is requested.', model := 'gpt-6-luna') AS p FROM tickets);
+```
 
 ## Scoring many rows
 

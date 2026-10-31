@@ -29,7 +29,7 @@ FROM tickets;
 - **Many at once**: several questions about one text in one request (`decide_table`, `decide_answers`, `decide_many`)
 
 ### Hosted or on your machine
-- **Hosted**: TypeSafe **Jev**, Liquid AI **D1**, Cloudflare **Clef**
+- **Hosted**: TypeSafe **Jev**, Liquid AI **D1**, Cloudflare **Clef**, OpenAI **gpt-6-luna**
 - **Local servers**: **strands-decider**, **Kev** (or any System One compatible server)
 - **In-process, fully offline**: **Julia-1** and **Laya** on ONNX Runtime, optional GPU (CUDA, ROCm, Apple MLX)
 - **One SQL surface**: swap the model without touching the query, compare models on your own data in one statement
@@ -124,6 +124,7 @@ with real output and metrics: [Getting Started](docs/guides/01-getting-started.m
 | TypeSafe Jev | `typesafe` | hosted API | `TYPESAFE_API_KEY` |
 | Liquid AI D1 | `liquid` | hosted API | `LIQUID_API_KEY` |
 | Cloudflare Clef, Clef-flash | `cloudflare` | hosted API (Workers AI) | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` |
+| OpenAI gpt-6-luna | `openai` | hosted API (OpenAI Decisions) | `OPENAI_API_KEY` |
 | strands-decider 2B | `strands` | local server | no key |
 | Kev, or any System One server | `systemone` | your server | a key: required (any value for keyless servers such as Kev; or use provider `strands`) |
 | Julia-1, Laya multilingual, Laya typed-decisions | `local` | in-process, offline | `decide_download` once |
@@ -200,6 +201,7 @@ Prerequisites, faster local builds, live tests and tests that need weights: [doc
 | Jev | TypeSafe | the provider's API terms | hosted; receives the text you score |
 | D1 | Liquid AI | the provider's API terms | hosted; receives the text you score |
 | Clef, Clef-flash | Cloudflare | Apache 2.0 weights; the hosted service under Cloudflare's terms | hosted on Workers AI; receives the text you score |
+| gpt-6-luna | OpenAI | the provider's API terms | hosted; receives the text you score |
 | strands-decider | Strands Labs | Apache 2.0 | your machine, as a local server |
 | Kev | Jared Palmer | Apache 2.0 | your machine, as a local server |
 | Julia-1 | SupersonicLabs ([SupersonicLabs/Julia-1](https://huggingface.co/SupersonicLabs/Julia-1)) | Apache 2.0 | your machine, in-process; weights downloaded from Hugging Face on request |

@@ -1,12 +1,13 @@
 # Providers
 
-Hosted and local models are profiles over one wire format (System One: `binary`, `choice` and `score`
-questions, probabilities back), so a model is just a registered id, and several can be used side by side
+Hosted and local models answer the same three question kinds (`binary`, `choice` and `score`, probabilities
+back). Most speak one wire format (System One); OpenAI Decisions has its own, which the extension maps onto the
+same functions. A model is just a registered id, and several can be used side by side
 in one session with no `SET` in between. Which one to pick: [Choosing a model](../guides/02-choosing-a-model.md).
 
 - [Overview](#overview)
 - [Registering a model](#registering-a-model)
-- [Hosted providers](#hosted-providers): [TypeSafe Jev](#typesafe-jev), [Liquid AI D1](#liquid-ai-d1), [Cloudflare Clef](#cloudflare-clef)
+- [Hosted providers](#hosted-providers): [TypeSafe Jev](#typesafe-jev), [Liquid AI D1](#liquid-ai-d1), [Cloudflare Clef](#cloudflare-clef), [OpenAI Decisions](#openai-decisions)
 - [API keys and secrets](#api-keys-and-secrets)
 - [Local servers](#local-servers)
 
@@ -19,6 +20,7 @@ Every provider answers all three question kinds (`binary`, `choice`, `score`).
 | `typesafe` | TypeSafe Jev (`jev-latest`) | hosted API; opt-in via `anofox_decide_allow_remote` | `https://api.typesafe.ai` | `TYPESAFE_API_KEY` |
 | `liquid` | Liquid AI D1 (`d1:free`) | hosted API; same opt-in | `https://api.liquid.ai` | `LIQUID_API_KEY` |
 | `cloudflare` | Cloudflare Clef (`clef`), Clef-flash (`clef-flash`) | hosted API (Workers AI); same opt-in | `https://api.cloudflare.com` | `CLOUDFLARE_API_TOKEN` |
+| `openai` | OpenAI Decisions (`gpt-6-luna`) | hosted API; same opt-in | `https://api.openai.com` | `OPENAI_API_KEY` |
 | `strands` | [strands-decider](https://github.com/strands-labs/strands-decider) 2B | local server on loopback; same opt-in | `http://127.0.0.1:8000` | none |
 | `systemone` | any System One compatible server, e.g. [Kev](https://github.com/jaredpalmer/kev) | your endpoint (`https://`, or `http://` on loopback); same opt-in | you set it | required (any value for keyless servers such as Kev; or use provider `strands`): [Local servers](#local-servers) |
 | `local` | Julia-1, Laya multilingual, Laya typed-decisions | in-process on CPU (or a [GPU](04-gpu.md)), offline after setup | — | none ([Local models](03-local-models.md)) |
@@ -47,7 +49,8 @@ SELECT decide_probability('...', '...', model := 'jev-latest');
 SELECT decide_probability('...', '...', model := 'd1:free');
 ```
 
-Per-model options go in a `MAP` (keys `endpoint`, `path`, `model`, `key_env`, `criteria`, `calibration`, `account_id`): a self-hosted
+Per-model options go in a `MAP` (keys `endpoint`, `path`, `model`, `key_env`, `criteria`, `calibration`, `account_id`,
+and for OpenAI `input` and `prompt_cache_key`): a self-hosted
 server, a different model name on the wire, an explicit key variable for a custom endpoint, or
 `criteria: 'name'` for servers whose schema wants a string description per choice option instead of `null`, or a fitted `calibration` ([Calibration](../guides/03-evaluate-and-calibrate.md#calibration)):
 
@@ -142,6 +145,53 @@ Things worth knowing:
   27B and 9B models are too large to run in-process like Julia-1 or Laya; to run them yourself, serve them behind a
   System One compatible endpoint (see the model card for serving options) and register that endpoint with
   provider `systemone`.
+
+### OpenAI Decisions
+
+[OpenAI Decisions](https://developers.openai.com/api/docs/guides/decisions) (`POST /v1/decisions`, model
+`gpt-6-luna`) answers the same three question kinds, so the call is the same:
+
+```bash
+export OPENAI_API_KEY=...            # before starting DuckDB
+```
+```sql
+SET anofox_decide_allow_remote = true;
+SELECT decide_register_model('gpt-6-luna', 'openai');       -- the id is the model name on the wire
+SELECT decide_choice('I was charged twice.', 'Which team should handle this?',
+                     ['billing', 'technical', 'sales'], model := 'gpt-6-luna');
+```
+
+Things worth knowing:
+
+- **Structured state:** a text that is a JSON object or array, such as `to_json(row)` or a JSON column, is sent
+  as structured data (an `input_json` part), which OpenAI reads as data rather than prose. Any other text is
+  sent as text. The model option `input` overrides this: `'auto'` (the default), `'text'` (always text) or
+  `'json'` (the state must be an object or an array, otherwise the call fails).
+  ```sql
+  SELECT decide_probability(to_json({ticket: text, team: team})::VARCHAR,
+                            'The customer reports a damaged product.', model := 'gpt-6-luna')
+  FROM tickets;
+  ```
+- **Prompt cache:** every request carries a `prompt_cache_key`, by default the model id, so the rows of one
+  query share OpenAI's prompt cache (it applies from 1,024 shared input tokens). Set your own with
+  `MAP {'prompt_cache_key': 'tickets-v1'}`, or send none with `MAP {'prompt_cache_key': ''}`.
+  `decide_models()` shows both options.
+- **Refusals:** the model can decline to answer a question. Its answer is then NULL in the scalar functions
+  and a row with `kind = 'refusal'` and NULL answer fields in `decide_table` / `decide_answers`; the other
+  questions of the same request are still answered. In our 200-ticket evaluation this happened once, on a
+  harmless refund request. Metrics such as `decide_accuracy` skip NULLs; to count a refusal as wrong, coalesce
+  it ([Output columns](01-functions.md#output-columns-of-decide_table)).
+- **Limits and cost:** up to **400 questions** per request (raise
+  [`anofox_decide_max_questions`](05-settings.md), default 100, to send more than 100); a call with more is
+  refused before anything is sent. Input tokens are billed ($0.10 per million uncached); output tokens are
+  not.
+- **Quality:** see [How the models compare](../guides/02-choosing-a-model.md#how-the-models-compare). At the
+  0.5 cut-off it is conservative on refund requests (specificity 96%, recall 73%) and the best calibrated of
+  the hosted models we measured.
+- **Errors:** a wrong key is an HTTP 401 naming where the key came from; a model name OpenAI does not know (or
+  your project may not use) is an HTTP 404, and the message names `gpt-6-luna`. The key never appears in a
+  message, even when the service echoes it.
+- **Not supported:** images (OpenAI Decisions accepts them; the functions here take text only).
 
 <!--
   ADD MORE HOSTED PROVIDERS HERE.
