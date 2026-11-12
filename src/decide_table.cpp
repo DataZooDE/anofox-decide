@@ -377,7 +377,7 @@ unique_ptr<GlobalTableFunctionState> DecideDoctorInitGlobal(ClientContext &conte
 				unscoped = unscoped && scope.empty();
 			}
 			if (kv && !named && unscoped) {
-				const string name = entry.secret->GetName();
+				const string name = duckdb_compat::Str(entry.secret->GetName());
 				rows.push_back({"secret '" + name + "'", "warn",
 				                "the secret has neither SERVICE nor SCOPE, so its key is sent to every remote host, "
 				                "including providers added later",

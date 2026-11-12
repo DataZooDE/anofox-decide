@@ -6,6 +6,7 @@
 #define CPPHTTPLIB_OPENSSL_SUPPORT
 #include "httplib.hpp"
 #include "duckdb_compat/httplib.hpp"
+#include "duckdb_compat/dispatch.hpp"
 #include "yyjson.hpp"
 
 #include "decide_errors.hpp"
@@ -1528,7 +1529,8 @@ DecideResolvedKey DecideResolveServiceKey(ClientContext &context, const string &
 			}
 			const int64_t storage =
 			    entry.storage_mode == "memory" ? 10 : (entry.storage_mode == "local_file" ? 20 : 30);
-			Rank rank {score, !named.empty(), storage, kv->GetName()};
+			const string secret_name = duckdb_compat::Str(kv->GetName());
+			Rank rank {score, !named.empty(), storage, secret_name};
 			if (found && !better(rank, best)) {
 				continue;
 			}
@@ -1536,7 +1538,7 @@ DecideResolvedKey DecideResolveServiceKey(ClientContext &context, const string &
 			best = rank;
 			out.key = key;
 			out.account_id = SecretString(*kv, "account_id");
-			out.secret_name = kv->GetName();
+			out.secret_name = secret_name;
 			string where;
 			if (!named.empty()) {
 				where = "service " + named;
@@ -1547,7 +1549,7 @@ DecideResolvedKey DecideResolveServiceKey(ClientContext &context, const string &
 				}
 				where = scopes.empty() ? string("no SCOPE: every remote host") : "scope " + scopes;
 			}
-			out.source = "the stored secret '" + kv->GetName() + "' (" + where + ")";
+			out.source = "the stored secret '" + secret_name + "' (" + where + ")";
 		}
 		if (found) {
 			return out;
