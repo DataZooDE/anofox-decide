@@ -69,7 +69,7 @@ SELECT decide_register_model('opt-local', 'stub', MAP {'endpoint': 'https://x.ex
 statement error
 SELECT decide_register_model('nope', 'anthropic')
 ----
-<REGEX>:.*not supported.*liquid.*openai.*systemone.*
+<REGEX>:.*not supported.*liquid.*openai.*gemini.*systemone.*
 
 # Calls stay behind the explicit allow_remote opt-in.
 statement error
@@ -247,3 +247,43 @@ SELECT model, input, prompt_cache_key FROM decide_models() WHERE model IN ('gpt-
 clef	NULL	NULL
 gpt-6-luna	auto	gpt-6-luna
 luna-json	json	tickets-v1
+
+# --- Gemini Decisions (gemini-decision-1) ---
+
+query I
+SELECT decide_register_model('gemini-decision-1', 'gemini')
+----
+1
+
+query TT
+SELECT endpoint, wire_model FROM decide_models() WHERE model = 'gemini-decision-1'
+----
+https://generativelanguage.googleapis.com/v1beta/decisions	gemini-decision-1
+
+statement error
+SELECT decide_register_model('gem-criteria', 'gemini', MAP {'criteria': 'name'})
+----
+<REGEX>:.*option 'criteria' does not apply to provider 'gemini'.*
+
+statement error
+SELECT decide_register_model('gem-input', 'gemini', MAP {'input': 'json'})
+----
+<REGEX>:.*option 'input' only applies to provider 'openai', but the provider is 'gemini'.*
+
+# Hermetic: the offline suite runs with GEMINI_API_KEY unset, so the next missing piece is the key.
+statement error
+SELECT decide_probability('x', 'y', model := 'gemini-decision-1')
+----
+<REGEX>:.*no API key for Gemini at generativelanguage\.googleapis\.com\. Fix: provide one: \(1\) CREATE SECRET \(TYPE anofox_decide, SERVICE 'gemini', API_KEY '<key>'\); \(2\) export GEMINI_API_KEY=<key> before starting DuckDB.*
+
+# A SERVICE 'gemini' secret is the key (checked hermetically through the readiness report).
+statement ok
+CREATE SECRET gem_test (TYPE anofox_decide, SERVICE 'gemini', API_KEY 'AIza-not-real')
+
+query TT
+SELECT ready, key_source FROM decide_models() WHERE model = 'gemini-decision-1'
+----
+true	a stored secret (service gemini)
+
+statement ok
+DROP SECRET gem_test

@@ -78,8 +78,10 @@ void DecideValidateScoreLevels(const string &func_name, const string &id, const 
 
 // The request/answer format a provider speaks. SYSTEM_ONE: {"state", "questions": {id: ...}} with answers
 // keyed by id. OPENAI_DECISIONS: {"input", "questions": [{name, ...}]} with an answers array, predicate /
-// choice / score / refusal answers.
-enum class DecideWire { SYSTEM_ONE, OPENAI_DECISIONS };
+// choice / score / refusal answers. GEMINI_DECISIONS: System One with "input" instead of "state", question ids
+// q0..qn on the wire (Gemini only takes [A-Za-z0-9_-]{1,64}), the key in x-goog-api-key, and a safety block as a
+// whole-request HTTP 400 that becomes a refusal of every question.
+enum class DecideWire { SYSTEM_ONE, OPENAI_DECISIONS, GEMINI_DECISIONS };
 
 // A remote provider profile: everything that differs between the remote
 // services. Single source of truth for the provider whitelist, default
@@ -283,6 +285,20 @@ vector<DecideAnswer> DecideParseOpenAIResponseJson(const string &body, const vec
                                                    const string &function = "decide",
                                                    const string &service = "the remote service",
                                                    const string &model_id = "");
+// Gemini Decisions mapping (pure). The request carries "input" (the state; it must not be empty) and question
+// i under the wire id "q<i>"; choice criteria are null. The parser maps "q<i>" back to questions[i] (every message
+// names the user's id) and checks that a score legend, when sent, names the requested levels in order.
+string DecideBuildGeminiRequestJson(const string &state, const string &model, const vector<DecideQuestion> &questions);
+vector<DecideAnswer> DecideParseGeminiResponseJson(const string &body, const vector<DecideQuestion> &questions,
+                                                   const string &function = "decide",
+                                                   const string &service = "the remote service",
+                                                   const string &model_id = "");
+// The error.code of a Gemini safety block (safety, prohibited_content, blocklist, image_safety, content_blocked)
+// in an HTTP 400 body; "" when the body is not one.
+string DecideGeminiSafetyCode(int status, const string &body);
+// The authentication header(s) of a request: x-goog-api-key for Gemini, else "Authorization: Bearer <key>";
+// none when cfg.send_auth is false.
+DecideHeaderList DecideAuthHeaders(const DecideRemoteConfig &cfg);
 // decide_many batch JSON (also pure): parse the questions argument, render results.
 // func_name attributes validation errors (default "decide_many"; the table
 // surface passes "decide_table").

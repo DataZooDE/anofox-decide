@@ -1,0 +1,99 @@
+# name: test/sql/decide_remote_live_gemini.test
+# description: LIVE Gemini Decisions E2E (gemini-decision-1). Requires GEMINI_API_KEY in the environment and outbound
+#              HTTPS to generativelanguage.googleapis.com. NOT part of the default suite: run via `make test-live`
+#              (explicit SKIP without the key, never fake-green).
+# group: [anofox_decide]
+
+require anofox_decide
+
+require-env GEMINI_API_KEY
+
+statement ok
+LOAD anofox_decide
+
+statement ok
+SET anofox_decide_allow_remote=true
+
+statement ok
+SELECT decide_register_model('gemini-decision-1', 'gemini')
+
+query I
+SELECT (p > 0.5)::INTEGER FROM (
+  SELECT decide_probability('Checkout has been failing for every customer for the last hour.', 'Is this support request urgent?', model := 'gemini-decision-1') AS p
+)
+----
+1
+
+query T
+SELECT decide_choice('My invoice charges twice the agreed amount.', 'Which team should handle this request?', ['billing','technical','sales'], model := 'gemini-decision-1')
+----
+billing
+
+query I
+SELECT decide_score('This is the third time and I am furious, nobody answers!', 'How frustrated is the writer?', ['calm','frustrated','angry'], model := 'gemini-decision-1')
+     > decide_score('Thanks a lot, everything works great now.', 'How frustrated is the writer?', ['calm','frustrated','angry'], model := 'gemini-decision-1')
+----
+true
+
+# The distribution covers every option and sums to 1.
+query I
+SELECT abs(list_sum(map_values(d)) - 1.0) < 0.02 AND cardinality(d) = 3 FROM (
+  SELECT decide_choice_distribution('My invoice charges twice the agreed amount.', 'Which team should handle this request?', ['billing','technical','sales'], model := 'gemini-decision-1') AS d
+)
+----
+true
+
+# Ids Gemini itself refuses ([A-Za-z0-9_-]{1,64} only): they travel as q0, q1, q2 and come back as given.
+query TT
+SELECT question_id, kind FROM decide_table('Checkout has been failing for every customer for the last hour.',
+  '[{"id":"is urgent?","kind":"binary","instruction":"Is this support request urgent?"},{"id":"team.v2","kind":"choice","instruction":"Which team should handle this request?","options":["billing","technical","sales"]},{"id":"Schwere (1-4)","kind":"score","instruction":"How severe is the customer impact?","levels":["No impact","Minor","Major","Critical"]}]',
+  model := 'gemini-decision-1')
+ORDER BY question_id
+----
+Schwere (1-4)	score
+is urgent?	binary
+team.v2	choice
+
+query I
+SELECT decide_many('Checkout has been failing for every customer for the last hour.',
+  '[{"id":"is urgent?","kind":"binary","instruction":"Is this support request urgent?"},{"id":"team.v2","kind":"choice","instruction":"Which team should handle this request?","options":["billing","technical","sales"]}]',
+  model := 'gemini-decision-1') LIKE '%"id":"is urgent?"%"id":"team.v2"%'
+----
+true
+
+# The answer carries no model name: the registered id fills the column.
+query T
+SELECT DISTINCT model FROM decide_table('The parcel arrived crushed.', '[{"id":"damage","kind":"binary","instruction":"The product arrived damaged."}]', model := 'gemini-decision-1')
+----
+gemini-decision-1
+
+# A labelled chunk scored together (concurrently): the model must discriminate, not merely return numbers. A refusal
+# (NULL) is scored as the wrong answer.
+query I
+SELECT decide_accuracy(coalesce(p, CASE WHEN refund THEN 0.0 ELSE 1.0 END), refund, 0.5) >= 0.85 FROM (
+  SELECT refund, decide_probability(text, 'A refund is requested.', model := 'gemini-decision-1') AS p
+  FROM read_csv('test/fixtures/support_tickets.csv')
+)
+----
+true
+
+# An unknown model name: the message suggests gemini-decision-1.
+statement ok
+SELECT decide_register_model('gem-typo', 'gemini', MAP {'model': 'gemini-decision-9'})
+
+statement error
+SELECT decide_probability('x', 'y', model := 'gem-typo')
+----
+<REGEX>:.*does not know the model 'gemini-decision-9' \(HTTP 404\).*decide_register_model\('gemini-decision-1', 'gemini'\).*
+
+# A wrong key in a secret (Gemini answers HTTP 400 API_KEY_INVALID): a key error naming the secret, never the key.
+statement ok
+CREATE SECRET bad_gemini (TYPE anofox_decide, SERVICE 'gemini', API_KEY 'AIzaNotARealKey000000000000000000000000')
+
+statement error
+SELECT decide_probability('x', 'y', model := 'gemini-decision-1')
+----
+<REGEX>:.*Gemini.*rejected the API key \(HTTP 400\).*a stored secret \(service gemini\).*
+
+statement ok
+DROP SECRET bad_gemini

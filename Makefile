@@ -90,6 +90,7 @@ test-live:
 	if [ -z "$$LIQUID_API_KEY" ]; then echo "SKIP: LIQUID_API_KEY not set — Liquid D1 live E2E not run"; else $(DECIDE_TEST_ENV) ./$(BUILD_ROOT)/release/test/unittest --test-config test/configs/live.json "test/sql/decide_remote_live_liquid.test"; fi
 	if [ -z "$$CLOUDFLARE_API_TOKEN" ] || [ -z "$$CLOUDFLARE_ACCOUNT_ID" ]; then echo "SKIP: CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID not set — Cloudflare Clef live E2E not run"; else $(DECIDE_TEST_ENV) ./$(BUILD_ROOT)/release/test/unittest --test-config test/configs/live.json "test/sql/decide_remote_live_cloudflare.test"; fi
 	if [ -z "$$OPENAI_API_KEY" ]; then echo "SKIP: OPENAI_API_KEY not set — OpenAI Decisions live E2E not run"; else $(DECIDE_TEST_ENV) ./$(BUILD_ROOT)/release/test/unittest --test-config test/configs/live.json "test/sql/decide_remote_live_openai.test"; fi
+	if [ -z "$$GEMINI_API_KEY" ]; then echo "SKIP: GEMINI_API_KEY not set — Gemini Decisions live E2E not run"; else $(DECIDE_TEST_ENV) ./$(BUILD_ROOT)/release/test/unittest --test-config test/configs/live.json "test/sql/decide_remote_live_gemini.test"; fi
 
 # anofox-visualization picks up the contract producers (#34, DoD): the built artifact next to a released
 # anofox_visualization in the official DuckDB CLI. Needs network (CLI and extension download).

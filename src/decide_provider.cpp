@@ -213,10 +213,12 @@ void DecideRegistry::RegisterModel(ClientContext &context, const string &id, con
 			        provider + "', MAP {'endpoint': 'https://host'}); file paths are only for provider 'local'."));
 		}
 		const bool openai = remote_profile->wire == DecideWire::OPENAI_DECISIONS;
-		if (openai && !options.criteria.empty()) {
+		const bool gemini = remote_profile->wire == DecideWire::GEMINI_DECISIONS;
+		if ((openai || gemini) && !options.criteria.empty()) {
 			throw InvalidInputException(DecideMsg(
-			    fn, "option 'criteria' does not apply to provider 'openai'",
-			    "drop it: OpenAI Decisions always sends each option with its own text as the description"));
+			    fn, "option 'criteria' does not apply to provider '" + provider + "'",
+			    openai ? "drop it: OpenAI Decisions always sends each option with its own text as the description"
+			           : "drop it: Gemini Decisions always sends the choice options without descriptions"));
 		}
 		for (auto &opt : {std::make_pair("input", !options.input_mode.empty()),
 		                  std::make_pair("prompt_cache_key", options.prompt_cache_key_set)}) {

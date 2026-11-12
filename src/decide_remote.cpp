@@ -152,6 +152,10 @@ const DecideRemoteProfile kRemoteProfiles[] = {
     // at most 400 questions per request.
     {"openai", "OpenAI", "https://api.openai.com", "/v1/decisions", "OPENAI_API_KEY", true, false, 8, 400,
      DecideWire::OPENAI_DECISIONS},
+    // Gemini Decisions (gemini-decision-1): System One shapes with "input", neutral question ids, the key in
+    // x-goog-api-key; at most 1000 questions per request.
+    {"gemini", "Gemini", "https://generativelanguage.googleapis.com", "/v1beta/decisions", "GEMINI_API_KEY", true,
+     false, 8, 1000, DecideWire::GEMINI_DECISIONS},
     // Generic System One-compatible server (e.g. Kev): the model supplies the endpoint.
     {"systemone", "System One endpoint", "", "/v1/systemone", "", true, false, 8, 0, S1},
     // strands-decider (`strands-decider serve`): a local, keyless server on loopback whose schema
@@ -327,18 +331,19 @@ static string WriteJson(YyjsonMutDoc &mdoc, const char *what) {
 	return body;
 }
 
-string DecideBuildRequestJson(const string &state, const string &model, const vector<DecideQuestion> &questions,
-                              bool criteria_names) {
-	ValidateRemoteQuestions(questions);
-	YyjsonMutDoc mdoc;
-	if (!mdoc.doc) {
-		throw InternalException("decide: failed to allocate remote request JSON");
-	}
-	auto root = yyjson_mut_obj(mdoc.doc);
-	yyjson_mut_obj_add_strcpy(mdoc.doc, root, "state", state.c_str());
-	yyjson_mut_obj_add_strcpy(mdoc.doc, root, "model", model.c_str());
+// The wire id of question i for Gemini, which only takes [A-Za-z0-9_-]{1,64}: neutral ids keep every user id
+// (dots, spaces, umlauts) portable, and the answers are mapped back by position.
+static string GeminiWireId(size_t i) {
+	return "q" + std::to_string(i);
+}
+
+// The System One "questions" map ({id: {type, instructions, criteria}}), shared by System One and Gemini.
+// `neutral_ids`: key question i by GeminiWireId(i) instead of its own id.
+static void AddQuestionsMap(YyjsonMutDoc &mdoc, yyjson_mut_val *root, const vector<DecideQuestion> &questions,
+                            bool criteria_names, bool neutral_ids) {
 	auto qmap = yyjson_mut_obj(mdoc.doc);
-	for (auto &q : questions) {
+	for (size_t i = 0; i < questions.size(); i++) {
+		auto &q = questions[i];
 		auto qobj = yyjson_mut_obj(mdoc.doc);
 		yyjson_mut_obj_add_strcpy(mdoc.doc, qobj, "type", q.kind.c_str());
 		yyjson_mut_obj_add_strcpy(mdoc.doc, qobj, "instructions", q.instruction.c_str());
@@ -360,9 +365,42 @@ string DecideBuildRequestJson(const string &state, const string &model, const ve
 			}
 			yyjson_mut_obj_add_val(mdoc.doc, qobj, "criteria", crit);
 		}
-		yyjson_mut_obj_add_val(mdoc.doc, qmap, q.id.c_str(), qobj);
+		const string key = neutral_ids ? GeminiWireId(i) : q.id;
+		yyjson_mut_obj_add(qmap, yyjson_mut_strncpy(mdoc.doc, key.c_str(), key.size()), qobj);
 	}
 	yyjson_mut_obj_add_val(mdoc.doc, root, "questions", qmap);
+}
+
+string DecideBuildRequestJson(const string &state, const string &model, const vector<DecideQuestion> &questions,
+                              bool criteria_names) {
+	ValidateRemoteQuestions(questions);
+	YyjsonMutDoc mdoc;
+	if (!mdoc.doc) {
+		throw InternalException("decide: failed to allocate remote request JSON");
+	}
+	auto root = yyjson_mut_obj(mdoc.doc);
+	yyjson_mut_obj_add_strcpy(mdoc.doc, root, "state", state.c_str());
+	yyjson_mut_obj_add_strcpy(mdoc.doc, root, "model", model.c_str());
+	AddQuestionsMap(mdoc, root, questions, criteria_names, false);
+	yyjson_mut_doc_set_root(mdoc.doc, root);
+	return WriteJson(mdoc, "remote request");
+}
+
+string DecideBuildGeminiRequestJson(const string &state, const string &model, const vector<DecideQuestion> &questions) {
+	ValidateRemoteQuestions(questions);
+	if (state.empty()) {
+		throw InvalidInputException(DecideMsg("decide", "the state is empty: Gemini needs some text to decide about",
+		                                      "pass a non-empty text (filter empty rows with WHERE length(state) > 0, "
+		                                      "or map them to NULL with nullif(state, ''))"));
+	}
+	YyjsonMutDoc mdoc;
+	if (!mdoc.doc) {
+		throw InternalException("decide: failed to allocate remote request JSON");
+	}
+	auto root = yyjson_mut_obj(mdoc.doc);
+	yyjson_mut_obj_add_strcpy(mdoc.doc, root, "model", model.c_str());
+	yyjson_mut_obj_add_strcpy(mdoc.doc, root, "input", state.c_str());
+	AddQuestionsMap(mdoc, root, questions, false, true);
 	yyjson_mut_doc_set_root(mdoc.doc, root);
 	return WriteJson(mdoc, "remote request");
 }
@@ -370,8 +408,24 @@ string DecideBuildRequestJson(const string &state, const string &model, const ve
 static string CollapseWhitespace(const string &in);
 static string Truncate(const string &in, size_t max_len);
 
-vector<DecideAnswer> DecideParseResponseJson(const string &body, const vector<DecideQuestion> &questions,
-                                             const string &function, const string &service, const string &model_id) {
+// System One answers ({"answers": {id: {...}}}). `wire_ids`, when given, are the keys question i travelled under
+// (Gemini's q0..qn); every message still names the user's id. `check_legend`: a score "legend" ({"i": level}) must
+// name the requested levels in order.
+static vector<DecideAnswer> ParseSystemOneAnswers(const string &body, const vector<DecideQuestion> &questions,
+                                                  const string &function, const string &service,
+                                                  const string &model_id, const vector<string> *wire_ids,
+                                                  bool check_legend) {
+	// The user's id for a key the service sent (a wire id maps back; anything else is shown as sent).
+	auto user_id = [&](const string &key) {
+		if (wire_ids) {
+			for (size_t i = 0; i < wire_ids->size() && i < questions.size(); i++) {
+				if ((*wire_ids)[i] == key) {
+					return questions[i].id;
+				}
+			}
+		}
+		return key;
+	};
 	auto kind_name = [](const string &kind) { return kind == "noul" ? string("binary") : kind; };
 	// "<service>, model 'id', question 'q'" prefix; the user sees which service and model answered.
 	auto bad = [&](const string &qid, const string &what, const string &fix = "") {
@@ -424,15 +478,17 @@ vector<DecideAnswer> DecideParseResponseJson(const string &body, const vector<De
 		            (server.empty() ? "" : ": \"" + server + "\""));
 	}
 	vector<DecideAnswer> out;
-	for (auto &q : questions) {
-		auto a = yyjson_obj_get(answers_v, q.id.c_str());
+	for (size_t qi = 0; qi < questions.size(); qi++) {
+		auto &q = questions[qi];
+		const string &key_on_wire = wire_ids ? (*wire_ids)[qi] : q.id;
+		auto a = yyjson_obj_getn(answers_v, key_on_wire.c_str(), key_on_wire.size());
 		if (!a || !yyjson_is_obj(a)) {
 			string got;
 			yyjson_obj_iter aiter;
 			yyjson_obj_iter_init(answers_v, &aiter);
 			yyjson_val *akey;
 			while ((akey = yyjson_obj_iter_next(&aiter))) {
-				got += (got.empty() ? "" : ", ") + string(yyjson_get_str(akey), yyjson_get_len(akey));
+				got += (got.empty() ? "" : ", ") + user_id(string(yyjson_get_str(akey), yyjson_get_len(akey)));
 			}
 			bad(q.id, "sent no answer for it (answers present: " + (got.empty() ? string("none") : got) + ")");
 		}
@@ -511,6 +567,34 @@ vector<DecideAnswer> DecideParseResponseJson(const string &body, const vector<De
 			} else {
 				ans.expected = derived;
 			}
+			auto legend_v = check_legend ? yyjson_obj_get(a, "legend") : nullptr;
+			if (legend_v && yyjson_is_obj(legend_v)) {
+				// The service echoes the rubric it scored against; a reordered or renamed rubric would silently
+				// shift every level, so it must match the request exactly.
+				yyjson_obj_iter liter;
+				yyjson_obj_iter_init(legend_v, &liter);
+				yyjson_val *lkey;
+				while ((lkey = yyjson_obj_iter_next(&liter))) {
+					const string idx(yyjson_get_str(lkey), yyjson_get_len(lkey));
+					auto lval = yyjson_obj_iter_get_val(lkey);
+					size_t at = n;
+					for (size_t i = 0; i < n; i++) {
+						if (idx == std::to_string(i)) {
+							at = i;
+						}
+					}
+					const string label = (lval && yyjson_is_str(lval)) ? ValStr(lval) : string("(not text)");
+					if (at == n) {
+						bad(q.id, "its legend names level '" + idx + "', which is not one of the " + std::to_string(n) +
+						               " requested levels");
+					}
+					if (label != q.options[at]) {
+						bad(q.id, "level " + idx + " is labelled '" + label + "', but level " + idx + " is '" +
+						               q.options[at] + "'",
+						    "the service reordered or renamed the rubric; retry, or report it with the query");
+					}
+				}
+			}
 			auto conf_v = yyjson_obj_get(a, "confidence");
 			if (conf_v && yyjson_is_num(conf_v)) {
 				ans.confidence = yyjson_get_num(conf_v);
@@ -566,6 +650,21 @@ vector<DecideAnswer> DecideParseResponseJson(const string &body, const vector<De
 		out.push_back(std::move(ans));
 	}
 	return out;
+}
+
+vector<DecideAnswer> DecideParseResponseJson(const string &body, const vector<DecideQuestion> &questions,
+                                             const string &function, const string &service, const string &model_id) {
+	return ParseSystemOneAnswers(body, questions, function, service, model_id, nullptr, false);
+}
+
+vector<DecideAnswer> DecideParseGeminiResponseJson(const string &body, const vector<DecideQuestion> &questions,
+                                                   const string &function, const string &service,
+                                                   const string &model_id) {
+	vector<string> wire_ids;
+	for (size_t i = 0; i < questions.size(); i++) {
+		wire_ids.push_back(GeminiWireId(i));
+	}
+	return ParseSystemOneAnswers(body, questions, function, service, model_id, &wire_ids, true);
 }
 
 //--- OpenAI Decisions ------------------------------------------------------
@@ -1712,6 +1811,19 @@ DecideErrorInfo DecideFormatHttpError(const DecideRemoteConfig &cfg, int status,
 		fix = "OpenAI Decisions serves the model 'gpt-6-luna': SELECT decide_register_model('gpt-6-luna', 'openai'); "
 		      "(use MAP {'model': 'gpt-6-luna'} to give the model another id); if the name is right, check that the "
 		      "key's project has access to it";
+	} else if (cfg.wire == DecideWire::GEMINI_DECISIONS && status == 400 &&
+	           (body.find("API_KEY_INVALID") != string::npos || body.find("API_KEY_EXPIRED") != string::npos ||
+	            server.find("API key not valid") != string::npos || server.find("API key expired") != string::npos)) {
+		// Gemini answers a bad key with HTTP 400 (google.rpc INVALID_ARGUMENT, reason API_KEY_INVALID), not 401.
+		what = who + " rejected the API key (HTTP 400)" + srv;
+		fix = (cfg.key_source.empty() ? string("check the API key") : "the key came from " + cfg.key_source) +
+		      "; use a valid one (aistudio.google.com/apikey): " + DecideSecretRecipe(cfg.provider, cfg.host, true) +
+		      " (a stored secret overrides env vars)";
+	} else if (cfg.wire == DecideWire::GEMINI_DECISIONS && status == 404) {
+		// {"error":{"message":"Requested model not found. ...","code":"not_found"}}
+		what = who + " does not know the model '" + cfg.model + "' (HTTP 404)" + srv;
+		fix = "Gemini Decisions serves the model 'gemini-decision-1': SELECT decide_register_model('gemini-decision-1', "
+		      "'gemini'); (use MAP {'model': 'gemini-decision-1'} to give the model another id)";
 	} else if (cloudflare_route) {
 		what = who + " does not know the model '" + cfg.model + "' (HTTP " + std::to_string(status) + ")" + srv;
 		fix = "Cloudflare serves the models 'clef' and 'clef-flash': SELECT decide_register_model('clef', 'cloudflare'); "
@@ -1744,7 +1856,9 @@ DecideErrorInfo DecideFormatHttpError(const DecideRemoteConfig &cfg, int status,
 		} else {
 			fix = string("the request was built from your question and options; check them, and that this endpoint "
 			             "speaks the ") +
-			      (cfg.wire == DecideWire::OPENAI_DECISIONS ? "OpenAI Decisions API" : "System One protocol") +
+			      (cfg.wire == DecideWire::OPENAI_DECISIONS
+			           ? "OpenAI Decisions API"
+			           : (cfg.wire == DecideWire::GEMINI_DECISIONS ? "Gemini Decisions API" : "System One protocol")) +
 			      " (SELECT * FROM decide_models())";
 		}
 	} else if (status == 429) {
@@ -2454,6 +2568,40 @@ static string GateMessage(const string &function, const string &id, const string
 	                 "SET anofox_decide_allow_remote = true;");
 }
 
+DecideHeaderList DecideAuthHeaders(const DecideRemoteConfig &cfg) {
+	DecideHeaderList headers;
+	if (cfg.send_auth) {
+		// Gemini answers a bearer token with 401; its key goes in x-goog-api-key (never in the URL, where ?key=
+		// would leak it into logs and proxies).
+		if (cfg.wire == DecideWire::GEMINI_DECISIONS) {
+			headers.emplace_back("x-goog-api-key", cfg.api_key);
+		} else {
+			headers.emplace_back("Authorization", "Bearer " + cfg.api_key);
+		}
+	}
+	return headers;
+}
+
+string DecideGeminiSafetyCode(int status, const string &body) {
+	if (status != 400) {
+		return "";
+	}
+	YyjsonDoc doc(yyjson_read(body.c_str(), body.size(), 0));
+	auto root = doc.doc ? yyjson_doc_get_root(doc.doc) : nullptr;
+	auto err = root && yyjson_is_obj(root) ? yyjson_obj_get(root, "error") : nullptr;
+	auto code = err && yyjson_is_obj(err) ? yyjson_obj_get(err, "code") : nullptr;
+	if (!code || !yyjson_is_str(code)) {
+		return "";
+	}
+	const string c = ValStr(code);
+	for (auto known : {"safety", "prohibited_content", "blocklist", "image_safety", "content_blocked"}) {
+		if (c == known) {
+			return c;
+		}
+	}
+	return "";
+}
+
 vector<DecideAnswer> DecideRemoteEvaluateWithTransport(const DecideRemoteConfig &cfg, const string &state,
                                                        const vector<DecideQuestion> &questions,
                                                        const DecideHttpPost &transport) {
@@ -2475,16 +2623,15 @@ vector<DecideAnswer> DecideRemoteEvaluateWithTransport(const DecideRemoteConfig 
 		options.input_mode = cfg.input_mode;
 		options.prompt_cache_key = cfg.prompt_cache_key;
 		body = DecideBuildOpenAIRequestJson(state, cfg.model, questions, options);
+	} else if (cfg.wire == DecideWire::GEMINI_DECISIONS) {
+		body = DecideBuildGeminiRequestJson(state, cfg.model, questions);
 	} else {
 		body = DecideBuildRequestJson(state, cfg.model, questions, cfg.criteria_names);
 	}
 	// NOTE: no Content-Type here — httplib's Post(path, headers, body,
 	// content_type) sets it, and a duplicate header makes some servers
 	// ignore the body content type (observed as HTTP 422).
-	DecideHeaderList headers;
-	if (cfg.send_auth) {
-		headers.emplace_back("Authorization", "Bearer " + cfg.api_key);
-	}
+	const DecideHeaderList headers = DecideAuthHeaders(cfg);
 	const int max_attempts = 1 + std::max(0, cfg.max_retries);
 	const auto started = std::chrono::steady_clock::now();
 	auto elapsed = [&]() {
@@ -2528,6 +2675,9 @@ vector<DecideAnswer> DecideRemoteEvaluateWithTransport(const DecideRemoteConfig 
 			if (cfg.wire == DecideWire::OPENAI_DECISIONS) {
 				return DecideParseOpenAIResponseJson(last.body, questions, cfg.function, Who(cfg), id);
 			}
+			if (cfg.wire == DecideWire::GEMINI_DECISIONS) {
+				return DecideParseGeminiResponseJson(last.body, questions, cfg.function, Who(cfg), id);
+			}
 			return DecideParseResponseJson(last.body, questions, cfg.function, Who(cfg), id);
 		}
 		bool retryable =
@@ -2563,6 +2713,20 @@ vector<DecideAnswer> DecideRemoteEvaluateWithTransport(const DecideRemoteConfig 
 			throw InvalidInputException(info.message);
 		}
 		throw IOException(info.message);
+	}
+	if (cfg.wire == DecideWire::GEMINI_DECISIONS && !DecideGeminiSafetyCode(last.status, last.body).empty()) {
+		// Gemini blocks the whole request (HTTP 400, error.code "safety", ...) and answers nothing: the row is a
+		// refusal of every question, as an OpenAI refusal is (NULL and kind 'refusal' in SQL), not a failed query.
+		vector<DecideAnswer> refused;
+		for (auto &q : questions) {
+			DecideAnswer a;
+			a.id = q.id;
+			a.kind = q.kind;
+			a.refused = true;
+			a.probability = std::numeric_limits<double>::quiet_NaN();
+			refused.push_back(std::move(a));
+		}
+		return refused;
 	}
 	auto info = DecideFormatHttpError(cfg, last.status, last.body, attempts_run, elapsed());
 	if (info.user_error) {
