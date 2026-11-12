@@ -64,6 +64,9 @@ string FileOf(const string &path) {
 		auto rev_end = path.find('/', at + 9);
 		return path.substr(rev_end + 1);
 	}
+	if (path.rfind("/final/", 0) == 0) {
+		return path.substr(string("/final/").size());
+	}
 	return path.substr(string("/cdn/").size());
 }
 
@@ -112,6 +115,10 @@ public:
 		svr.Get(R"(/test/model/resolve/[0-9a-f]+/.+)",
 		        [this](const duckdb_httplib_openssl::Request &req, duckdb_httplib_openssl::Response &res) {
 			        hits++;
+			        {
+				        std::lock_guard<std::mutex> guard(lock);
+				        resolve_auth.push_back(req.get_header_value("Authorization"));
+			        }
 			        if (mode == Mode::NotFound) {
 				        res.status = 404;
 				        return;
@@ -123,12 +130,8 @@ public:
 			        }
 			        if (mode == Mode::RedirectSigned) {
 				        res.status = 302;
-				        res.set_header("Location", "/cdn/" + FileOf(req.path) + "?" + kSignedQuery);
+				        res.set_header("Location", redirect_base + "/cdn/" + FileOf(req.path) + "?" + kSignedQuery);
 				        return;
-			        }
-			        {
-				        std::lock_guard<std::mutex> guard(lock);
-				        resolve_auth.push_back(req.get_header_value("Authorization"));
 			        }
 			        if (mode == Mode::Unauthorized) {
 				        res.status = 401;
@@ -148,9 +151,23 @@ public:
 				        std::lock_guard<std::mutex> guard(lock);
 				        cdn_auth.push_back(req.get_header_value("Authorization"));
 			        }
-			        if (mode == Mode::RedirectSigned && req.target.substr(req.target.find('?') + 1) != kSignedQuery) {
+			        if (!back_base.empty()) {
+				        // Leave this origin again: back to the hub (origin -> CDN -> origin).
+				        res.status = 302;
+				        res.set_header("Location", back_base + "/final/" + FileOf(req.path));
+				        return;
+			        }
+			        if (req.target.find('?') != string::npos && req.target.substr(req.target.find('?') + 1) != kSignedQuery) {
 				        res.status = 403; // what the Hugging Face CDN does when the signed query is reordered or re-encoded
 				        return;
+			        }
+			        Serve(req, res, FileOf(req.path));
+		        });
+		svr.Get(R"(/final/.+)",
+		        [this](const duckdb_httplib_openssl::Request &req, duckdb_httplib_openssl::Response &res) {
+			        {
+				        std::lock_guard<std::mutex> guard(lock);
+				        final_auth.push_back(req.get_header_value("Authorization"));
 			        }
 			        Serve(req, res, FileOf(req.path));
 		        });
@@ -176,6 +193,9 @@ public:
 	// The Authorization header of every request ("" when none was sent).
 	vector<string> resolve_auth;
 	vector<string> cdn_auth;
+	vector<string> final_auth;
+	// When set, /cdn/<file> redirects on to back_base + "/final/<file>" instead of serving it.
+	string back_base;
 	std::mutex lock;
 	vector<string> ranges;
 	duckdb_httplib_openssl::Server svr;
@@ -483,6 +503,41 @@ TEST_CASE("decide_download sends a Hugging Face token to the catalog origin only
 		for (auto &h : cdn.cdn_auth) {
 			REQUIRE(h.empty());
 		}
+		fs::remove_all(cache);
+	}
+	SECTION("dropped for the rest of the chain: origin -> CDN -> origin") {
+		FileServer cdn(TinyFiles());
+		FileServer hub(TinyFiles(), Mode::Redirect);
+		hub.redirect_base = cdn.Base();
+		cdn.back_base = hub.Base();
+		auto cache = TempDir("token-back");
+		DecideDownloadAuth auth;
+		auth.token = "hf_test_token";
+		auto rows = DecideDownloadEntry(TestEntry(hub), cache, 5000, auth);
+		REQUIRE(rows.size() == 2);
+		REQUIRE(hub.final_auth.size() == 2);
+		for (auto &h : cdn.cdn_auth) {
+			REQUIRE(h.empty());
+		}
+		for (auto &h : hub.final_auth) {
+			REQUIRE(h.empty());
+		}
+		fs::remove_all(cache);
+	}
+	SECTION("dropped on a signed (query string) redirect to another origin") {
+		FileServer cdn(TinyFiles());
+		FileServer hub(TinyFiles(), Mode::RedirectSigned);
+		hub.redirect_base = cdn.Base();
+		auto cache = TempDir("token-signed");
+		DecideDownloadAuth auth;
+		auth.token = "hf_test_token";
+		auto rows = DecideDownloadEntry(TestEntry(hub), cache, 5000, auth);
+		REQUIRE(rows.size() == 2);
+		REQUIRE(cdn.cdn_hits == 2); // the signed query arrived byte for byte (else 403)
+		for (auto &h : cdn.cdn_auth) {
+			REQUIRE(h.empty());
+		}
+		REQUIRE(hub.resolve_auth[0] == "Bearer hf_test_token");
 		fs::remove_all(cache);
 	}
 	SECTION("kept on a redirect within the same origin") {

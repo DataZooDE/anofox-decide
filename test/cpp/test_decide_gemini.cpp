@@ -164,7 +164,7 @@ TEST_CASE("gemini request: input, neutral ids q0..qn, System One question shapes
 		                    Contains("duplicate remote question id 'a'"));
 	}
 	SECTION("an empty input is refused before sending") {
-		REQUIRE_THROWS_WITH(DecideBuildGeminiRequestJson("", "m", {Q("a", "noul")}), Contains("the state is empty"));
+		REQUIRE_THROWS_WITH(DecideBuildGeminiRequestJson("", "m", {Q("a", "noul")}), Contains("the text is empty"));
 	}
 }
 
@@ -209,7 +209,7 @@ TEST_CASE("gemini answers: the three kinds map back to the user's ids", "[anofox
 		                    R"("legend":{"0":"calm","1":"angry","2":"annoyed"},"confidence":1.0}}})";
 		auto m = Message([&]() { DecideParseGeminiResponseJson(body, {Q("anger", "score", {"calm", "annoyed", "angry"})}); });
 		REQUIRE_THAT(m, Contains("question 'anger'"));
-		REQUIRE_THAT(m, Contains("level 1 is labelled 'angry'"));
+		REQUIRE_THAT(m, Contains("its legend labels level 1 'angry'"));
 	}
 }
 
@@ -332,7 +332,7 @@ TEST_CASE("gemini requests: x-goog-api-key, refusals on a safety block, Gemini e
 		REQUIRE_FALSE(con.Query("CREATE SECRET g (TYPE anofox_decide, SERVICE 'gemini', API_KEY 'AIza-secret')")->HasError());
 		auto c = DecideResolveConfig(*con.context, GeminiTarget());
 		REQUIRE(c.api_key == "AIza-secret");
-		REQUIRE(c.key_source == "a stored secret (service gemini)");
+		REQUIRE(c.key_source == "the stored secret 'g' (service gemini)");
 	}
 	SECTION("a missing key says how to provide one") {
 		EnvGuard none({{"GEMINI_API_KEY", nullptr}});
@@ -487,4 +487,66 @@ TEST_CASE("gemini registration: accepted and refused options", "[anofox_decide][
 	REQUIRE(gate->HasError());
 	REQUIRE_THAT(gate->GetError(), Contains("is a Gemini model: calling it sends your text to "
 	                                        "https://generativelanguage.googleapis.com"));
+}
+
+// --- Crew review follow-ups -------------------------------------------------------------------------------------
+
+TEST_CASE("gemini legend: when sent it must name exactly the requested levels", "[anofox_decide][gemini]") {
+	auto body = [](const string &legend) {
+		return R"({"answers":{"q0":{"type":"score","score":1.0,"probabilities":{"0":0.0,"1":1.0},)" +
+		       (legend.empty() ? string() : R"("legend":)" + legend + ",") + R"("confidence":1.0}}})";
+	};
+	const vector<DecideQuestion> qs = {Q("anger", "score", {"calm", "angry"})};
+	// Absent: accepted (the legend is an echo, not part of the answer).
+	REQUIRE(DecideParseGeminiResponseJson(body(""), qs)[0].expected == Approx(1.0));
+	REQUIRE(DecideParseGeminiResponseJson(body(R"({"1":"angry","0":"calm"})"), qs)[0].expected == Approx(1.0));
+	for (auto bad : {R"(null)", R"({})", R"({"0":"calm"})", R"({"0":"calm","1":"angry","2":"x"})", R"({"0":"calm","1":7})",
+	                 R"(["calm","angry"])"}) {
+		INFO(bad);
+		auto m = Message([&]() { DecideParseGeminiResponseJson(body(bad), qs); });
+		REQUIRE_THAT(m, Contains("question 'anger'"));
+		REQUIRE_THAT(m, Contains("legend"));
+	}
+}
+
+TEST_CASE("gemini empty text: the error names the function the user called", "[anofox_decide][gemini]") {
+	DuckDB db(nullptr);
+	db.LoadStaticExtension<AnofoxDecideExtension>();
+	Connection con(db);
+	EnvGuard g({{"GEMINI_API_KEY", "AIza-test"}});
+	auto cfg = DecideResolveConfig(*con.context, GeminiTarget(), "decide_probability");
+	cfg.allow_remote = true;
+	std::atomic<int> calls {0};
+	auto m = Message([&]() { DecideRemoteEvaluateWithTransport(cfg, "", {Q("a", "noul")}, Reply(200, "{}", &calls)); });
+	REQUIRE_THAT(m, Contains("decide_probability: the text is empty"));
+	REQUIRE(calls == 0);
+}
+
+TEST_CASE("gemini: a redirect is never followed, so the key never reaches another host", "[anofox_decide][gemini]") {
+	GeminiServer other(200, Fixture("three_kinds.json"));
+	duckdb_httplib_openssl::Server redirector;
+	redirector.Post("/v1beta/decisions", [&](const duckdb_httplib_openssl::Request &, duckdb_httplib_openssl::Response &res) {
+		res.status = 307;
+		res.set_header("Location", other.Endpoint() + "/v1beta/decisions");
+	});
+	const int port = redirector.bind_to_any_port("127.0.0.1");
+	std::thread t([&]() { redirector.listen_after_bind(); });
+	redirector.wait_until_ready();
+	DecideRemoteConfig cfg;
+	cfg.provider = "gemini";
+	cfg.display = "Gemini";
+	cfg.wire = DecideWire::GEMINI_DECISIONS;
+	cfg.host = "127.0.0.1";
+	cfg.port = port;
+	cfg.ssl = false;
+	cfg.path = "/v1beta/decisions";
+	cfg.model = "gemini-decision-1";
+	cfg.api_key = "AIza-redirect-test";
+	cfg.allow_remote = true;
+	cfg.max_retries = 0;
+	auto m = Message([&]() { DecideRemoteEvaluateOverHttp(cfg, "text", {Q("a", "noul")}); });
+	REQUIRE_THAT(m, Contains("HTTP 307"));
+	REQUIRE(other.hits == 0);
+	redirector.stop();
+	t.join();
 }

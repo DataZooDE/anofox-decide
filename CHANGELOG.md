@@ -38,6 +38,10 @@ All notable changes to `anofox_decide` are documented here. The format follows
   **deprecated**: use a secret. A session that sets both the setting and `TYPESAFE_API_KEY` (or a `key_env`) now
   sends the env key. The setting alone still works as before, and existing secrets without `SERVICE` keep their
   meaning.
+  `decide_doctor()` shows a `warn` row while the setting is set, saying whether something else wins, and one per
+  older-form secret without `SERVICE` and `SCOPE` (it reaches every remote host, also `gemini`). When several secrets
+  match, DuckDB's own order applies (longest scope, then a `SERVICE` secret, temporary before persistent, then the
+  name); `key_source` and key errors name the secret used.
 
 ## [2026.10.31] - 2026-10-31
 

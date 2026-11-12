@@ -468,8 +468,8 @@ void DownloadFile(const DecideCatalogEntry &entry, const DecideCatalogFile &file
 					         "'huggingface', API_KEY '<hf_... token>');");
 				}
 				Fail(what + ": access was refused",
-				     "if " + entry.repo + " is gated, accept its terms on huggingface.co and give a token: " + give +
-				         "; otherwise check the network or proxy");
+				     "the built-in models are public, so check the network or proxy (HTTPS_PROXY) first; if " +
+				         entry.repo + " is gated, accept its terms on huggingface.co and give a token: " + give);
 			}
 			Fail(what, retry);
 		}

@@ -14,6 +14,9 @@
 
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/secret/secret.hpp"
+#include "duckdb/main/secret/secret_manager.hpp"
+#include "duckdb/transaction/meta_transaction.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/execution/execution_context.hpp"
 #include "duckdb_compat.hpp"
@@ -202,7 +205,9 @@ unique_ptr<GlobalTableFunctionState> DecideServicesInitGlobal(ClientContext &con
 		Value source = null_v;
 		if (!svc.requires_key) {
 			source = Value("none needed");
-		} else if (!svc.default_host.empty()) {
+		} else if (svc.default_host.empty()) {
+			source = Value("per model: a secret with SCOPE '<host>' or the model's key_env (see decide_models())");
+		} else {
 			auto key = DecideResolveServiceKey(context, svc.id, svc.default_host);
 			found = Value::BOOLEAN(!key.key.empty());
 			source = key.key.empty() ? null_v : Value(key.source);
@@ -313,8 +318,16 @@ unique_ptr<GlobalTableFunctionState> DecideDoctorInitGlobal(ClientContext &conte
 		                "SET anofox_decide_allow_remote = true;"});
 	}
 
-	// 3b. API keys: which online services have one, and where to see them all.
+	// 3b. API keys: which online services have one, and where to see them all; warn when a registered remote
+	//     model has none.
 	{
+		string missing;
+		for (auto &e : entries) {
+			auto profile = DecideFindRemoteProfile(e.provider);
+			if (profile && profile->requires_key && DecideRemoteKeySource(context, e).empty()) {
+				missing += (missing.empty() ? "" : ", ") + e.id;
+			}
+		}
 		string found;
 		for (auto &svc : DecideServices()) {
 			if (!svc.requires_key || svc.default_host.empty()) {
@@ -325,10 +338,53 @@ unique_ptr<GlobalTableFunctionState> DecideDoctorInitGlobal(ClientContext &conte
 				found += (found.empty() ? "" : ", ") + svc.id + " (" + key.source + ")";
 			}
 		}
-		rows.push_back({"api keys", "ok",
+		rows.push_back({"api keys", missing.empty() ? "ok" : "warn",
 		                (found.empty() ? string("no API key found for any online service") : "keys found for " + found) +
+		                    (missing.empty() ? string() : "; no key for the model(s) " + missing) +
 		                    "; SELECT * FROM decide_services() lists every service, its env var and secret",
-		                ""});
+		                missing.empty() ? "" : "the model rows below say how to give each one a key"});
+	}
+
+	// 3c. The deprecated plain-text key setting: say that it is deprecated and whether something shadows it.
+	{
+		Value key_v;
+		if (context.TryGetCurrentSetting("anofox_decide_api_key", key_v) && !key_v.IsNull() &&
+		    !key_v.ToString().empty()) {
+			auto key = DecideResolveServiceKey(context, "typesafe", "api.typesafe.ai");
+			const bool shadowed = key.source.find("anofox_decide_api_key") == string::npos;
+			rows.push_back({"anofox_decide_api_key", "warn",
+			                "the setting is deprecated (plain text, visible through current_setting)" +
+			                    (shadowed ? "; it is not used for api.typesafe.ai because " + key.source + " wins"
+			                              : string("; it is used as the TypeSafe key because nothing else gives one")),
+			                "CREATE SECRET (TYPE anofox_decide, SERVICE 'typesafe', API_KEY '<key>'); then RESET "
+			                "anofox_decide_api_key;"});
+		}
+	}
+
+	// 3d. Older-form secrets without SERVICE and without SCOPE match every remote host (also providers added later).
+	{
+		auto &manager = SecretManager::Get(*context.db);
+		auto transaction = CatalogTransaction::GetSystemTransaction(*context.db);
+		for (auto &entry : manager.AllSecrets(transaction)) {
+			if (!entry.secret || entry.secret->GetType() != "anofox_decide") {
+				continue;
+			}
+			auto kv = dynamic_cast<const KeyValueSecret *>(entry.secret.get());
+			Value svc;
+			const bool named = kv && kv->TryGetValue("service", svc) && !svc.IsNull() && !svc.ToString().empty();
+			bool unscoped = true;
+			for (auto &scope : entry.secret->GetScope()) {
+				unscoped = unscoped && scope.empty();
+			}
+			if (kv && !named && unscoped) {
+				const string name = entry.secret->GetName();
+				rows.push_back({"secret '" + name + "'", "warn",
+				                "the secret has neither SERVICE nor SCOPE, so its key is sent to every remote host, "
+				                "including providers added later",
+				                "CREATE OR REPLACE SECRET " + name +
+				                    " (TYPE anofox_decide, SERVICE '<provider>', API_KEY '<key>');"});
+			}
+		}
 	}
 
 	// 4. One row per real model, from the same readiness check as decide_models().

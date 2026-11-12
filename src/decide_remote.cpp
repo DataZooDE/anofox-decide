@@ -386,12 +386,13 @@ string DecideBuildRequestJson(const string &state, const string &model, const ve
 	return WriteJson(mdoc, "remote request");
 }
 
-string DecideBuildGeminiRequestJson(const string &state, const string &model, const vector<DecideQuestion> &questions) {
+string DecideBuildGeminiRequestJson(const string &state, const string &model, const vector<DecideQuestion> &questions,
+                                    const string &function) {
 	ValidateRemoteQuestions(questions);
 	if (state.empty()) {
-		throw InvalidInputException(DecideMsg("decide", "the state is empty: Gemini needs some text to decide about",
-		                                      "pass a non-empty text (filter empty rows with WHERE length(state) > 0, "
-		                                      "or map them to NULL with nullif(state, ''))"));
+		throw InvalidInputException(DecideMsg(function, "the text is empty: Gemini needs some text to decide about",
+		                                      "pass a non-empty text (filter empty rows with WHERE length(text) > 0, "
+		                                      "or map them to NULL with nullif(text, ''))"));
 	}
 	YyjsonMutDoc mdoc;
 	if (!mdoc.doc) {
@@ -568,30 +569,28 @@ static vector<DecideAnswer> ParseSystemOneAnswers(const string &body, const vect
 				ans.expected = derived;
 			}
 			auto legend_v = check_legend ? yyjson_obj_get(a, "legend") : nullptr;
-			if (legend_v && yyjson_is_obj(legend_v)) {
-				// The service echoes the rubric it scored against; a reordered or renamed rubric would silently
-				// shift every level, so it must match the request exactly.
-				yyjson_obj_iter liter;
-				yyjson_obj_iter_init(legend_v, &liter);
-				yyjson_val *lkey;
-				while ((lkey = yyjson_obj_iter_next(&liter))) {
-					const string idx(yyjson_get_str(lkey), yyjson_get_len(lkey));
-					auto lval = yyjson_obj_iter_get_val(lkey);
-					size_t at = n;
-					for (size_t i = 0; i < n; i++) {
-						if (idx == std::to_string(i)) {
-							at = i;
-						}
+			if (legend_v) {
+				// The service echoes the rubric it scored against; a reordered, renamed or incomplete rubric would
+				// silently shift levels, so when a legend is sent it must name exactly the requested levels.
+				const string fix = "the service reordered, renamed or dropped rubric levels; retry, or report it with the query";
+				if (!yyjson_is_obj(legend_v)) {
+					bad(q.id, "its legend is not an object of level index to level text", fix);
+				}
+				if (yyjson_obj_size(legend_v) != n) {
+					bad(q.id, "its legend names " + std::to_string(yyjson_obj_size(legend_v)) + " levels, but " +
+					               std::to_string(n) + " were requested",
+					    fix);
+				}
+				for (size_t i = 0; i < n; i++) {
+					const string idx = std::to_string(i);
+					auto lval = yyjson_obj_getn(legend_v, idx.c_str(), idx.size());
+					if (!lval || !yyjson_is_str(lval)) {
+						bad(q.id, "its legend has no text for level " + idx, fix);
 					}
-					const string label = (lval && yyjson_is_str(lval)) ? ValStr(lval) : string("(not text)");
-					if (at == n) {
-						bad(q.id, "its legend names level '" + idx + "', which is not one of the " + std::to_string(n) +
-						               " requested levels");
-					}
-					if (label != q.options[at]) {
-						bad(q.id, "level " + idx + " is labelled '" + label + "', but level " + idx + " is '" +
-						               q.options[at] + "'",
-						    "the service reordered or renamed the rubric; retry, or report it with the query");
+					if (ValStr(lval) != q.options[i]) {
+						bad(q.id, "its legend labels level " + idx + " '" + ValStr(lval) + "', but level " + idx + " is '" +
+						               q.options[i] + "'",
+						    fix);
 					}
 				}
 			}
@@ -1266,6 +1265,47 @@ static void ExpandPathTemplate(const DecideRemoteTarget &target, DecideRemoteCon
 	}
 }
 
+// The endpoint a target calls: the model's own, else (typesafe only, legacy) anofox_decide_endpoint, else the
+// profile default; "" when there is none. `what` names its origin for messages.
+static string ChooseEndpoint(ClientContext &context, const DecideRemoteTarget &target, const DecideRemoteProfile &profile,
+                             const char *&what) {
+	string endpoint = target.endpoint;
+	what = "the model's endpoint";
+	if (endpoint.empty() && target.provider == "typesafe") {
+		Value endpoint_v;
+		if (context.TryGetCurrentSetting("anofox_decide_endpoint", endpoint_v) && !endpoint_v.IsNull()) {
+			endpoint = endpoint_v.ToString();
+			what = "anofox_decide_endpoint";
+		}
+	}
+	if (endpoint.empty()) {
+		endpoint = profile.default_endpoint;
+		what = "the profile endpoint";
+	}
+	return endpoint;
+}
+
+DecideResolvedKey DecideResolveTargetKey(ClientContext &context, const DecideRemoteTarget &target) {
+	auto profile = DecideFindRemoteProfile(target.provider);
+	if (!profile) {
+		return DecideResolvedKey();
+	}
+	const char *what = "";
+	const string endpoint = ChooseEndpoint(context, target, *profile, what);
+	if (endpoint.empty()) {
+		return DecideResolvedKey();
+	}
+	string host;
+	int port;
+	bool ssl;
+	try {
+		SplitEndpoint(endpoint, host, port, ssl, what);
+	} catch (const std::exception &) {
+		return DecideResolvedKey();
+	}
+	return DecideResolveServiceKey(context, target.provider, host, target.key_env);
+}
+
 DecideRemoteConfig DecideResolveConfig(ClientContext &context, const DecideRemoteTarget &target,
                                        const string &function) {
 	auto profile = DecideFindRemoteProfile(target.provider);
@@ -1294,19 +1334,8 @@ DecideRemoteConfig DecideResolveConfig(ClientContext &context, const DecideRemot
 
 	// Endpoint: the model's own endpoint, else (typesafe only, legacy) the
 	// session setting, else the profile default.
-	string endpoint = target.endpoint;
-	const char *endpoint_what = "the model's endpoint";
-	if (endpoint.empty() && target.provider == "typesafe") {
-		Value endpoint_v;
-		if (context.TryGetCurrentSetting("anofox_decide_endpoint", endpoint_v) && !endpoint_v.IsNull()) {
-			endpoint = endpoint_v.ToString();
-			endpoint_what = "anofox_decide_endpoint";
-		}
-	}
-	if (endpoint.empty()) {
-		endpoint = profile->default_endpoint;
-		endpoint_what = "the profile endpoint";
-	}
+	const char *endpoint_what = "";
+	const string endpoint = ChooseEndpoint(context, target, *profile, endpoint_what);
 	if (endpoint.empty()) {
 		throw InvalidInputException("decide: provider '%s' needs an endpoint "
 		                            "(SELECT decide_register_model('<id>', '%s', MAP {'endpoint': 'http://127.0.0.1:8009'}))",
@@ -1322,6 +1351,7 @@ DecideRemoteConfig DecideResolveConfig(ClientContext &context, const DecideRemot
 	auto resolved = DecideResolveServiceKey(context, target.provider, cfg.host, target.key_env);
 	cfg.api_key = resolved.key;
 	cfg.key_source = resolved.source;
+	cfg.key_secret_name = resolved.secret_name;
 	// The URL path may carry the Cloudflare account id: the model's option, else the matching secret's
 	// ACCOUNT_ID, else CLOUDFLARE_ACCOUNT_ID. Checked before the key, so a missing id is reported first.
 	ExpandPathTemplate(target, cfg, function, resolved.account_id);
@@ -1438,15 +1468,34 @@ DecideResolvedKey DecideResolveServiceKey(ClientContext &context, const string &
 	//    (its default host, or the SCOPE it was given): it never follows a redirected endpoint and is never sent
 	//    to another provider at the same host. One without SERVICE (the older form) matches by DuckDB's SCOPE
 	//    prefix rule, or every host when unscoped; Hugging Face only takes SERVICE 'huggingface' secrets, so a
-	//    provider key can never travel to huggingface.co. The best match wins; on a tie the SERVICE secret.
+	//    provider key can never travel to huggingface.co. Ranking follows DuckDB's own lookup (longest match,
+	//    then temporary before persistent storage, then the lower secret name), with a SERVICE secret preferred
+	//    over an older-form one of the same match length.
 	{
 		auto &manager = SecretManager::Get(*context.db);
 		// The system transaction, as KeyValueSecretReader's DatabaseInstance overload uses it: it sees the
 		// temporary and the persistent secrets.
 		auto transaction = CatalogTransaction::GetSystemTransaction(*context.db);
-		int64_t best = NumericLimits<int64_t>::Minimum();
-		bool best_named = false;
+		struct Rank {
+			int64_t score;
+			bool named;
+			int64_t storage; // DuckDB's tie-break offset: memory 10, local_file 20, others after
+			string name;
+		};
+		auto better = [](const Rank &a, const Rank &b) {
+			if (a.score != b.score) {
+				return a.score > b.score;
+			}
+			if (a.named != b.named) {
+				return a.named;
+			}
+			if (a.storage != b.storage) {
+				return a.storage < b.storage;
+			}
+			return a.name < b.name;
+		};
 		bool found = false;
+		Rank best {0, false, 0, ""};
 		const string lhost = LowerAscii(host);
 		for (auto &entry : manager.AllSecrets(transaction)) {
 			if (!entry.secret || entry.secret->GetType() != "anofox_decide") {
@@ -1477,16 +1526,28 @@ DecideResolvedKey DecideResolveServiceKey(ClientContext &context, const string &
 			if (key.empty()) {
 				continue;
 			}
-			const bool better = !found || score > best || (score == best && !named.empty() && !best_named);
-			if (!better) {
+			const int64_t storage =
+			    entry.storage_mode == "memory" ? 10 : (entry.storage_mode == "local_file" ? 20 : 30);
+			Rank rank {score, !named.empty(), storage, kv->GetName()};
+			if (found && !better(rank, best)) {
 				continue;
 			}
 			found = true;
-			best = score;
-			best_named = !named.empty();
+			best = rank;
 			out.key = key;
 			out.account_id = SecretString(*kv, "account_id");
-			out.source = named.empty() ? "a stored secret (scope '" + host + "')" : "a stored secret (service " + named + ")";
+			out.secret_name = kv->GetName();
+			string where;
+			if (!named.empty()) {
+				where = "service " + named;
+			} else {
+				string scopes;
+				for (auto &scope : kv->GetScope()) {
+					scopes += (scopes.empty() ? "'" : ", '") + scope + "'";
+				}
+				where = scopes.empty() ? string("no SCOPE: every remote host") : "scope " + scopes;
+			}
+			out.source = "the stored secret '" + kv->GetName() + "' (" + where + ")";
 		}
 		if (found) {
 			return out;
@@ -1522,9 +1583,10 @@ DecideResolvedKey DecideResolveServiceKey(ClientContext &context, const string &
 	return out;
 }
 
-string DecideSecretRecipe(const string &service, const string &host, bool replace) {
+string DecideSecretRecipe(const string &service, const string &host, bool replace, const string &secret_name) {
 	auto info = DecideFindService(service);
-	string out = string(replace ? "CREATE OR REPLACE SECRET" : "CREATE SECRET") + " (TYPE anofox_decide, ";
+	string out = string(replace ? "CREATE OR REPLACE SECRET" : "CREATE SECRET") +
+	             (replace && !secret_name.empty() ? " " + secret_name : string()) + " (TYPE anofox_decide, ";
 	if (info && info->requires_key) {
 		out += "SERVICE '" + service + "', API_KEY '<key>'";
 		if (info->default_host.empty() || LowerAscii(host) != info->default_host) {
@@ -1795,7 +1857,7 @@ DecideErrorInfo DecideFormatHttpError(const DecideRemoteConfig &cfg, int status,
 		      (cfg.account_id.empty() ? string("<account id>") : cfg.account_id) +
 		      "': check that the token (" + (cfg.key_source.empty() ? string("CLOUDFLARE_API_TOKEN") : cfg.key_source) +
 		      ") has Workers AI - Read and Edit permission for that account and that the account id is right; replace "
-		      "the token with " + DecideSecretRecipe(cfg.provider, cfg.host, true);
+		      "the token with " + DecideSecretRecipe(cfg.provider, cfg.host, true, cfg.key_secret_name);
 	} else if (cfg.provider == "liquid" && status == 404 && server.find("does not exist") != string::npos) {
 		// {"error": {"message": "The model `d1:free` does not exist.", "type": "not_found_error"}}
 		what = who + " does not know the model '" + cfg.model + "' (HTTP 404)" + srv;
@@ -1817,7 +1879,8 @@ DecideErrorInfo DecideFormatHttpError(const DecideRemoteConfig &cfg, int status,
 		// Gemini answers a bad key with HTTP 400 (google.rpc INVALID_ARGUMENT, reason API_KEY_INVALID), not 401.
 		what = who + " rejected the API key (HTTP 400)" + srv;
 		fix = (cfg.key_source.empty() ? string("check the API key") : "the key came from " + cfg.key_source) +
-		      "; use a valid one (aistudio.google.com/apikey): " + DecideSecretRecipe(cfg.provider, cfg.host, true) +
+		      "; use a valid one (aistudio.google.com/apikey): " +
+		      DecideSecretRecipe(cfg.provider, cfg.host, true, cfg.key_secret_name) +
 		      " (a stored secret overrides env vars)";
 	} else if (cfg.wire == DecideWire::GEMINI_DECISIONS && status == 404) {
 		// {"error":{"message":"Requested model not found. ...","code":"not_found"}}
@@ -1831,7 +1894,7 @@ DecideErrorInfo DecideFormatHttpError(const DecideRemoteConfig &cfg, int status,
 	} else if (status == 401) {
 		what = who + " rejected the API key (HTTP 401)" + srv;
 		fix = (cfg.key_source.empty() ? string("check the API key") : "the key came from " + cfg.key_source) +
-		      "; use a valid one: " + DecideSecretRecipe(cfg.provider, cfg.host, true) +
+		      "; use a valid one: " + DecideSecretRecipe(cfg.provider, cfg.host, true, cfg.key_secret_name) +
 		      " (a stored secret overrides env vars)";
 	} else if (status == 403) {
 		what = who + " refused access (HTTP 403)" + srv;
@@ -2036,6 +2099,9 @@ static DecideHttpPost DecideMakeHttplibTransport() {
 						return bad;
 					}
 					cli->set_keep_alive(true);
+					// Never follow a redirect: httplib strips Authorization on a cross-host hop, but not
+					// x-goog-api-key. A 3xx comes back as an HTTP error instead.
+					cli->set_follow_location(false);
 					cli->set_connection_timeout(secs, usecs);
 					cli->set_read_timeout(secs, usecs);
 					cli->set_write_timeout(secs, usecs);
@@ -2300,8 +2366,8 @@ static DecideGetResult DecideRawGet(const string &url, int64_t range_from, int t
 		result.error_kind = "invalid_endpoint";
 		return result;
 	}
-	if (bearer_token.find_first_of("\r\n") != string::npos) {
-		result.error = "the access token contains a line break";
+	if (DecideHasControlChar(bearer_token)) {
+		result.error = "the access token contains a control character such as a line break";
 		result.error_kind = "other";
 		return result;
 	}
@@ -2512,6 +2578,12 @@ DecideGetResult DecideHttpGet(const string &url, int64_t range_from, int timeout
 			result.error_kind = "invalid_endpoint";
 			return result;
 		}
+		if (DecideHasControlChar(bearer_token)) {
+			result.error = "the access token contains a control character such as a line break";
+			result.error_kind = "other";
+			return result;
+		}
+		cli->set_follow_location(false); // the caller follows redirects and decides per hop who sees the token
 		const int secs = std::max(1, timeout_ms / 1000);
 		cli->set_connection_timeout(secs, 0);
 		cli->set_read_timeout(secs, 0);
@@ -2568,8 +2640,24 @@ static string GateMessage(const string &function, const string &id, const string
 	                 "SET anofox_decide_allow_remote = true;");
 }
 
+bool DecideHasControlChar(const string &value) {
+	for (unsigned char c : value) {
+		if (c < 0x20 || c == 0x7f) {
+			return true;
+		}
+	}
+	return false;
+}
+
 DecideHeaderList DecideAuthHeaders(const DecideRemoteConfig &cfg) {
 	DecideHeaderList headers;
+	if (cfg.send_auth && DecideHasControlChar(cfg.api_key)) {
+		// Never put a line break into a header (it would start another one); the key itself is not shown.
+		throw InvalidInputException(DecideMsg(
+		    cfg.function, "the API key for " + cfg.display + " (from " + (cfg.key_source.empty() ? string("?") : cfg.key_source) +
+		                      ") contains a control character such as a line break",
+		    "copy the key again without the line break, e.g. CREATE OR REPLACE SECRET ... API_KEY trim(getenv('...'))"));
+	}
 	if (cfg.send_auth) {
 		// Gemini answers a bearer token with 401; its key goes in x-goog-api-key (never in the URL, where ?key=
 		// would leak it into logs and proxies).
@@ -2624,7 +2712,7 @@ vector<DecideAnswer> DecideRemoteEvaluateWithTransport(const DecideRemoteConfig 
 		options.prompt_cache_key = cfg.prompt_cache_key;
 		body = DecideBuildOpenAIRequestJson(state, cfg.model, questions, options);
 	} else if (cfg.wire == DecideWire::GEMINI_DECISIONS) {
-		body = DecideBuildGeminiRequestJson(state, cfg.model, questions);
+		body = DecideBuildGeminiRequestJson(state, cfg.model, questions, cfg.function);
 	} else {
 		body = DecideBuildRequestJson(state, cfg.model, questions, cfg.criteria_names);
 	}

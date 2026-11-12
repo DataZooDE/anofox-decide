@@ -93,7 +93,7 @@ CREATE SECRET bad_gemini (TYPE anofox_decide, SERVICE 'gemini', API_KEY 'AIzaNot
 statement error
 SELECT decide_probability('x', 'y', model := 'gemini-decision-1')
 ----
-<REGEX>:.*Gemini.*rejected the API key \(HTTP 400\).*a stored secret \(service gemini\).*
+<REGEX>:.*Gemini.*rejected the API key \(HTTP 400\).*the stored secret 'bad_gemini' \(service gemini\).*CREATE OR REPLACE SECRET bad_gemini \(TYPE anofox_decide, SERVICE 'gemini'.*
 
 statement ok
 DROP SECRET bad_gemini

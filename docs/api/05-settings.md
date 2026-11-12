@@ -20,7 +20,7 @@ example.
 | `anofox_decide_gpu_precision` | `fp32` | Numeric precision of the GPU backends. Only `fp32`; other values are rejected, never silently run in fp32 |
 | `anofox_decide_plugin_dir` | *(unset: `plugins` inside the cache directory)* | Where the GPU plugins are installed and loaded from; `decide_accelerate()` fills it |
 | `anofox_decide_on_truncate` | `error` | `error`: a local model refuses text, question or options that do not fit its window; `ignore`: score the shortened input |
-| `anofox_decide_api_key` | *(unset)* | Legacy key for the `typesafe` provider, kept in plain text; prefer `CREATE SECRET` or the env var ([API keys](02-providers.md#api-keys-and-secrets)) |
+| `anofox_decide_api_key` | *(unset)* | Deprecated key for the `typesafe` provider, kept in plain text and used last (after a secret, `key_env` and `TYPESAFE_API_KEY`); use `CREATE SECRET (TYPE anofox_decide, SERVICE 'typesafe', ...)` ([API keys](02-providers.md#api-keys-and-secrets)) |
 | `anofox_decide_endpoint` | `https://api.typesafe.ai` | Legacy endpoint for `typesafe`; other providers take a per-model `endpoint` |
 | `anofox_telemetry_enabled` | `true` | Anonymous usage telemetry, see [TELEMETRY.md](../../TELEMETRY.md) |
 | `anofox_telemetry_key` | *(the project's PostHog key)* | PostHog API key the telemetry is sent with; there is no need to change it |

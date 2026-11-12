@@ -21,6 +21,8 @@
 
 #include "duckdb/main/secret/secret.hpp"
 
+#include <cctype>
+
 namespace duckdb {
 
 class ClientContext;
@@ -39,7 +41,10 @@ string OptionText(CreateSecretInput &input, const char *name) {
 
 unique_ptr<BaseSecret> DecideCreateSecretFromConfig(ClientContext &context, CreateSecretInput &input) {
 	(void)context;
-	const string service = OptionText(input, "service");
+	string service = OptionText(input, "service");
+	for (auto &c : service) {
+		c = (char)std::tolower((unsigned char)c); // SERVICE 'Gemini' is 'gemini'
+	}
 	const string account_id = OptionText(input, "account_id");
 	const DecideServiceInfo *info = nullptr;
 	if (input.options.count("service")) {
@@ -48,7 +53,9 @@ unique_ptr<BaseSecret> DecideCreateSecretFromConfig(ClientContext &context, Crea
 			const string close = DecideDidYouMean(service, [] {
 				vector<string> ids;
 				for (auto &s : DecideServices()) {
-					ids.push_back(s.id);
+					if (s.requires_key) {
+						ids.push_back(s.id);
+					}
 				}
 				return ids;
 			}());
@@ -74,6 +81,11 @@ unique_ptr<BaseSecret> DecideCreateSecretFromConfig(ClientContext &context, Crea
 		        "', API_KEY '<key>'); (copy it from an env var with API_KEY getenv('" +
 		        (info && !info->env_key.empty() ? info->env_key : string("LIQUID_API_KEY")) + "'))"));
 	}
+	if (DecideHasControlChar(key)) {
+		throw InvalidInputException(DecideMsg(
+		    "CREATE SECRET", "the API_KEY contains a control character such as a line break",
+		    "copy the key again without it, e.g. API_KEY trim(getenv('...'))"));
+	}
 	if (input.options.count("account_id")) {
 		if (service != "cloudflare") {
 			throw InvalidInputException(DecideMsg(
@@ -91,12 +103,20 @@ unique_ptr<BaseSecret> DecideCreateSecretFromConfig(ClientContext &context, Crea
 	if (info) {
 		// A SERVICE secret is matched by exact host, so its scope is a bare host name.
 		for (auto &host : scope) {
-			if (host.empty() || host.find("://") != string::npos || host.find('/') != string::npos ||
-			    host.find(':') != string::npos) {
+			for (auto &c : host) {
+				c = (char)std::tolower((unsigned char)c);
+			}
+			// A host name or address; an IPv6 literal in brackets ([::1]), as endpoints write it.
+			const bool bracketed = host.size() > 2 && host.front() == '[' && host.back() == ']';
+			bool plain = !host.empty();
+			for (unsigned char c : bracketed ? host.substr(1, host.size() - 2) : host) {
+				plain = plain && (std::isalnum(c) || c == '.' || c == '-' || c == '_' || (bracketed && c == ':'));
+			}
+			if (!plain) {
 				throw InvalidInputException(DecideMsg(
 				    "CREATE SECRET", "SCOPE '" + host + "' of a SERVICE secret is not a host name",
-				    "SCOPE is a host name only, without scheme, port or path, e.g. SCOPE '127.0.0.1' or SCOPE "
-				    "'decisions.example.com'"));
+				    "SCOPE is a host name only, without scheme, port or path, e.g. SCOPE '127.0.0.1', SCOPE '[::1]' or "
+				    "SCOPE 'decisions.example.com' (the key is sent to that host on any port)"));
 			}
 		}
 		if (scope.empty()) {

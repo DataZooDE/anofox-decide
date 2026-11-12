@@ -129,6 +129,7 @@ struct DecideResolvedKey {
 	string key;
 	string source;
 	string account_id;
+	string secret_name; // the matching secret's name, "" when the key did not come from a secret
 };
 // The single key resolver for every online service. Precedence, the same for all of them:
 //   1. a stored anofox_decide secret for `host`: a secret that names a SERVICE matches only that service (and only
@@ -145,7 +146,9 @@ DecideResolvedKey DecideResolveServiceKey(ClientContext &context, const string &
 string DecideNoKeyMessage(const string &function, const string &service, const string &host,
                           const string &key_env = "");
 // The CREATE SECRET recipe for a service at a host (SCOPE added when the host is not the default one).
-string DecideSecretRecipe(const string &service, const string &host, bool replace = false);
+// `secret_name` (when replacing a known secret) is put into the recipe so the bad secret is replaced, not joined.
+string DecideSecretRecipe(const string &service, const string &host, bool replace = false,
+                          const string &secret_name = "");
 
 // Per-model remote target (from decide_register_model); empty fields fall
 // back to the profile, then (typesafe only) to the legacy session settings.
@@ -202,6 +205,8 @@ struct DecideRemoteConfig {
 	// Where the key came from ("a stored secret", "the anofox_decide_api_key setting", "env var X"), for
 	// diagnostics and error messages; empty when no key was needed.
 	string key_source;
+	// The name of the stored secret the key came from ("" otherwise), so a fix can replace that very secret.
+	string key_secret_name;
 	// Only for error messages: the SQL function the user called, the provider profile and the
 	// registered model id.
 	string function = "decide";
@@ -288,7 +293,8 @@ vector<DecideAnswer> DecideParseOpenAIResponseJson(const string &body, const vec
 // Gemini Decisions mapping (pure). The request carries "input" (the state; it must not be empty) and question
 // i under the wire id "q<i>"; choice criteria are null. The parser maps "q<i>" back to questions[i] (every message
 // names the user's id) and checks that a score legend, when sent, names the requested levels in order.
-string DecideBuildGeminiRequestJson(const string &state, const string &model, const vector<DecideQuestion> &questions);
+string DecideBuildGeminiRequestJson(const string &state, const string &model, const vector<DecideQuestion> &questions,
+                                    const string &function = "decide");
 vector<DecideAnswer> DecideParseGeminiResponseJson(const string &body, const vector<DecideQuestion> &questions,
                                                    const string &function = "decide",
                                                    const string &service = "the remote service",
@@ -298,7 +304,10 @@ vector<DecideAnswer> DecideParseGeminiResponseJson(const string &body, const vec
 string DecideGeminiSafetyCode(int status, const string &body);
 // The authentication header(s) of a request: x-goog-api-key for Gemini, else "Authorization: Bearer <key>";
 // none when cfg.send_auth is false.
+// Throws when the key contains a control character (a line break would start another header).
 DecideHeaderList DecideAuthHeaders(const DecideRemoteConfig &cfg);
+// True when `value` contains an ASCII control character (CR, LF, NUL, ...).
+bool DecideHasControlChar(const string &value);
 // decide_many batch JSON (also pure): parse the questions argument, render results.
 // func_name attributes validation errors (default "decide_many"; the table
 // surface passes "decide_table").
@@ -340,6 +349,9 @@ void DecideValidateEndpoint(const string &endpoint, const char *what);
 // key error stay distinguishable.
 DecideRemoteConfig DecideResolveConfig(ClientContext &context, const DecideRemoteTarget &target,
                                        const string &function = "decide");
+// Only the key of a target (its endpoint host, then DecideResolveServiceKey): unaffected by other configuration
+// problems (a missing Cloudflare account id, a bad path), so diagnostics never report those as a missing key.
+DecideResolvedKey DecideResolveTargetKey(ClientContext &context, const DecideRemoteTarget &target);
 
 // Full round trip over an explicit transport (tests inject fakes).
 vector<DecideAnswer> DecideRemoteEvaluateWithTransport(const DecideRemoteConfig &cfg, const string &state,

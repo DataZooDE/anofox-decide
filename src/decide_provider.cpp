@@ -538,15 +538,15 @@ string DecideRemoteEndpointOf(const DecideModelEntry &entry) {
 }
 
 string DecideRemoteKeySource(ClientContext &context, const DecideModelEntry &entry) {
-	if (!DecideFindRemoteProfile(entry.provider)) {
+	auto profile = DecideFindRemoteProfile(entry.provider);
+	if (!profile) {
 		return "";
 	}
-	try {
-		auto cfg = DecideResolveConfig(context, TargetOf(entry), "decide_models");
-		return cfg.send_auth ? cfg.key_source : string("none needed");
-	} catch (const std::exception &) {
-		return ""; // no key (or another configuration problem the hint reports)
+	const auto key = DecideResolveTargetKey(context, TargetOf(entry));
+	if (key.key.empty()) {
+		return profile->requires_key ? "" : "none needed";
 	}
+	return key.source;
 }
 
 DecideModelStatus DecideDescribeModel(ClientContext &context, const DecideModelEntry &entry) {

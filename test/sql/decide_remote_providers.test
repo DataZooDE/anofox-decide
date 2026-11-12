@@ -283,7 +283,7 @@ CREATE SECRET gem_test (TYPE anofox_decide, SERVICE 'gemini', API_KEY 'AIza-not-
 query TT
 SELECT ready, key_source FROM decide_models() WHERE model = 'gemini-decision-1'
 ----
-true	a stored secret (service gemini)
+true	the stored secret 'gem_test' (service gemini)
 
 statement ok
 DROP SECRET gem_test

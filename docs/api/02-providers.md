@@ -294,6 +294,14 @@ Precedence, the same for every service, highest first:
 The Cloudflare account id follows the same order: the model's `account_id` option, then the secret's
 `ACCOUNT_ID`, then `CLOUDFLARE_ACCOUNT_ID`.
 
+Secrets are bound to a host, not a port: a secret with `SCOPE '127.0.0.1'` is sent to every server on that
+machine that a model of its service points at, as DuckDB's own secret scopes and the env vars are. When several
+secrets match, the longest scope wins, then a `SERVICE` secret over an older-form one, then a temporary secret
+over a persistent one, then the lower secret name, so `CREATE OR REPLACE SECRET <name>` replaces the one in use.
+`key_source` and every key error name the secret that was used. `decide_doctor()` warns about the deprecated
+setting and about older-form secrets without `SCOPE`, which reach every remote host, including providers added
+later (such as `gemini`).
+
 Without a key, every service answers with the same message, for example:
 
 ```text

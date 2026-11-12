@@ -11,6 +11,7 @@
 #include "duckdb_compat.hpp"
 
 #include <cstdlib>
+#include <filesystem>
 
 using namespace duckdb;
 using namespace duckdb::anofox;
@@ -192,7 +193,7 @@ TEST_CASE("key precedence is the same for every service", "[anofox_decide][secre
 			// 1. the secret beats everything
 			auto k = DecideResolveServiceKey(ctx, s.id, host, "MY_KEY_ENV");
 			REQUIRE(k.key == "secret-key");
-			REQUIRE(k.source == "a stored secret (service " + s.id + ")");
+			REQUIRE(k.source == "the stored secret 'svc' (service " + s.id + ")");
 			// 2. then the model's key_env
 			d.Run("DROP SECRET svc");
 			k = DecideResolveServiceKey(ctx, s.id, host, "MY_KEY_ENV");
@@ -252,7 +253,7 @@ TEST_CASE("existing secrets keep working: host-scoped and unscoped, without SERV
 	d.Run("CREATE SECRET s1 (TYPE anofox_decide, API_KEY 'secret-liquid', SCOPE 'api.liquid.ai')");
 	auto cfg = DecideResolveConfig(d.Ctx(), Target("liquid"));
 	REQUIRE(cfg.api_key == "secret-liquid");
-	REQUIRE(cfg.key_source == "a stored secret (scope 'api.liquid.ai')");
+	REQUIRE(cfg.key_source == "the stored secret 's1' (scope 'api.liquid.ai')");
 	REQUIRE(DecideResolveConfig(d.Ctx(), Target("typesafe")).api_key == "env-typesafe");
 	// A loopback-scoped secret for a self-hosted server.
 	d.Run("CREATE SECRET s2 (TYPE anofox_decide, API_KEY 'secret-local', SCOPE '127.0.0.1')");
@@ -273,7 +274,7 @@ TEST_CASE("SERVICE secrets with SCOPE serve a self-hosted endpoint of that provi
 	d.Run("CREATE SECRET mine (TYPE anofox_decide, SERVICE 'systemone', API_KEY 'kev-key', SCOPE '127.0.0.1')");
 	auto cfg = DecideResolveConfig(d.Ctx(), Target("systemone", "http://127.0.0.1:8009"));
 	REQUIRE(cfg.api_key == "kev-key");
-	REQUIRE(cfg.key_source == "a stored secret (service systemone)");
+	REQUIRE(cfg.key_source == "the stored secret 'mine' (service systemone)");
 	// Another provider registered at the same host does not get it.
 	REQUIRE_THROWS_WITH(DecideResolveConfig(d.Ctx(), Target("openai", "http://127.0.0.1:8009")), Contains("no API key"));
 	// Nor does a host that merely starts with the scope.
@@ -364,7 +365,7 @@ TEST_CASE("decide_services() lists every online service; decide_models() shows k
 	                     "ORDER BY model");
 	REQUIRE_FALSE(m->HasError());
 	REQUIRE(m->RowCount() == 3);
-	REQUIRE(duckdb_compat::ResultValue(*m, 1, 0).ToString() == "a stored secret (service liquid)");
+	REQUIRE(duckdb_compat::ResultValue(*m, 1, 0).ToString() == "the stored secret 'liq' (service liquid)");
 	REQUIRE(duckdb_compat::ResultValue(*m, 1, 1).ToString() == "env var OPENAI_API_KEY");
 	REQUIRE(duckdb_compat::ResultValue(*m, 1, 2).IsNull());
 
@@ -372,9 +373,106 @@ TEST_CASE("decide_services() lists every online service; decide_models() shows k
 	auto doc = d.con.Query("SELECT detail FROM decide_doctor() WHERE item = 'model ''d1'''");
 	REQUIRE_FALSE(doc->HasError());
 	REQUIRE(doc->RowCount() == 1);
-	REQUIRE_THAT(duckdb_compat::ResultValue(*doc, 0, 0).ToString(), Contains("a stored secret (service liquid)"));
+	REQUIRE_THAT(duckdb_compat::ResultValue(*doc, 0, 0).ToString(), Contains("the stored secret 'liq' (service liquid)"));
 	auto keys = d.con.Query("SELECT detail FROM decide_doctor() WHERE item = 'api keys'");
 	REQUIRE_FALSE(keys->HasError());
 	REQUIRE(keys->RowCount() == 1);
 	REQUIRE_THAT(duckdb_compat::ResultValue(*keys, 0, 0).ToString(), Contains("decide_services()"));
+}
+
+// --- Crew review follow-ups -------------------------------------------------------------------------------------
+
+TEST_CASE("equal-scope secrets keep DuckDB's tie-break: temporary before persistent, then the name",
+          "[anofox_decide][secret]") {
+	EnvGuard clean(NoServiceEnv());
+	Db d;
+	const auto dir = (std::filesystem::temp_directory_path() / "anofox_decide_secret_tiebreak").string();
+	std::filesystem::remove_all(dir);
+	d.Run("SET secret_directory = '" + dir + "'");
+	// Created in the "wrong" order on purpose: enumeration order must not decide.
+	d.Run("CREATE SECRET b_two (TYPE anofox_decide, API_KEY 'key-b', SCOPE 'api.liquid.ai')");
+	d.Run("CREATE SECRET a_one (TYPE anofox_decide, API_KEY 'key-a', SCOPE 'api.liquid.ai')");
+	REQUIRE(DecideResolveServiceKey(d.Ctx(), "liquid", "api.liquid.ai").key == "key-a");
+	d.Run("CREATE PERSISTENT SECRET a_persisted (TYPE anofox_decide, API_KEY 'key-p', SCOPE 'api.liquid.ai')");
+	REQUIRE(DecideResolveServiceKey(d.Ctx(), "liquid", "api.liquid.ai").key == "key-a");
+	d.Run("DROP SECRET a_one");
+	d.Run("DROP SECRET b_two");
+	REQUIRE(DecideResolveServiceKey(d.Ctx(), "liquid", "api.liquid.ai").key == "key-p");
+	// Two SERVICE secrets for the same host: the same rule, deterministically.
+	d.Run("CREATE SECRET z_svc (TYPE anofox_decide, SERVICE 'liquid', API_KEY 'key-z')");
+	d.Run("CREATE SECRET m_svc (TYPE anofox_decide, SERVICE 'liquid', API_KEY 'key-m')");
+	REQUIRE(DecideResolveServiceKey(d.Ctx(), "liquid", "api.liquid.ai").key == "key-m");
+	d.Run("DROP PERSISTENT SECRET a_persisted");
+	std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("the key source names the secret and its real scope; a replace recipe names it too",
+          "[anofox_decide][secret]") {
+	EnvGuard clean(NoServiceEnv());
+	Db d;
+	d.Run("CREATE SECRET everywhere (TYPE anofox_decide, API_KEY 'k')");
+	auto k = DecideResolveServiceKey(d.Ctx(), "openai", "api.openai.com");
+	REQUIRE(k.source == "the stored secret 'everywhere' (no SCOPE: every remote host)");
+	REQUIRE(k.secret_name == "everywhere");
+	REQUIRE_THAT(DecideSecretRecipe("openai", "api.openai.com", true, "everywhere"),
+	             Contains("CREATE OR REPLACE SECRET everywhere (TYPE anofox_decide, SERVICE 'openai'"));
+}
+
+TEST_CASE("secret values: control characters refused, SERVICE case-insensitive, IPv6 loopback SCOPE",
+          "[anofox_decide][secret]") {
+	EnvGuard clean(NoServiceEnv());
+	Db d;
+	REQUIRE_THAT(d.Error("CREATE SECRET (TYPE anofox_decide, SERVICE 'openai', API_KEY 'sk-a' || chr(13) || chr(10) || "
+	                     "'X-Injected: 1')"),
+	             Contains("control character"));
+	d.Run("CREATE SECRET up (TYPE anofox_decide, SERVICE 'OpenAI', API_KEY 'k-up')");
+	REQUIRE(DecideResolveServiceKey(d.Ctx(), "openai", "api.openai.com").key == "k-up");
+	d.Run("CREATE SECRET v6 (TYPE anofox_decide, SERVICE 'systemone', API_KEY 'k-v6', SCOPE '[::1]')");
+	REQUIRE(DecideResolveServiceKey(d.Ctx(), "systemone", "[::1]").key == "k-v6");
+	REQUIRE_THAT(d.Error("CREATE SECRET (TYPE anofox_decide, SERVICE 'systemone', API_KEY 'k', SCOPE 'my host')"),
+	             Contains("not a host name"));
+	// A key that reached the process with a line break (env var) is never put into a header.
+	DecideRemoteConfig cfg;
+	cfg.api_key = "sk-a\r\nX-Injected: 1";
+	REQUIRE_THROWS_WITH(DecideAuthHeaders(cfg), Contains("control character"));
+}
+
+TEST_CASE("decide_models / doctor: key source survives other config problems; legacy warnings",
+          "[anofox_decide][secret]") {
+	EnvGuard clean(NoServiceEnv());
+	Db d;
+	EnvGuard env({{"CLOUDFLARE_API_TOKEN", "cf-env-token"}});
+	d.Run("SELECT decide_register_model('clef', 'cloudflare')"); // no account id anywhere
+	auto m = d.con.Query("SELECT key_source, hint FROM decide_models() WHERE model = 'clef'");
+	REQUIRE_FALSE(m->HasError());
+	REQUIRE(duckdb_compat::ResultValue(*m, 0, 0).ToString() == "env var CLOUDFLARE_API_TOKEN");
+	REQUIRE_THAT(duckdb_compat::ResultValue(*m, 1, 0).ToString(), !Contains("no API key"));
+
+	// The deprecated setting: a warn row, saying what shadows it.
+	EnvGuard ts({{"TYPESAFE_API_KEY", "env-ts"}});
+	d.Run("SET anofox_decide_api_key = 'legacy'");
+	auto w = d.con.Query("SELECT status, detail, fix FROM decide_doctor() WHERE item = 'anofox_decide_api_key'");
+	REQUIRE_FALSE(w->HasError());
+	REQUIRE(w->RowCount() == 1);
+	REQUIRE(duckdb_compat::ResultValue(*w, 0, 0).ToString() == "warn");
+	REQUIRE_THAT(duckdb_compat::ResultValue(*w, 1, 0).ToString(), Contains("env var TYPESAFE_API_KEY"));
+	REQUIRE_THAT(duckdb_compat::ResultValue(*w, 2, 0).ToString(), Contains("SERVICE 'typesafe'"));
+
+	// An unscoped secret without SERVICE matches every remote host: say so.
+	d.Run("CREATE SECRET catchall (TYPE anofox_decide, API_KEY 'k')");
+	auto u = d.con.Query("SELECT status, detail FROM decide_doctor() WHERE item = 'secret ''catchall'''");
+	REQUIRE_FALSE(u->HasError());
+	REQUIRE(u->RowCount() == 1);
+	REQUIRE(duckdb_compat::ResultValue(*u, 0, 0).ToString() == "warn");
+	REQUIRE_THAT(duckdb_compat::ResultValue(*u, 1, 0).ToString(), Contains("every remote host"));
+
+	// The api keys row warns when a registered remote model has no key.
+	d.Run("DROP SECRET catchall");
+	d.Run("SELECT decide_register_model('d1', 'liquid')");
+	auto keys = d.con.Query("SELECT status FROM decide_doctor() WHERE item = 'api keys'");
+	REQUIRE(duckdb_compat::ResultValue(*keys, 0, 0).ToString() == "warn");
+
+	// systemone is configured per model: decide_services says where to look.
+	auto s = d.con.Query("SELECT key_source FROM decide_services() WHERE service = 'systemone'");
+	REQUIRE_THAT(duckdb_compat::ResultValue(*s, 0, 0).ToString(), Contains("decide_models()"));
 }
