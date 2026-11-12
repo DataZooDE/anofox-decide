@@ -85,7 +85,15 @@ struct DecideDownloadRow {
 //! Downloads (or verifies) every file of the entry into `cache_dir`. Throws IOException/InvalidInputException
 //! with an actionable message. Resumes a partial `.part` file with an HTTP Range request, checks size and
 //! sha256, renames atomically. timeout_ms bounds one read of the connection, not the whole file.
-vector<DecideDownloadRow> DecideDownloadEntry(const DecideCatalogEntry &entry, const string &cache_dir, int timeout_ms);
+//! `token` (a Hugging Face access token, for gated repositories) is sent only to the origin of entry.base_url
+//! (over https, or http on loopback) and dropped for the rest of a redirect chain once it leaves that origin;
+//! `token_source` names where it came from, for messages.
+struct DecideDownloadAuth {
+	string token;
+	string token_source;
+};
+vector<DecideDownloadRow> DecideDownloadEntry(const DecideCatalogEntry &entry, const string &cache_dir, int timeout_ms,
+                                              const DecideDownloadAuth &auth = DecideDownloadAuth());
 
 } // namespace anofox
 } // namespace duckdb

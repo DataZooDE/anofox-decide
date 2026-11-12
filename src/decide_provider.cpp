@@ -535,6 +535,18 @@ string DecideRemoteEndpointOf(const DecideModelEntry &entry) {
 	                                entry.wire_model.empty() ? entry.id : entry.wire_model, entry.account_id);
 }
 
+string DecideRemoteKeySource(ClientContext &context, const DecideModelEntry &entry) {
+	if (!DecideFindRemoteProfile(entry.provider)) {
+		return "";
+	}
+	try {
+		auto cfg = DecideResolveConfig(context, TargetOf(entry), "decide_models");
+		return cfg.send_auth ? cfg.key_source : string("none needed");
+	} catch (const std::exception &) {
+		return ""; // no key (or another configuration problem the hint reports)
+	}
+}
+
 DecideModelStatus DecideDescribeModel(ClientContext &context, const DecideModelEntry &entry) {
 	DecideModelStatus status;
 	if (entry.provider == "stub") {
@@ -550,7 +562,9 @@ DecideModelStatus DecideDescribeModel(ClientContext &context, const DecideModelE
 			allow = BooleanValue::Get(allow_v.DefaultCastAs(LogicalType::BOOLEAN));
 		}
 		if (!allow) {
-			status.detail = "remote calls are off: your text would be sent to " + DecideRemoteEndpointOf(entry);
+			const string source = DecideRemoteKeySource(context, entry);
+			status.detail = "remote calls are off: your text would be sent to " + DecideRemoteEndpointOf(entry) +
+			                (source.empty() ? string(" (no API key is found for it yet)") : " (key from " + source + ")");
 			status.fix = "SET anofox_decide_allow_remote = true;";
 			return status;
 		}

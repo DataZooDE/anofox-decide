@@ -85,7 +85,7 @@ SET anofox_decide_allow_remote=true
 statement error
 SELECT decide_probability('x', 'y', model := 'd1')
 ----
-<REGEX>:.*decide_probability: no API key for Liquid AI at api.liquid.ai\. Fix: provide a key: \(1\) export LIQUID_API_KEY=<key>.*CREATE SECRET.*SCOPE 'api.liquid.ai'.*
+<REGEX>:.*decide_probability: no API key for Liquid AI at api\.liquid\.ai\. Fix: provide one: \(1\) CREATE SECRET \(TYPE anofox_decide, SERVICE 'liquid', API_KEY '<key>'\); \(2\) export LIQUID_API_KEY=<key> before starting DuckDB.*
 
 # A stored secret scoped to Liquid's host is never used for another provider's
 # host: the typesafe model still has no key. (The positive case, a secret

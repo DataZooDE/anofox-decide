@@ -104,6 +104,47 @@ string DecideRemoteProviderList();
 // The remote provider ids (typesafe, liquid, cloudflare, openai, systemone, strands).
 vector<string> DecideRemoteProviderNames();
 
+// An online service that takes a credential: every remote provider, plus Hugging Face for decide_download.
+// Built from the provider profiles, so a new provider is listed (and covered by the credential tests) on its own.
+struct DecideServiceInfo {
+	string id;           // service id: the provider name, or "huggingface"
+	string display;      // human name for messages
+	string default_host; // the host the env var and an unscoped SERVICE secret belong to; "" = none (systemone)
+	string env_key;      // env var read for the default host; "" = none
+	bool requires_key = true; // false: keyless (strands), takes no SERVICE secret
+	vector<string> secret_fields; // CREATE SECRET fields this service reads (API_KEY, ACCOUNT_ID)
+};
+vector<DecideServiceInfo> DecideServices();
+// nullptr when `id` is not a service.
+const DecideServiceInfo *DecideFindService(const string &id);
+// Comma-separated, quoted ids of the services a SERVICE secret may name.
+string DecideSecretServiceList();
+
+// Where a key was found. source is "a stored secret (service gemini)", "a stored secret (scope 'host')", "env var
+// X" or "the anofox_decide_api_key setting (deprecated)"; empty key = none found. account_id is the ACCOUNT_ID of
+// the matching secret (Cloudflare only), "" otherwise.
+struct DecideResolvedKey {
+	string key;
+	string source;
+	string account_id;
+};
+// The single key resolver for every online service. Precedence, the same for all of them:
+//   1. a stored anofox_decide secret for `host`: a secret that names a SERVICE matches only that service (and only
+//      its own hosts: the default host, or exactly the SCOPE it was given); a secret without SERVICE matches by
+//      its SCOPE prefix (or every host when unscoped) for the remote providers, never for huggingface;
+//   2. `key_env`, the env var the model names at registration (any host);
+//   3. the service's own env var, only when `host` is the service's default host;
+//   4. typesafe only: the legacy anofox_decide_api_key setting (deprecated).
+// Never throws for a missing key: the caller decides (DecideNoKeyMessage).
+DecideResolvedKey DecideResolveServiceKey(ClientContext &context, const string &service, const string &host,
+                                          const string &key_env = "");
+// The one "no API key" message: "<function>: no API key for <Service> at <host>. Fix: provide one: (1) CREATE
+// SECRET (TYPE anofox_decide, SERVICE '<id>', API_KEY '<key>'); (2) export <ENV>=<key> before starting DuckDB".
+string DecideNoKeyMessage(const string &function, const string &service, const string &host,
+                          const string &key_env = "");
+// The CREATE SECRET recipe for a service at a host (SCOPE added when the host is not the default one).
+string DecideSecretRecipe(const string &service, const string &host, bool replace = false);
+
 // Per-model remote target (from decide_register_model); empty fields fall
 // back to the profile, then (typesafe only) to the legacy session settings.
 struct DecideRemoteTarget {
@@ -275,11 +316,10 @@ string DecideDisplayPath(const string &path_template, const string &model, const
 // Throws an actionable error; used at registration and at resolve time.
 void DecideValidateEndpoint(const string &endpoint, const char *what);
 
-// Config for one model's target. Key precedence: a stored anofox_decide
-// secret for the host always wins; then the legacy anofox_decide_api_key
-// setting (typesafe provider only); then the target's explicit key_env; then
-// the profile's env var (default host only). Throws when no key is found,
-// naming the provider's env var, never the key itself. Does NOT enforce the
+// Config for one model's target. Key precedence is DecideResolveServiceKey's: a stored anofox_decide secret for
+// the host (and service), then the target's explicit key_env, then the profile's env var (default host only),
+// then (typesafe only, deprecated) the anofox_decide_api_key setting. Throws DecideNoKeyMessage when no key is
+// found, naming the provider's env var, never the key itself. Does NOT enforce the
 // allow_remote gate — DecideRemoteEvaluate does, so the gate error and the
 // key error stay distinguishable.
 DecideRemoteConfig DecideResolveConfig(ClientContext &context, const DecideRemoteTarget &target,
@@ -332,8 +372,10 @@ struct DecideGetResult {
 };
 using DecideGetHeaders = std::function<bool(int status, const string &content_range)>;
 using DecideGetData = std::function<bool(const char *data, size_t size)>;
+// bearer_token, when not empty, is sent as "Authorization: Bearer <token>" on this one request (the caller decides
+// per hop whether the host may see it).
 DecideGetResult DecideHttpGet(const string &url, int64_t range_from, int timeout_ms, const DecideGetHeaders &on_headers,
-                              const DecideGetData &on_data);
+                              const DecideGetData &on_data, const string &bearer_token = "");
 
 } // namespace anofox
 } // namespace duckdb

@@ -31,7 +31,7 @@ BUILD_ROOT:=$(or $(DECIDE_BUILD_ROOT),build)
 DECIDE_TEST_ENV = DATAZOO_DISABLE_TELEMETRY=1
 # The offline suite must not depend on the developer's own API keys (they hide
 # missing-key and secret-lookup bugs): unset them for everything except test-live.
-DECIDE_OFFLINE_ENV = env -u TYPESAFE_API_KEY -u LIQUID_API_KEY -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_ACCOUNT_ID -u OPENAI_API_KEY DATAZOO_DISABLE_TELEMETRY=1
+DECIDE_OFFLINE_ENV = env -u TYPESAFE_API_KEY -u LIQUID_API_KEY -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_ACCOUNT_ID -u OPENAI_API_KEY -u GEMINI_API_KEY -u HF_TOKEN DATAZOO_DISABLE_TELEMETRY=1
 
 # Default suite is offline-only: the live TypeSafe test runs exclusively via
 # `make test-live` (it needs TYPESAFE_API_KEY + HTTPS egress).

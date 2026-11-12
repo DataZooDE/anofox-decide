@@ -39,8 +39,8 @@ SELECT decide_probability('x', 'y', model := 'cfg-test')
 <REGEX>:.*loopback.*
 
 # A custom https endpoint withholds the env key: without an explicit key
-# the error names the explicit setting (deterministic even with an ambient
-# TYPESAFE_API_KEY in the environment).
+# the error asks for a secret scoped to that host or a key_env (deterministic
+# even with an ambient TYPESAFE_API_KEY in the environment).
 statement ok
 SET anofox_decide_endpoint='https://custom.example'
 
@@ -50,7 +50,7 @@ SET anofox_decide_api_key=''
 statement error
 SELECT decide_probability('x', 'y', model := 'cfg-test')
 ----
-<REGEX>:.*anofox_decide_api_key.*
+<REGEX>:.*no API key for TypeSafe at custom\.example.*SERVICE 'typesafe', API_KEY '<key>', SCOPE 'custom\.example'.*key_env.*TYPESAFE_API_KEY itself is only sent to api\.typesafe\.ai.*
 
 statement ok
 RESET anofox_decide_endpoint
@@ -90,7 +90,7 @@ SET anofox_decide_endpoint='https://custom.example'
 statement error
 SELECT decide_probability('x', 'y', model := 'cfg-test')
 ----
-<REGEX>:.*anofox_decide_api_key.*
+<REGEX>:.*no API key for TypeSafe at custom\.example.*
 
 statement ok
 DROP SECRET decide_scoped

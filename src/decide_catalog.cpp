@@ -301,6 +301,14 @@ string Origin(const string &url) {
 	return slash == string::npos ? url : url.substr(0, slash);
 }
 
+string LowerOrigin(const string &url) {
+	string o = Origin(url);
+	for (auto &c : o) {
+		c = (char)std::tolower((unsigned char)c);
+	}
+	return o;
+}
+
 string HostOf(const string &url) {
 	auto o = Origin(url);
 	auto at = o.find("://");
@@ -311,8 +319,20 @@ string HostOf(const string &url) {
 	throw IOException(DecideMsg("decide_download", what, fix));
 }
 
+// The token may go to this URL: the same origin (scheme, host and port) as the catalog's base_url, over https
+// or to a server on this machine.
+bool TokenMayGo(const string &url, const string &base_url) {
+	if (LowerOrigin(url) != LowerOrigin(base_url)) {
+		return false;
+	}
+	const string host = HostOf(url);
+	const auto colon = host.rfind(':');
+	return url.compare(0, 8, "https://") == 0 ||
+	       DecideHostIsLoopback(colon == string::npos || host.find(']') != string::npos ? host : host.substr(0, colon));
+}
+
 void DownloadFile(const DecideCatalogEntry &entry, const DecideCatalogFile &file, const string &dir, int timeout_ms,
-                  DecideDownloadRow &row) {
+                  const DecideDownloadAuth &auth, DecideDownloadRow &row) {
 	const fs::path final_path = fs::path(dir) / file.local_name;
 	const fs::path part_path = fs::path(dir) / (file.local_name + ".part");
 	row.model = entry.id;
@@ -350,6 +370,9 @@ void DownloadFile(const DecideCatalogEntry &entry, const DecideCatalogFile &file
 	string url = entry.base_url + "/" + entry.repo + "/resolve/" + entry.revision + "/" + file.repo_path;
 	int redirects = 0;
 	bool restarted_after_416 = false;
+	// The token travels only while the chain stays on the catalog's origin: Hugging Face redirects resolve/ URLs
+	// to CDN hosts, and those (or anyone a redirect names) must never see it. Once dropped it stays dropped.
+	bool send_token = !auth.token.empty();
 	while (have < file.size) {
 		std::ofstream out;
 		idx_t offset = have;
@@ -376,7 +399,9 @@ void DownloadFile(const DecideCatalogEntry &entry, const DecideCatalogFile &file
 			offset += n;
 			return true;
 		};
-		auto res = DecideHttpGet(url, (int64_t)have, timeout_ms, on_headers, on_data);
+		send_token = send_token && TokenMayGo(url, entry.base_url);
+		const bool token_sent = send_token;
+		auto res = DecideHttpGet(url, (int64_t)have, timeout_ms, on_headers, on_data, send_token ? auth.token : "");
 		out.close();
 		if (write_failed) {
 			Fail("cannot write to '" + part_path.string() + "' (disk full or not writable)",
@@ -433,7 +458,18 @@ void DownloadFile(const DecideCatalogEntry &entry, const DecideCatalogFile &file
 				     "update the anofox_decide extension: FORCE INSTALL anofox_decide FROM community;");
 			}
 			if (res.status == 401 || res.status == 403) {
-				Fail(what + ": access was refused", "check the network or proxy; the files are public, no login is needed");
+				const string give = "CREATE SECRET (TYPE anofox_decide, SERVICE 'huggingface', API_KEY '<hf_... token>'); "
+				                    "or export HF_TOKEN=<token> before starting DuckDB";
+				if (token_sent) {
+					Fail(what + ": access was refused for the token from " +
+					         (auth.token_source.empty() ? string("the secret") : auth.token_source),
+					     "check that the token is valid and that its account accepted the terms of " + entry.repo +
+					         " on huggingface.co; replace it with CREATE OR REPLACE SECRET (TYPE anofox_decide, SERVICE "
+					         "'huggingface', API_KEY '<hf_... token>');");
+				}
+				Fail(what + ": access was refused",
+				     "if " + entry.repo + " is gated, accept its terms on huggingface.co and give a token: " + give +
+				         "; otherwise check the network or proxy");
 			}
 			Fail(what, retry);
 		}
@@ -471,7 +507,8 @@ void DownloadFile(const DecideCatalogEntry &entry, const DecideCatalogFile &file
 
 } // namespace
 
-vector<DecideDownloadRow> DecideDownloadEntry(const DecideCatalogEntry &entry, const string &cache_dir, int timeout_ms) {
+vector<DecideDownloadRow> DecideDownloadEntry(const DecideCatalogEntry &entry, const string &cache_dir, int timeout_ms,
+                                              const DecideDownloadAuth &auth) {
 	std::lock_guard<std::mutex> guard(download_lock);
 	const string dir = DecideCatalogModelDir(cache_dir, entry);
 	std::error_code ec;
@@ -483,7 +520,7 @@ vector<DecideDownloadRow> DecideDownloadEntry(const DecideCatalogEntry &entry, c
 	vector<DecideDownloadRow> rows;
 	for (auto &f : entry.files) {
 		DecideDownloadRow row;
-		DownloadFile(entry, f, dir, timeout_ms, row);
+		DownloadFile(entry, f, dir, timeout_ms, auth, row);
 		rows.push_back(std::move(row));
 	}
 	return rows;
@@ -538,8 +575,21 @@ unique_ptr<GlobalTableFunctionState> DecideDownloadInit(ClientContext &context, 
 	if (context.TryGetCurrentSetting("anofox_decide_timeout_ms", timeout_v) && !timeout_v.IsNull()) {
 		timeout_ms = (int)std::max<int64_t>(timeout_ms, BigIntValue::Get(timeout_v.DefaultCastAs(LogicalType::BIGINT)));
 	}
+	// A Hugging Face token (gated repositories): a SERVICE 'huggingface' secret for the catalog host, else HF_TOKEN
+	// when that host is huggingface.co. Public repositories need none, and without one nothing changes.
+	DecideDownloadAuth auth;
+	{
+		string host = HostOf(entry.base_url);
+		const auto colon = host.rfind(':');
+		if (colon != string::npos && host.find(']') == string::npos) {
+			host = host.substr(0, colon);
+		}
+		auto key = DecideResolveServiceKey(context, "huggingface", host);
+		auth.token = key.key;
+		auth.token_source = key.source;
+	}
 	auto state = make_uniq<DecideDownloadState>();
-	state->rows = DecideDownloadEntry(entry, DecideCacheDir(context, "decide_download"), timeout_ms);
+	state->rows = DecideDownloadEntry(entry, DecideCacheDir(context, "decide_download"), timeout_ms, auth);
 	return std::move(state);
 }
 

@@ -14,6 +14,8 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/main/secret/secret.hpp"
+#include "duckdb/main/secret/secret_manager.hpp"
+#include "duckdb/transaction/meta_transaction.hpp"
 
 #include <openssl/bio.h>
 #include <openssl/err.h>
@@ -1123,7 +1125,8 @@ string DecideDisplayPath(const string &path_template, const string &model, const
 	return path;
 }
 
-static void ExpandPathTemplate(const DecideRemoteTarget &target, DecideRemoteConfig &cfg, const string &function) {
+static void ExpandPathTemplate(const DecideRemoteTarget &target, DecideRemoteConfig &cfg, const string &function,
+                               const string &secret_account_id) {
 	const string reg = target.registered_id.empty() ? target.wire_model : target.registered_id;
 	if (cfg.path.find("{model}") != string::npos) {
 		if (!IsPlainName(cfg.model, 1, 100, "._-")) {
@@ -1136,6 +1139,10 @@ static void ExpandPathTemplate(const DecideRemoteTarget &target, DecideRemoteCon
 	if (cfg.path.find("{account_id}") != string::npos) {
 		string id = target.account_id;
 		string source = "the account_id option";
+		if (id.empty() && !secret_account_id.empty()) {
+			id = secret_account_id;
+			source = "the ACCOUNT_ID of the stored secret";
+		}
 		if (id.empty()) {
 			const char *env = std::getenv("CLOUDFLARE_ACCOUNT_ID");
 			if (env && *env) {
@@ -1147,7 +1154,8 @@ static void ExpandPathTemplate(const DecideRemoteTarget &target, DecideRemoteCon
 			throw InvalidInputException(DecideMsg(
 			    function, "no Cloudflare account id for model '" + reg + "'",
 			    "export CLOUDFLARE_ACCOUNT_ID=<id> before starting DuckDB (the 32-character id in your Cloudflare "
-			    "dashboard URL), or register the model with MAP {'account_id': '<id>'}"));
+			    "dashboard URL), put it in the secret: CREATE SECRET (TYPE anofox_decide, SERVICE 'cloudflare', "
+			    "API_KEY '<token>', ACCOUNT_ID '<id>'); or register the model with MAP {'account_id': '<id>'}"));
 		}
 		if (!DecideIsCloudflareAccountId(id)) {
 			throw InvalidInputException(DecideMsg(
@@ -1183,7 +1191,6 @@ DecideRemoteConfig DecideResolveConfig(ClientContext &context, const DecideRemot
 		                                                   : (target.registered_id.empty() ? target.wire_model
 		                                                                                   : target.registered_id);
 	}
-	ExpandPathTemplate(target, cfg, function);
 	cfg.criteria_names = target.criteria_names < 0 ? profile->criteria_names : target.criteria_names == 1;
 
 	// Endpoint: the model's own endpoint, else (typesafe only, legacy) the
@@ -1212,77 +1219,19 @@ DecideRemoteConfig DecideResolveConfig(ClientContext &context, const DecideRemot
 	if (!cfg.ssl && !DecideHostIsLoopback(cfg.host)) {
 		ThrowCleartext(cfg.host, function);
 	}
-	// 1. Stored secret (always wins: write-only, redacted in duckdb_secrets(),
-	//    optionally scoped to an endpoint host prefix).
-	{
-		// DatabaseInstance overload on purpose: DuckDB's ClientContext overload
-		// never initialises the reader's db handle, so it silently finds no
-		// secret at all.
-		KeyValueSecretReader reader(*context.db, "anofox_decide", cfg.host);
-		Value secret_key;
-		if (reader.TryGetSecretKey("api_key", secret_key) && !secret_key.IsNull() &&
-		    !secret_key.ToString().empty()) {
-			cfg.api_key = secret_key.ToString();
-			cfg.key_source = "a stored secret (scope '" + cfg.host + "')";
-		}
-	}
-	if (cfg.api_key.empty() && target.provider == "typesafe") {
-		// 2. Explicit session setting (legacy, typesafe provider only so one
-		//    vendor's key can never be sent to another vendor's host; readable
-		//    via current_setting, prefer a stored secret).
-		Value key_v;
-		if (context.TryGetCurrentSetting("anofox_decide_api_key", key_v) && !key_v.IsNull() &&
-		    !key_v.ToString().empty()) {
-			cfg.api_key = key_v.ToString();
-			cfg.key_source = "the anofox_decide_api_key setting";
-		}
-	}
-	if (cfg.api_key.empty() && !target.key_env.empty()) {
-		// 3. Explicit per-model opt-in: the registrant named this env var for
-		//    this model's endpoint.
-		const char *env = std::getenv(target.key_env.c_str());
-		if (env && *env) {
-			cfg.api_key = env;
-			cfg.key_source = "env var " + target.key_env;
-		}
-	}
-	if (cfg.api_key.empty() && *profile->env_key && DecideProfileTakesEnvKey(*profile, cfg.host)) {
-		// 4. The profile's env key is scoped to its default host: a model that
-		//    points the endpoint elsewhere must supply its own key explicitly
-		//    (secret or key_env), so a redirected endpoint can never collect
-		//    the operator's key.
-		const char *env = std::getenv(profile->env_key);
-		if (env && *env) {
-			cfg.api_key = env;
-			cfg.key_source = string("env var ") + profile->env_key;
-		}
-	}
+	// The key: one resolver and one precedence order for every service (DecideResolveServiceKey).
+	auto resolved = DecideResolveServiceKey(context, target.provider, cfg.host, target.key_env);
+	cfg.api_key = resolved.key;
+	cfg.key_source = resolved.source;
+	// The URL path may carry the Cloudflare account id: the model's option, else the matching secret's
+	// ACCOUNT_ID, else CLOUDFLARE_ACCOUNT_ID. Checked before the key, so a missing id is reported first.
+	ExpandPathTemplate(target, cfg, function, resolved.account_id);
 	if (cfg.api_key.empty() && !profile->requires_key) {
 		// Keyless server (e.g. a local strands-decider): no Authorization header.
 		cfg.send_auth = false;
 	}
 	if (cfg.api_key.empty() && profile->requires_key) {
-		string how;
-		if (target.provider == "systemone") {
-			how = "(1) CREATE SECRET (TYPE anofox_decide, API_KEY '<key>', SCOPE '" + cfg.host + "'); or (2) register the "
-			      "model with MAP {'key_env': '<ENV_VAR>'} and export that variable before starting DuckDB. If the "
-			      "server needs no key, register it with provider 'strands' instead";
-		} else {
-			how = "(1) export " + string(profile->env_key) + "=<key> before starting DuckDB; or (2) CREATE SECRET (TYPE "
-			      "anofox_decide, API_KEY '<key>', SCOPE '" + cfg.host + "');";
-			if (target.provider == "typesafe") {
-				how += " or (3) SET anofox_decide_api_key = '<key>'; (kept in plain text)";
-			}
-		}
-		string what = "no API key for " + string(profile->display) + " at " + cfg.host;
-		if (!target.key_env.empty()) {
-			const char *named = std::getenv(target.key_env.c_str());
-			if (!named || !*named) {
-				what += " (the model names key_env '" + target.key_env + "', but that variable is not set in the "
-				        "DuckDB process)";
-			}
-		}
-		throw InvalidInputException(DecideMsg(function, what, "provide a key: " + how));
+		throw InvalidInputException(DecideNoKeyMessage(function, target.provider, cfg.host, target.key_env));
 	}
 	Value timeout_v;
 	if (context.TryGetCurrentSetting("anofox_decide_timeout_ms", timeout_v) && !timeout_v.IsNull()) {
@@ -1297,6 +1246,222 @@ DecideRemoteConfig DecideResolveConfig(ClientContext &context, const DecideRemot
 		cfg.allow_remote = BooleanValue::Get(allow_v.DefaultCastAs(LogicalType::BOOLEAN));
 	}
 	return cfg;
+}
+
+//--- Services and keys --------------------------------------------------------
+// One table of online services (built from the provider profiles plus Hugging Face), one resolver, one
+// "no API key" message: every service finds its key the same way and says the same thing when it has none.
+
+static string ProfileHost(const DecideRemoteProfile &p) {
+	if (!*p.default_endpoint) {
+		return "";
+	}
+	string host;
+	int port;
+	bool ssl;
+	SplitEndpoint(p.default_endpoint, host, port, ssl, "profile endpoint");
+	return host;
+}
+
+static const vector<DecideServiceInfo> &ServiceTable() {
+	static const vector<DecideServiceInfo> table = []() {
+		vector<DecideServiceInfo> out;
+		for (auto &p : kRemoteProfiles) {
+			DecideServiceInfo s;
+			s.id = p.name;
+			s.display = p.display;
+			s.default_host = ProfileHost(p);
+			s.env_key = p.env_key;
+			s.requires_key = p.requires_key;
+			if (p.requires_key) {
+				s.secret_fields = {"API_KEY"};
+				if (s.id == "cloudflare") {
+					s.secret_fields.push_back("ACCOUNT_ID");
+				}
+			}
+			out.push_back(std::move(s));
+		}
+		DecideServiceInfo hf;
+		hf.id = "huggingface";
+		hf.display = "Hugging Face";
+		hf.default_host = "huggingface.co";
+		hf.env_key = "HF_TOKEN";
+		hf.secret_fields = {"API_KEY"};
+		out.push_back(std::move(hf));
+		return out;
+	}();
+	return table;
+}
+
+vector<DecideServiceInfo> DecideServices() {
+	return ServiceTable();
+}
+
+const DecideServiceInfo *DecideFindService(const string &id) {
+	for (auto &s : ServiceTable()) {
+		if (s.id == id) {
+			return &s;
+		}
+	}
+	return nullptr;
+}
+
+string DecideSecretServiceList() {
+	vector<string> ids;
+	for (auto &s : ServiceTable()) {
+		if (s.requires_key) {
+			ids.push_back(s.id);
+		}
+	}
+	return DecideJoinQuoted(ids);
+}
+
+static string LowerAscii(string s) {
+	for (auto &c : s) {
+		c = (char)std::tolower((unsigned char)c);
+	}
+	return s;
+}
+
+static string SecretString(const KeyValueSecret &secret, const char *key) {
+	Value v;
+	if (secret.TryGetValue(key, v) && !v.IsNull()) {
+		return v.ToString();
+	}
+	return "";
+}
+
+DecideResolvedKey DecideResolveServiceKey(ClientContext &context, const string &service, const string &host,
+                                          const string &key_env) {
+	DecideResolvedKey out;
+	auto info = DecideFindService(service);
+	// 1. A stored secret. One that names a SERVICE belongs to that service alone and matches its hosts exactly
+	//    (its default host, or the SCOPE it was given): it never follows a redirected endpoint and is never sent
+	//    to another provider at the same host. One without SERVICE (the older form) matches by DuckDB's SCOPE
+	//    prefix rule, or every host when unscoped; Hugging Face only takes SERVICE 'huggingface' secrets, so a
+	//    provider key can never travel to huggingface.co. The best match wins; on a tie the SERVICE secret.
+	{
+		auto &manager = SecretManager::Get(*context.db);
+		// The system transaction, as KeyValueSecretReader's DatabaseInstance overload uses it: it sees the
+		// temporary and the persistent secrets.
+		auto transaction = CatalogTransaction::GetSystemTransaction(*context.db);
+		int64_t best = NumericLimits<int64_t>::Minimum();
+		bool best_named = false;
+		bool found = false;
+		const string lhost = LowerAscii(host);
+		for (auto &entry : manager.AllSecrets(transaction)) {
+			if (!entry.secret || entry.secret->GetType() != "anofox_decide") {
+				continue;
+			}
+			auto kv = dynamic_cast<const KeyValueSecret *>(entry.secret.get());
+			if (!kv) {
+				continue;
+			}
+			const string named = SecretString(*kv, "service");
+			int64_t score = NumericLimits<int64_t>::Minimum();
+			if (!named.empty()) {
+				if (named != service) {
+					continue;
+				}
+				for (auto &scope : kv->GetScope()) {
+					if (LowerAscii(scope) == lhost) {
+						score = std::max<int64_t>(score, (int64_t)scope.size());
+					}
+				}
+			} else if (service != "huggingface") {
+				score = kv->MatchScore(host);
+			}
+			if (score == NumericLimits<int64_t>::Minimum()) {
+				continue;
+			}
+			const string key = SecretString(*kv, "api_key");
+			if (key.empty()) {
+				continue;
+			}
+			const bool better = !found || score > best || (score == best && !named.empty() && !best_named);
+			if (!better) {
+				continue;
+			}
+			found = true;
+			best = score;
+			best_named = !named.empty();
+			out.key = key;
+			out.account_id = SecretString(*kv, "account_id");
+			out.source = named.empty() ? "a stored secret (scope '" + host + "')" : "a stored secret (service " + named + ")";
+		}
+		if (found) {
+			return out;
+		}
+	}
+	// 2. The env var the model names (an explicit opt-in by whoever registered it, any host).
+	if (!key_env.empty()) {
+		const char *env = std::getenv(key_env.c_str());
+		if (env && *env) {
+			out.key = env;
+			out.source = "env var " + key_env;
+			return out;
+		}
+	}
+	// 3. The service's own env var, only on its default host: a redirected endpoint never collects it.
+	if (info && !info->env_key.empty() && !info->default_host.empty() && LowerAscii(host) == info->default_host) {
+		const char *env = std::getenv(info->env_key.c_str());
+		if (env && *env) {
+			out.key = env;
+			out.source = "env var " + info->env_key;
+			return out;
+		}
+	}
+	// 4. Deprecated, typesafe only: the plain-text session setting.
+	if (service == "typesafe") {
+		Value key_v;
+		if (context.TryGetCurrentSetting("anofox_decide_api_key", key_v) && !key_v.IsNull() &&
+		    !key_v.ToString().empty()) {
+			out.key = key_v.ToString();
+			out.source = "the anofox_decide_api_key setting (deprecated)";
+		}
+	}
+	return out;
+}
+
+string DecideSecretRecipe(const string &service, const string &host, bool replace) {
+	auto info = DecideFindService(service);
+	string out = string(replace ? "CREATE OR REPLACE SECRET" : "CREATE SECRET") + " (TYPE anofox_decide, ";
+	if (info && info->requires_key) {
+		out += "SERVICE '" + service + "', API_KEY '<key>'";
+		if (info->default_host.empty() || LowerAscii(host) != info->default_host) {
+			out += ", SCOPE '" + host + "'";
+		}
+	} else {
+		out += "API_KEY '<key>', SCOPE '" + host + "'";
+	}
+	return out + ");";
+}
+
+string DecideNoKeyMessage(const string &function, const string &service, const string &host, const string &key_env) {
+	auto info = DecideFindService(service);
+	const string display = info ? info->display : service;
+	string what = "no API key for " + display + " at " + host;
+	if (!key_env.empty()) {
+		const char *named = std::getenv(key_env.c_str());
+		if (!named || !*named) {
+			what += " (the model names key_env '" + key_env + "', but that variable is not set in the DuckDB process)";
+		}
+	}
+	const bool default_host = info && !info->default_host.empty() && LowerAscii(host) == info->default_host;
+	string fix = "provide one: (1) " + DecideSecretRecipe(service, host);
+	if (default_host && !info->env_key.empty()) {
+		fix += " (2) export " + info->env_key + "=<key> before starting DuckDB";
+	} else if (service != "huggingface") {
+		fix += " (2) register the model with MAP {'key_env': '<ENV_VAR>'} and export that variable before starting "
+		       "DuckDB";
+		if (info && !info->env_key.empty()) {
+			fix += " (" + info->env_key + " itself is only sent to " + info->default_host + ")";
+		}
+	}
+	if (service == "systemone") {
+		fix += ". If the server needs no key, register it with provider 'strands' instead";
+	}
+	return DecideMsg(function, what, fix);
 }
 
 //--- Error text ----------------------------------------------------------------
@@ -1531,7 +1696,7 @@ DecideErrorInfo DecideFormatHttpError(const DecideRemoteConfig &cfg, int status,
 		      (cfg.account_id.empty() ? string("<account id>") : cfg.account_id) +
 		      "': check that the token (" + (cfg.key_source.empty() ? string("CLOUDFLARE_API_TOKEN") : cfg.key_source) +
 		      ") has Workers AI - Read and Edit permission for that account and that the account id is right; replace "
-		      "the token with CREATE OR REPLACE SECRET (TYPE anofox_decide, API_KEY '<token>', SCOPE '" + cfg.host + "');";
+		      "the token with " + DecideSecretRecipe(cfg.provider, cfg.host, true);
 	} else if (cfg.provider == "liquid" && status == 404 && server.find("does not exist") != string::npos) {
 		// {"error": {"message": "The model `d1:free` does not exist.", "type": "not_found_error"}}
 		what = who + " does not know the model '" + cfg.model + "' (HTTP 404)" + srv;
@@ -1554,8 +1719,8 @@ DecideErrorInfo DecideFormatHttpError(const DecideRemoteConfig &cfg, int status,
 	} else if (status == 401) {
 		what = who + " rejected the API key (HTTP 401)" + srv;
 		fix = (cfg.key_source.empty() ? string("check the API key") : "the key came from " + cfg.key_source) +
-		      "; use a valid one: CREATE OR REPLACE SECRET (TYPE anofox_decide, API_KEY '<key>', SCOPE '" + cfg.host +
-		      "'); (a stored secret overrides env vars)";
+		      "; use a valid one: " + DecideSecretRecipe(cfg.provider, cfg.host, true) +
+		      " (a stored secret overrides env vars)";
 	} else if (status == 403) {
 		what = who + " refused access (HTTP 403)" + srv;
 		fix = "the key is valid but not allowed to use model '" + cfg.model +
@@ -2011,7 +2176,7 @@ BioPtr RawConnect(bool ssl, const string &host, int port, int timeout_ms, Decide
 } // namespace
 
 static DecideGetResult DecideRawGet(const string &url, int64_t range_from, int timeout_ms, const DecideGetHeaders &on_headers,
-                                    const DecideGetData &on_data) {
+                                    const DecideGetData &on_data, const string &bearer_token) {
 	DecideGetResult result;
 	bool ssl = false;
 	string host, path;
@@ -2019,6 +2184,11 @@ static DecideGetResult DecideRawGet(const string &url, int64_t range_from, int t
 	if (!DecideSplitUrl(url, ssl, host, port, path)) {
 		result.error = "'" + url + "' is not an http:// or https:// URL";
 		result.error_kind = "invalid_endpoint";
+		return result;
+	}
+	if (bearer_token.find_first_of("\r\n") != string::npos) {
+		result.error = "the access token contains a line break";
+		result.error_kind = "other";
 		return result;
 	}
 	try {
@@ -2035,6 +2205,9 @@ static DecideGetResult DecideRawGet(const string &url, int64_t range_from, int t
 		                 "\r\nUser-Agent: anofox-decide\r\nAccept-Encoding: identity\r\nConnection: close\r\n";
 		if (range_from > 0) {
 			request += "Range: bytes=" + std::to_string(range_from) + "-\r\n";
+		}
+		if (!bearer_token.empty()) {
+			request += "Authorization: Bearer " + bearer_token + "\r\n";
 		}
 		request += "\r\n";
 		if (!RawWriteAll(bio.get(), request, timeout_ms)) {
@@ -2198,9 +2371,10 @@ static DecideGetResult DecideRawGet(const string &url, int64_t range_from, int t
 }
 
 DecideGetResult DecideHttpGet(const string &url, int64_t range_from, int timeout_ms, const DecideGetHeaders &on_headers,
-                              const DecideGetData &on_data) {
+                              const DecideGetData &on_data, const string &bearer_token) {
 	if (url.find('?') != string::npos) {
-		return DecideRawGet(url, range_from, timeout_ms, on_headers, on_data); // see the note above DecideRawGet
+		// see the note above DecideRawGet
+		return DecideRawGet(url, range_from, timeout_ms, on_headers, on_data, bearer_token);
 	}
 	DecideGetResult result;
 	bool ssl = false;
@@ -2230,6 +2404,9 @@ DecideGetResult DecideHttpGet(const string &url, int64_t range_from, int timeout
 		cli->set_write_timeout(secs, 0);
 		duckdb_httplib_openssl::Headers headers;
 		headers.emplace("User-Agent", "anofox-decide");
+		if (!bearer_token.empty()) {
+			headers.emplace("Authorization", "Bearer " + bearer_token);
+		}
 		if (range_from > 0) {
 			headers.emplace("Range", "bytes=" + std::to_string(range_from) + "-");
 		}

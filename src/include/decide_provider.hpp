@@ -162,6 +162,9 @@ DecideModelStatus DecideDescribeModel(ClientContext &context, const DecideModelE
 // Endpoint a remote model would call ("https://api.liquid.ai/decisions/v1/systemone"), from the
 // model's own options and its provider profile (not the legacy session setting); "" for non-remote.
 string DecideRemoteEndpointOf(const DecideModelEntry &entry);
+// Where a remote model's API key comes from (DecideRemoteConfig::key_source, "none needed" for a keyless server);
+// "" when none is found or the model is not remote. Never the key.
+string DecideRemoteKeySource(ClientContext &context, const DecideModelEntry &entry);
 
 // Resolve a model id for `function`. An empty id from the setting raises the "no model selected"
 // guidance (how to choose and register one); an unregistered id raises an error that names the

@@ -99,7 +99,7 @@ string TempDir(const string &name) {
 
 const char *kRevision = "0123456789abcdef0123456789abcdef01234567";
 
-enum class Mode { Plain, Redirect, RedirectSigned, IgnoreRange, RedirectLoop, NotFound };
+enum class Mode { Plain, Redirect, RedirectSigned, IgnoreRange, RedirectLoop, NotFound, Unauthorized };
 
 // The query a signed CDN URL carries: not sorted, '+' and %XX kept as sent.
 const char *kSignedQuery = "z=1&Policy=a%2Bb%7Ec&a=2&Signature=x+y%3Bz&Key-Pair-Id=K";
@@ -126,9 +126,17 @@ public:
 				        res.set_header("Location", "/cdn/" + FileOf(req.path) + "?" + kSignedQuery);
 				        return;
 			        }
+			        {
+				        std::lock_guard<std::mutex> guard(lock);
+				        resolve_auth.push_back(req.get_header_value("Authorization"));
+			        }
+			        if (mode == Mode::Unauthorized) {
+				        res.status = 401;
+				        return;
+			        }
 			        if (mode == Mode::Redirect) {
 				        res.status = 302;
-				        res.set_header("Location", "/cdn/" + FileOf(req.path));
+				        res.set_header("Location", redirect_base + "/cdn/" + FileOf(req.path));
 				        return;
 			        }
 			        Serve(req, res, FileOf(req.path));
@@ -136,6 +144,10 @@ public:
 		svr.Get(R"(/cdn/.+)",
 		        [this](const duckdb_httplib_openssl::Request &req, duckdb_httplib_openssl::Response &res) {
 			        cdn_hits++;
+			        {
+				        std::lock_guard<std::mutex> guard(lock);
+				        cdn_auth.push_back(req.get_header_value("Authorization"));
+			        }
 			        if (mode == Mode::RedirectSigned && req.target.substr(req.target.find('?') + 1) != kSignedQuery) {
 				        res.status = 403; // what the Hugging Face CDN does when the signed query is reordered or re-encoded
 				        return;
@@ -159,6 +171,11 @@ public:
 	Mode mode;
 	std::atomic<int> hits {0};
 	std::atomic<int> cdn_hits {0};
+	// Mode::Redirect sends the client to redirect_base + "/cdn/<file>" ("" = this server, a relative Location).
+	string redirect_base;
+	// The Authorization header of every request ("" when none was sent).
+	vector<string> resolve_auth;
+	vector<string> cdn_auth;
 	std::mutex lock;
 	vector<string> ranges;
 	duckdb_httplib_openssl::Server svr;
@@ -443,6 +460,107 @@ TEST_CASE("decide_download reports a redirect loop", "[anofox_decide][catalog]")
 	auto msg = Message([&]() { DecideDownloadEntry(entry, cache, 5000); });
 	REQUIRE_THAT(msg, Contains("decide_download: too many redirects"));
 	REQUIRE_THAT(msg, Contains("Fix:"));
+	fs::remove_all(cache);
+}
+
+TEST_CASE("decide_download sends a Hugging Face token to the catalog origin only", "[anofox_decide][catalog][secret]") {
+	SECTION("dropped on a redirect to another origin (the CDN)") {
+		FileServer cdn(TinyFiles());
+		FileServer hub(TinyFiles(), Mode::Redirect);
+		hub.redirect_base = cdn.Base();
+		auto cache = TempDir("token-cross");
+		DecideDownloadAuth auth;
+		auth.token = "hf_test_token";
+		auth.token_source = "env var HF_TOKEN";
+		auto rows = DecideDownloadEntry(TestEntry(hub), cache, 5000, auth);
+		REQUIRE(rows.size() == 2);
+		REQUIRE(cdn.cdn_hits == 2);
+		REQUIRE(hub.resolve_auth.size() == 2);
+		for (auto &h : hub.resolve_auth) {
+			REQUIRE(h == "Bearer hf_test_token");
+		}
+		REQUIRE(cdn.cdn_auth.size() == 2);
+		for (auto &h : cdn.cdn_auth) {
+			REQUIRE(h.empty());
+		}
+		fs::remove_all(cache);
+	}
+	SECTION("kept on a redirect within the same origin") {
+		FileServer hub(TinyFiles(), Mode::Redirect);
+		auto cache = TempDir("token-same");
+		DecideDownloadAuth auth;
+		auth.token = "hf_test_token";
+		DecideDownloadEntry(TestEntry(hub), cache, 5000, auth);
+		REQUIRE(hub.cdn_auth.size() == 2);
+		REQUIRE(hub.cdn_auth[0] == "Bearer hf_test_token");
+		fs::remove_all(cache);
+	}
+	SECTION("no token: no Authorization header at all") {
+		FileServer hub(TinyFiles(), Mode::Redirect);
+		auto cache = TempDir("token-none");
+		DecideDownloadEntry(TestEntry(hub), cache, 5000);
+		for (auto &h : hub.resolve_auth) {
+			REQUIRE(h.empty());
+		}
+		for (auto &h : hub.cdn_auth) {
+			REQUIRE(h.empty());
+		}
+		fs::remove_all(cache);
+	}
+	SECTION("a gated repository (401) names HF_TOKEN and the secret") {
+		FileServer hub(TinyFiles(), Mode::Unauthorized);
+		auto cache = TempDir("token-gated");
+		auto msg = Message([&]() { DecideDownloadEntry(TestEntry(hub), cache, 5000); });
+		REQUIRE_THAT(msg, Contains("HTTP 401"));
+		REQUIRE_THAT(msg, Contains("HF_TOKEN"));
+		REQUIRE_THAT(msg, Contains("SERVICE 'huggingface'"));
+		DecideDownloadAuth auth;
+		auth.token = "hf_wrong";
+		auth.token_source = "env var HF_TOKEN";
+		auto refused = Message([&]() { DecideDownloadEntry(TestEntry(hub), cache, 5000, auth); });
+		REQUIRE_THAT(refused, Contains("the token from env var HF_TOKEN"));
+		REQUIRE_THAT(refused, !Contains("hf_wrong"));
+		fs::remove_all(cache);
+	}
+}
+
+TEST_CASE("decide_download takes the token from a SERVICE 'huggingface' secret, HF_TOKEN only for huggingface.co",
+          "[anofox_decide][catalog][secret]") {
+	FileServer hub(TinyFiles());
+	CatalogGuard guard({TestEntry(hub)});
+	auto cache = TempDir("token-sql");
+	const char *old = std::getenv("HF_TOKEN");
+	const string saved = old ? old : "";
+#ifdef _WIN32
+	_putenv_s("HF_TOKEN", "hf_env_token");
+#else
+	setenv("HF_TOKEN", "hf_env_token", 1);
+#endif
+	DuckDB db(nullptr);
+	db.LoadStaticExtension<AnofoxDecideExtension>();
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("SET anofox_decide_cache_dir = '" + cache + "'"));
+	// HF_TOKEN belongs to huggingface.co: the loopback test hub never sees it.
+	REQUIRE(DecideResolveServiceKey(*con.context, "huggingface", "huggingface.co").key == "hf_env_token");
+	REQUIRE_NO_FAIL(con.Query("CALL decide_download('test-tiny')"));
+	REQUIRE(hub.resolve_auth.size() == 2);
+	REQUIRE(hub.resolve_auth[0].empty());
+	// A secret scoped to the hub's host is sent there.
+	fs::remove_all(cache);
+	REQUIRE_NO_FAIL(con.Query("CREATE SECRET hf (TYPE anofox_decide, SERVICE 'huggingface', API_KEY 'hf_secret_token', "
+	                          "SCOPE '127.0.0.1')"));
+	REQUIRE_NO_FAIL(con.Query("CALL decide_download('test-tiny')"));
+	REQUIRE(hub.resolve_auth.size() == 4);
+	REQUIRE(hub.resolve_auth[2] == "Bearer hf_secret_token");
+#ifdef _WIN32
+	_putenv_s("HF_TOKEN", saved.c_str());
+#else
+	if (old) {
+		setenv("HF_TOKEN", saved.c_str(), 1);
+	} else {
+		unsetenv("HF_TOKEN");
+	}
+#endif
 	fs::remove_all(cache);
 }
 
