@@ -6,6 +6,39 @@ All notable changes to `anofox_decide` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **Gemini Decisions** (`gemini-decision-1`, `POST https://generativelanguage.googleapis.com/v1beta/decisions`) as
+  the provider `gemini`: `export GEMINI_API_KEY=...`, then `SELECT decide_register_model('gemini-decision-1',
+  'gemini');`. The same functions and questions as the other models; up to 1000 questions per request. Question
+  ids travel as `q0`, `q1`, ... (Gemini only takes `[A-Za-z0-9_-]{1,64}`), so any id works and every message names
+  yours. The key goes in the `x-goog-api-key` header. A request Gemini blocks for safety reasons (HTTP 400
+  `safety`, `prohibited_content`, `blocklist`, `image_safety`, `content_blocked`) is a refusal of every question of
+  that row (NULL, `kind = 'refusal'`), not a failed query. A bad key (Gemini answers HTTP 400) is reported as a key
+  error. Text only; a JSON state is sent as text.
+- **One credential scheme for every online service.** `CREATE SECRET (TYPE anofox_decide, SERVICE '<id>',
+  API_KEY '...')` with `SERVICE` one of `typesafe`, `liquid`, `cloudflare`, `openai`, `gemini`, `systemone`,
+  `huggingface`. Without `SCOPE` the secret belongs to the service's default host and to that service only: it
+  never follows a redirected endpoint and never reaches another provider at the same host. `SCOPE` (a host) serves
+  a self-hosted endpoint; `SERVICE 'systemone'` requires it. `ACCOUNT_ID` (Cloudflare only) is redacted like the
+  key, and the account id order is the `account_id` option, then the secret, then `CLOUDFLARE_ACCOUNT_ID`.
+- **Hugging Face tokens** for `decide_download` from gated repositories: a `SERVICE 'huggingface'` secret, else
+  `HF_TOKEN`. The token is sent only to the catalog host and dropped when a download is redirected to another
+  host (the CDN). A 401/403 names `HF_TOKEN` and the secret.
+- `decide_services()` lists every online service: default host, env var, secret fields, whether a key is found
+  and where it comes from (never the key). `decide_models()` has a `key_source` column, and `decide_doctor()` shows
+  where each remote model's key comes from (also while remote calls are off) and an `api keys` row.
+- Every service reports a missing key with the same message: `no API key for <Service> at <host>. Fix: provide
+  one: (1) CREATE SECRET (TYPE anofox_decide, SERVICE '<id>', API_KEY '<key>'); (2) export <ENV>=<key> before
+  starting DuckDB`.
+
+### Changed
+- **Key precedence is the same for every service:** a stored secret, then the model's `key_env`, then the
+  service's env var (default host only), then, for `typesafe` only, the `anofox_decide_api_key` setting. The
+  setting used to come second (before `key_env` and `TYPESAFE_API_KEY`); it now comes last and is
+  **deprecated**: use a secret. A session that sets both the setting and `TYPESAFE_API_KEY` (or a `key_env`) now
+  sends the env key. The setting alone still works as before, and existing secrets without `SERVICE` keep their
+  meaning.
+
 ## [2026.10.31] - 2026-10-31
 
 ### Added

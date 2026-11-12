@@ -23,11 +23,11 @@ output of `decide_doctor()` and the failing call (without your key).
 
 | You see | It means | Do this |
 |---|---|---|
-| `no API key for ... at <host>` | no secret, setting or env var supplies a key | export the provider's variable (`LIQUID_API_KEY`, `TYPESAFE_API_KEY`) or `CREATE SECRET (TYPE anofox_decide, API_KEY '...', SCOPE '<host>')`; a keyless local server uses provider `strands` |
+| `no API key for ... at <host>` | no secret, `key_env` or env var supplies a key | the message names both fixes: `CREATE SECRET (TYPE anofox_decide, SERVICE '<provider>', API_KEY '...')` or the provider's variable (`LIQUID_API_KEY`, `GEMINI_API_KEY`, ...); `SELECT * FROM decide_services()` lists them all. A keyless local server uses provider `strands` |
 | `... rejected the request (HTTP 401): "Authentication error (code 10000)"` (Cloudflare) | Cloudflare gives this answer for a wrong token and for a token that belongs to another account | check the token has Workers AI - Read and Edit and that `CLOUDFLARE_ACCOUNT_ID` is the account the token belongs to |
 | `no Cloudflare account id for model '...'` | a `cloudflare` model needs the account id for its URL | `export CLOUDFLARE_ACCOUNT_ID=<id>` or `MAP {'account_id': '<id>'}` |
 | `... accepts at most 64 questions per request` | Cloudflare Clef takes at most 64 questions in one request | split the questions across several calls |
-| `... rejected the API key (HTTP 401)` | the service refused the key; the message says where the key came from | replace it: `CREATE OR REPLACE SECRET (TYPE anofox_decide, API_KEY '<key>', SCOPE '<host>')` (a secret overrides env vars) |
+| `... rejected the API key (HTTP 401)` (Gemini: HTTP 400) | the service refused the key; the message says where the key came from | replace it: `CREATE OR REPLACE SECRET (TYPE anofox_decide, SERVICE '<provider>', API_KEY '<key>')` (a secret overrides env vars) |
 | `... does not know the model '<x>' ... (HTTP 404)` | the model name sent to the service is wrong (it is the registered id unless you set one) | `decide_register_model('<id>', '<provider>', MAP {'model': '<provider model name>'})` |
 | `... rejected the request (HTTP 422)` | the service refused the question or options; its own reason is quoted | for a `criteria` complaint register the model with `MAP {'criteria': 'name'}` |
 | `... is rate limiting requests (HTTP 429)` | too many calls; retried with the service's Retry-After | `SET anofox_decide_max_retries = 8;` or `SET anofox_decide_max_concurrency = 2;` |

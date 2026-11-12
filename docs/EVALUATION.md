@@ -158,7 +158,7 @@ Reproduce from the results of `run_eval.py`: `python3 tools/eval/crossfit_calibr
 
 ```bash
 python3 tools/eval/make_sample.py --out /tmp/eval            # downloads Bitext, writes /tmp/eval/tickets.csv
-# local models need exported graphs (see tools/export_julia/README.md); hosted need LIQUID_API_KEY / TYPESAFE_API_KEY / CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID
+# local models need exported graphs (see tools/export_julia/README.md); hosted need LIQUID_API_KEY / TYPESAFE_API_KEY / CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID / OPENAI_API_KEY / GEMINI_API_KEY
 export JULIA_ONNX=... JULIA_WEIGHTS_DIR=... LAYA_ML_ONNX=... LAYA_ML_DIR=... LAYA_TD_ONNX=... LAYA_TD_DIR=...
 python3 tools/eval/run_eval.py --tickets /tmp/eval/tickets.csv --out /tmp/eval/out --models d1,jev,clef,clef-flash,laya-ml,laya-td,julia
 python3 tools/eval/run_eval.py --tickets /tmp/eval/tickets.csv --out /tmp/eval/out --models kev       # needs a running Kev server
@@ -204,3 +204,22 @@ run match the tables above within one ticket.
   routing question but refused the refund question, reproducibly. The extension returns NULL for it
   (`kind = 'refusal'` in `decide_table`); the evaluation scores a refusal as a wrong answer.
 - Wall time for the 200 tickets with the default concurrency (8): 5 s, the same as Jev.
+
+## Gemini gemini-decision-1 (12 Nov 2026)
+
+The same 200 tickets and the same two questions, through provider `gemini` (`gemini-decision-1`), scored in the
+same run as TypeSafe Jev (`run_eval.py --models gemini,jev`). Jev's numbers in this run match the tables above
+within one ticket.
+
+| Model | Refund accuracy [95% CI] | Balanced acc | Recall | Specificity | AUROC | Brier | ECE | Routing accuracy [95% CI] | Routing macro recall |
+|---|---|---|---|---|---|---|---|---|---|
+| TypeSafe Jev | 96.0% [92-98] | 95.7% | 95% | 96% | 0.990 | 0.054 | 0.129 | 89.5% [84-93] | 89.0% |
+| Gemini gemini-decision-1 | 92.0% [87-95] | 94.3% | 100% | 89% | 0.998 | 0.068 | 0.166 | 92.5% [88-95] | 91.0% |
+
+- Refund: not significantly different from Jev (exact McNemar p = 0.096). It finds every refund request (recall
+  100%) and has the highest AUROC we measured (0.998), but at the 0.5 cut-off it says "yes" too often
+  (specificity 89%): a higher threshold, or `decide_fit_calibration`, is the lever.
+- Routing: the best routing accuracy among the hosted models in our runs, not significantly ahead of Jev
+  (p = 0.180). It routes billing (99%) and account tickets (85%) better than Jev and order tickets worse (80% vs 88%).
+- No refusals and no safety blocks on these tickets.
+- Wall time for the 200 tickets with the default concurrency (8): 8 s (Jev: 5 s).

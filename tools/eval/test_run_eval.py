@@ -167,5 +167,15 @@ class RefusalTest(unittest.TestCase):
             self.assertIn("## Refusals", md)
             self.assertIn("| Model | 1 | 1 | 1, 4 |", md)
 
+class ModelsTest(unittest.TestCase):
+    """The hosted models are registered under their provider and skipped without their key."""
+
+    def test_gemini_is_registered_with_its_key(self):
+        spec = run_eval.models({}, "http://127.0.0.1:8009", "http://127.0.0.1:8000")["gemini"]
+        self.assertEqual(spec[1], "SELECT decide_register_model('gemini-decision-1', 'gemini');")
+        self.assertEqual(spec[2], "gemini-decision-1")
+        self.assertEqual(spec[3], ["GEMINI_API_KEY"])
+
+
 if __name__ == "__main__":
     unittest.main()
