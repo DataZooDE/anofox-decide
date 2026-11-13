@@ -209,7 +209,7 @@ skill. For in-repo development, load them with `claude --plugin-dir ./plugins/an
 
 ## Status
 
-The extension is calendar-versioned (`2026.10.31` is the thirty-first of October 2026) and is built and
+The extension is calendar-versioned (`2026.11.13` is the thirteenth of November 2026) and is built and
 tested on Linux (amd64, arm64), macOS (arm64) and Windows (amd64) against DuckDB 1.5.6, and on DuckDB 2.0.
 What works today and what does not yet: [Providers](docs/api/02-providers.md#overview).
 

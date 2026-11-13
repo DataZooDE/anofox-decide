@@ -12,13 +12,13 @@ description: >
   table. Use when evaluating accuracy on labelled data, comparing models or providers, picking a
   cut-off, fixing a model that says yes too often or too rarely, or plotting ROC / reliability
   curves.
-version: 2026.10.31
+version: 2026.11.13
 user-invocable: false
 ---
 
 # Anofox Decide — Evaluate, Compare & Calibrate
 
-**Extension:** `anofox_decide` v2026.10.31 | **DuckDB:** v1.5.6 / v2.0 | **Dual naming:** `decide_*` and
+**Extension:** `anofox_decide` v2026.11.13 | **DuckDB:** v1.5.6 / v2.0 | **Dual naming:** `decide_*` and
 `anofox_decide_*`
 
 The models answer with probabilities, so their quality is measurable on labelled data. The workflow:

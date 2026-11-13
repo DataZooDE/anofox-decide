@@ -6,6 +6,8 @@ All notable changes to `anofox_decide` are documented here. The format follows
 
 ## [Unreleased]
 
+## [2026.11.13] - 2026-11-13
+
 ### Added
 - **Claude Code plugin.** `/plugin marketplace add DataZooDE/anofox-decide`, then
   `/plugin install anofox-decide@anofox-decide`, installs four skills (`anofox-decide-questions`,
@@ -365,7 +367,9 @@ First public release.
 - Platforms: Linux (amd64, arm64), macOS (arm64) and Windows (amd64) against DuckDB 1.5.6. Not built:
   macOS on Intel (ONNX Runtime ships no archive after v1.23.2), WebAssembly, musl and MinGW.
 
-[Unreleased]: https://github.com/DataZooDE/anofox-decide/compare/v2026.10.26...HEAD
+[Unreleased]: https://github.com/DataZooDE/anofox-decide/compare/v2026.11.13...HEAD
+[2026.11.13]: https://github.com/DataZooDE/anofox-decide/compare/v2026.10.31...v2026.11.13
+[2026.10.31]: https://github.com/DataZooDE/anofox-decide/compare/v2026.10.26...v2026.10.31
 [2026.10.26]: https://github.com/DataZooDE/anofox-decide/compare/v2026.10.24...v2026.10.26
 [2026.10.24]: https://github.com/DataZooDE/anofox-decide/compare/v2026.10.14...v2026.10.24
 [2026.10.14]: https://github.com/DataZooDE/anofox-decide/compare/v2026.10.04...v2026.10.14

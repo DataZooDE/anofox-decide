@@ -15,13 +15,13 @@ description: >
   decide_choice / decide_choice_distribution / decide_score / decide_table / decide_answers /
   decide_many calls: classifying tickets, routing, flagging, rating, or tagging rows with an LLM
   decision model in SQL.
-version: 2026.10.31
+version: 2026.11.13
 user-invocable: false
 ---
 
 # Anofox Decide — Questions & Decision Functions
 
-**Extension:** `anofox_decide` v2026.10.31 | **DuckDB:** v1.5.6 / v2.0 | **Dual naming:** every
+**Extension:** `anofox_decide` v2026.11.13 | **DuckDB:** v1.5.6 / v2.0 | **Dual naming:** every
 function is `anofox_decide_<name>` and the short alias `decide_<name>` (identical)
 
 You write the question and the possible answers in the query. A purpose-built decision model answers
