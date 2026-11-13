@@ -56,6 +56,11 @@ All notable changes to `anofox_decide` are documented here. The format follows
   (`tools/ci/release_draft.sh`: the first draft created for the tag; empty duplicates are deleted), and upload and
   publish address that release by id, so the assets can never split across drafts. The eight empty drafts of the
   2026.10.14 to 2026.10.31 releases were removed.
+- **`anofox_decide_max_concurrency` now bounds what the provider sees.** The limit was kept per chunk of rows,
+  so DuckDB threads scoring several chunks in parallel, or two queries at once, multiplied the requests in
+  flight (a rate limit of 2 could see 4). It is now shared by every request to the same endpoint with the same
+  key in the process, and a `429` halves the window for all of them. Each query still starts with the
+  configured limit.
 
 ## [2026.10.31] - 2026-10-31
 

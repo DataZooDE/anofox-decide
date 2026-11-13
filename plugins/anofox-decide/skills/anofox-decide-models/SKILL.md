@@ -148,7 +148,7 @@ every remote host, and `decide_doctor()` warns about them.
 |---|---|---|
 | `anofox_decide_model` | unset | default model id |
 | `anofox_decide_allow_remote` | `false` | opt-in for hosted and server models |
-| `anofox_decide_max_concurrency` | `0` (auto: 8 hosted, 1 strands) | remote requests in flight per chunk of rows, 0 to 64. DuckDB threads multiply it on large tables: for a strict rate limit also `SET threads = ...` |
+| `anofox_decide_max_concurrency` | `0` (auto: 8 hosted, 1 strands) | remote requests in flight per endpoint and key, across all threads and queries of the process, 0 to 64 |
 | `anofox_decide_timeout_ms` | `30000` | per remote request |
 | `anofox_decide_max_retries` | `3` | after 429 / 5xx / connection failure, 0 to 10 |
 | `anofox_decide_max_questions` | `100` | per `decide_table` / `decide_many` call, up to 1000 |
