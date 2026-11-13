@@ -126,6 +126,8 @@ set(DECIDE_CPP_TEST_SOURCES
     test/cpp/test_decide_docs.cpp
     test/cpp/test_decide_cloudflare.cpp
     test/cpp/test_decide_openai.cpp
+    test/cpp/test_decide_gemini.cpp
+    test/cpp/test_decide_secret.cpp
     test/cpp/test_decide_tokenizer.cpp
     test/cpp/test_decide_local.cpp
     test/cpp/test_decide_batching.cpp

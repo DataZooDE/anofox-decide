@@ -10,7 +10,7 @@ Results are written to <out>/results_<model>.csv; metrics to <out>/report.md/jso
 
 Models (all optional, pick with --models):
   d1, jev, clef, clef-flash,   hosted APIs (LIQUID_API_KEY / TYPESAFE_API_KEY / CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID /
-  luna                         OPENAI_API_KEY;
+  luna, gemini                 OPENAI_API_KEY / GEMINI_API_KEY;
                                ticket text leaves the machine)
   laya-ml, laya-td, julia      local ONNX graphs (env: LAYA_ML_DIR/LAYA_ML_ONNX, LAYA_TD_DIR/LAYA_TD_ONNX,
                                JULIA_WEIGHTS_DIR/JULIA_ONNX)
@@ -86,6 +86,8 @@ def models(env, kev_url, strands_url):
         "d1": ("Liquid D1", "SELECT decide_register_model('d1', 'liquid');", "d1", ["LIQUID_API_KEY"]),
         "luna": ("OpenAI gpt-6-luna", "SELECT decide_register_model('gpt-6-luna', 'openai');", "gpt-6-luna",
                  ["OPENAI_API_KEY"]),
+        "gemini": ("Gemini gemini-decision-1", "SELECT decide_register_model('gemini-decision-1', 'gemini');",
+                   "gemini-decision-1", ["GEMINI_API_KEY"]),
         "clef": ("Cloudflare Clef", "SELECT decide_register_model('clef', 'cloudflare');", "clef",
                  ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]),
         "clef-flash": ("Cloudflare Clef-flash", "SELECT decide_register_model('clef-flash', 'cloudflare');", "clef-flash",

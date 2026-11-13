@@ -185,7 +185,8 @@ void ValidateEndpoint(ClientContext &context, SetScope scope, Value &parameter) 
 void RegisterDecideSettings(ExtensionLoader &loader) {
 	auto &config = DBConfig::GetConfig(loader.GetDatabaseInstance());
 	config.AddExtensionOption("anofox_decide_allow_remote",
-	                          "Off by default. When on, remote models (typesafe, liquid, cloudflare, openai, systemone, strands) may be "
+	                          "Off by default. When on, remote models (typesafe, liquid, cloudflare, openai, gemini, systemone, strands) "
+	                          "may be "
 	                          "called, which sends the text you score to their endpoints",
 	                          LogicalType::BOOLEAN, Value::BOOLEAN(false), ValidateAllowRemote);
 	config.AddExtensionOption("anofox_decide_timeout_ms",
@@ -209,9 +210,9 @@ void RegisterDecideSettings(ExtensionLoader &loader) {
 	                          "remote providers take a per-model endpoint (the options MAP of decide_register_model)",
 	                          LogicalType::VARCHAR, Value("https://api.typesafe.ai"), ValidateEndpoint);
 	config.AddExtensionOption("anofox_decide_api_key",
-	                          "Legacy API key for the typesafe provider, kept in plain text and readable with "
-	                          "current_setting(); prefer CREATE SECRET (TYPE anofox_decide, API_KEY '...') or the "
-	                          "TYPESAFE_API_KEY environment variable",
+	                          "Deprecated: API key for the typesafe provider, kept in plain text and readable with "
+	                          "current_setting(). Used only when no secret, key_env or TYPESAFE_API_KEY gives one; "
+	                          "use CREATE SECRET (TYPE anofox_decide, SERVICE 'typesafe', API_KEY '...') instead",
 	                          LogicalType::VARCHAR, Value(""));
 	config.AddExtensionOption("anofox_decide_max_retries",
 	                          "Retries after a rate limit (429), server error (5xx) or connection failure for remote "

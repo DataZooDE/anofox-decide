@@ -21,14 +21,14 @@ SELECT item, status FROM decide_doctor() WHERE item = 'registered models'
 registered models	warn
 
 # decide_models(): the original four columns first, readiness columns appended, then the serving device and the
-# OpenAI request options.
+# OpenAI request options, then where a remote model's key comes from.
 statement ok
 CREATE VIEW models_shape AS SELECT * FROM decide_models()
 
 query T
 SELECT string_agg(name, ',' ORDER BY cid) FROM pragma_table_info('models_shape')
 ----
-model,provider,mode,path,is_default,ready,hint,profile,endpoint,wire_model,calibration,device,input,prompt_cache_key
+model,provider,mode,path,is_default,ready,hint,profile,endpoint,wire_model,calibration,device,input,prompt_cache_key,key_source
 
 query TTT
 SELECT model, ready, hint FROM decide_models() WHERE model = 'stub'
@@ -45,7 +45,7 @@ SELECT decide_register_model('d1', 'liquid')
 query TT
 SELECT ready, hint FROM decide_models() WHERE model = 'd1'
 ----
-false	remote calls are off: your text would be sent to https://api.liquid.ai/decisions/v1/systemone. Fix: SET anofox_decide_allow_remote = true;
+false	remote calls are off: your text would be sent to https://api.liquid.ai/decisions/v1/systemone (no API key is found for it yet). Fix: SET anofox_decide_allow_remote = true;
 
 query TTT
 SELECT item, status, fix FROM decide_doctor() WHERE item = 'model ''d1'''

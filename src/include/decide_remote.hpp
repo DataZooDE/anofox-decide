@@ -78,8 +78,10 @@ void DecideValidateScoreLevels(const string &func_name, const string &id, const 
 
 // The request/answer format a provider speaks. SYSTEM_ONE: {"state", "questions": {id: ...}} with answers
 // keyed by id. OPENAI_DECISIONS: {"input", "questions": [{name, ...}]} with an answers array, predicate /
-// choice / score / refusal answers.
-enum class DecideWire { SYSTEM_ONE, OPENAI_DECISIONS };
+// choice / score / refusal answers. GEMINI_DECISIONS: System One with "input" instead of "state", question ids
+// q0..qn on the wire (Gemini only takes [A-Za-z0-9_-]{1,64}), the key in x-goog-api-key, and a safety block as a
+// whole-request HTTP 400 that becomes a refusal of every question.
+enum class DecideWire { SYSTEM_ONE, OPENAI_DECISIONS, GEMINI_DECISIONS };
 
 // A remote provider profile: everything that differs between the remote
 // services. Single source of truth for the provider whitelist, default
@@ -103,6 +105,50 @@ const DecideRemoteProfile *DecideFindRemoteProfile(const string &provider);
 string DecideRemoteProviderList();
 // The remote provider ids (typesafe, liquid, cloudflare, openai, systemone, strands).
 vector<string> DecideRemoteProviderNames();
+
+// An online service that takes a credential: every remote provider, plus Hugging Face for decide_download.
+// Built from the provider profiles, so a new provider is listed (and covered by the credential tests) on its own.
+struct DecideServiceInfo {
+	string id;           // service id: the provider name, or "huggingface"
+	string display;      // human name for messages
+	string default_host; // the host the env var and an unscoped SERVICE secret belong to; "" = none (systemone)
+	string env_key;      // env var read for the default host; "" = none
+	bool requires_key = true; // false: keyless (strands), takes no SERVICE secret
+	vector<string> secret_fields; // CREATE SECRET fields this service reads (API_KEY, ACCOUNT_ID)
+};
+vector<DecideServiceInfo> DecideServices();
+// nullptr when `id` is not a service.
+const DecideServiceInfo *DecideFindService(const string &id);
+// Comma-separated, quoted ids of the services a SERVICE secret may name.
+string DecideSecretServiceList();
+
+// Where a key was found. source is "a stored secret (service gemini)", "a stored secret (scope 'host')", "env var
+// X" or "the anofox_decide_api_key setting (deprecated)"; empty key = none found. account_id is the ACCOUNT_ID of
+// the matching secret (Cloudflare only), "" otherwise.
+struct DecideResolvedKey {
+	string key;
+	string source;
+	string account_id;
+	string secret_name; // the matching secret's name, "" when the key did not come from a secret
+};
+// The single key resolver for every online service. Precedence, the same for all of them:
+//   1. a stored anofox_decide secret for `host`: a secret that names a SERVICE matches only that service (and only
+//      its own hosts: the default host, or exactly the SCOPE it was given); a secret without SERVICE matches by
+//      its SCOPE prefix (or every host when unscoped) for the remote providers, never for huggingface;
+//   2. `key_env`, the env var the model names at registration (any host);
+//   3. the service's own env var, only when `host` is the service's default host;
+//   4. typesafe only: the legacy anofox_decide_api_key setting (deprecated).
+// Never throws for a missing key: the caller decides (DecideNoKeyMessage).
+DecideResolvedKey DecideResolveServiceKey(ClientContext &context, const string &service, const string &host,
+                                          const string &key_env = "");
+// The one "no API key" message: "<function>: no API key for <Service> at <host>. Fix: provide one: (1) CREATE
+// SECRET (TYPE anofox_decide, SERVICE '<id>', API_KEY '<key>'); (2) export <ENV>=<key> before starting DuckDB".
+string DecideNoKeyMessage(const string &function, const string &service, const string &host,
+                          const string &key_env = "");
+// The CREATE SECRET recipe for a service at a host (SCOPE added when the host is not the default one).
+// `secret_name` (when replacing a known secret) is put into the recipe so the bad secret is replaced, not joined.
+string DecideSecretRecipe(const string &service, const string &host, bool replace = false,
+                          const string &secret_name = "");
 
 // Per-model remote target (from decide_register_model); empty fields fall
 // back to the profile, then (typesafe only) to the legacy session settings.
@@ -159,6 +205,8 @@ struct DecideRemoteConfig {
 	// Where the key came from ("a stored secret", "the anofox_decide_api_key setting", "env var X"), for
 	// diagnostics and error messages; empty when no key was needed.
 	string key_source;
+	// The name of the stored secret the key came from ("" otherwise), so a fix can replace that very secret.
+	string key_secret_name;
 	// Only for error messages: the SQL function the user called, the provider profile and the
 	// registered model id.
 	string function = "decide";
@@ -242,6 +290,24 @@ vector<DecideAnswer> DecideParseOpenAIResponseJson(const string &body, const vec
                                                    const string &function = "decide",
                                                    const string &service = "the remote service",
                                                    const string &model_id = "");
+// Gemini Decisions mapping (pure). The request carries "input" (the state; it must not be empty) and question
+// i under the wire id "q<i>"; choice criteria are null. The parser maps "q<i>" back to questions[i] (every message
+// names the user's id) and checks that a score legend, when sent, names the requested levels in order.
+string DecideBuildGeminiRequestJson(const string &state, const string &model, const vector<DecideQuestion> &questions,
+                                    const string &function = "decide");
+vector<DecideAnswer> DecideParseGeminiResponseJson(const string &body, const vector<DecideQuestion> &questions,
+                                                   const string &function = "decide",
+                                                   const string &service = "the remote service",
+                                                   const string &model_id = "");
+// The error.code of a Gemini safety block (safety, prohibited_content, blocklist, image_safety, content_blocked)
+// in an HTTP 400 body; "" when the body is not one.
+string DecideGeminiSafetyCode(int status, const string &body);
+// The authentication header(s) of a request: x-goog-api-key for Gemini, else "Authorization: Bearer <key>";
+// none when cfg.send_auth is false.
+// Throws when the key contains a control character (a line break would start another header).
+DecideHeaderList DecideAuthHeaders(const DecideRemoteConfig &cfg);
+// True when `value` contains an ASCII control character (CR, LF, NUL, ...).
+bool DecideHasControlChar(const string &value);
 // decide_many batch JSON (also pure): parse the questions argument, render results.
 // func_name attributes validation errors (default "decide_many"; the table
 // surface passes "decide_table").
@@ -275,15 +341,17 @@ string DecideDisplayPath(const string &path_template, const string &model, const
 // Throws an actionable error; used at registration and at resolve time.
 void DecideValidateEndpoint(const string &endpoint, const char *what);
 
-// Config for one model's target. Key precedence: a stored anofox_decide
-// secret for the host always wins; then the legacy anofox_decide_api_key
-// setting (typesafe provider only); then the target's explicit key_env; then
-// the profile's env var (default host only). Throws when no key is found,
-// naming the provider's env var, never the key itself. Does NOT enforce the
+// Config for one model's target. Key precedence is DecideResolveServiceKey's: a stored anofox_decide secret for
+// the host (and service), then the target's explicit key_env, then the profile's env var (default host only),
+// then (typesafe only, deprecated) the anofox_decide_api_key setting. Throws DecideNoKeyMessage when no key is
+// found, naming the provider's env var, never the key itself. Does NOT enforce the
 // allow_remote gate — DecideRemoteEvaluate does, so the gate error and the
 // key error stay distinguishable.
 DecideRemoteConfig DecideResolveConfig(ClientContext &context, const DecideRemoteTarget &target,
                                        const string &function = "decide");
+// Only the key of a target (its endpoint host, then DecideResolveServiceKey): unaffected by other configuration
+// problems (a missing Cloudflare account id, a bad path), so diagnostics never report those as a missing key.
+DecideResolvedKey DecideResolveTargetKey(ClientContext &context, const DecideRemoteTarget &target);
 
 // Full round trip over an explicit transport (tests inject fakes).
 vector<DecideAnswer> DecideRemoteEvaluateWithTransport(const DecideRemoteConfig &cfg, const string &state,
@@ -332,8 +400,10 @@ struct DecideGetResult {
 };
 using DecideGetHeaders = std::function<bool(int status, const string &content_range)>;
 using DecideGetData = std::function<bool(const char *data, size_t size)>;
+// bearer_token, when not empty, is sent as "Authorization: Bearer <token>" on this one request (the caller decides
+// per hop whether the host may see it).
 DecideGetResult DecideHttpGet(const string &url, int64_t range_from, int timeout_ms, const DecideGetHeaders &on_headers,
-                              const DecideGetData &on_data);
+                              const DecideGetData &on_data, const string &bearer_token = "");
 
 } // namespace anofox
 } // namespace duckdb

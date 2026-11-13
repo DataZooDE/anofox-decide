@@ -57,8 +57,9 @@ See [Evaluate and calibrate](../guides/03-evaluate-and-calibrate.md) for how to 
 |---|---|---|
 | `decide_register_model(id[, provider[, ...]])` | `BOOLEAN` | register a model for this database instance ([Providers](02-providers.md)) |
 | `decide_unregister_model(id)` | `BOOLEAN` | remove a registered model so it can be registered again |
-| `decide_models()` | table | the registered models, whether each can be called now, what to do if not, and the `device` a local model is scored on |
+| `decide_models()` | table | the registered models, whether each can be called now, what to do if not, the `device` a local model is scored on, and the `key_source` of a remote model |
 | `decide_doctor()` | table | `item`, `status` (`ok` / `warn` / `fail`), `detail`, `fix` for the whole setup |
+| `decide_services()` | table | every online service that takes a key (`service`, `display`, `default_host`, `env_var`, `secret_fields`, `key_found`, `key_source`; never the key): [API keys and secrets](02-providers.md#api-keys-and-secrets) |
 | `decide_download(model)` | table | download a local model's weights from Hugging Face into the cache directory, verified and resumable ([Local models](03-local-models.md)) |
 | `decide_token_count(text[, model])` | `BIGINT` | tokens `text` has for a local model, to find rows that do not fit its window ([Long text](03-local-models.md#long-text)) |
 | `decide_devices()` | table | the devices this machine can score local models on (cpu, and any NVIDIA, AMD or Apple GPU found), with `usable` and why not ([GPU](04-gpu.md)) |
@@ -114,7 +115,8 @@ FROM (SELECT id, unnest(decide_answers(text, '[{"id": "refund", "kind": "binary"
 A NULL text, question, option list or threshold gives a NULL result: no model is resolved and nothing is
 sent. A NULL `model` argument falls back to the session default.
 
-A model can also decline to answer (OpenAI Decisions has a `refusal` answer). The scalar functions then return
+A model can also decline to answer (OpenAI Decisions has a `refusal` answer; Gemini Decisions blocks a whole
+request for safety reasons, which refuses every question of that row). The scalar functions then return
 NULL for that row, and `decide_table` / `decide_answers` return the row with `kind = 'refusal'`. The query goes
 on. Metrics such as `decide_accuracy` skip NULLs, so to count refusals as wrong answers, say so:
 

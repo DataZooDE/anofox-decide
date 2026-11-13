@@ -75,7 +75,8 @@ FROM duckdb_functions()
 WHERE (function_name LIKE 'decide\_%' ESCAPE '\' OR function_name LIKE 'anofox\_decide\_%' ESCAPE '\')
   AND function_name NOT IN ('decide_models', 'anofox_decide_models', 'decide_doctor', 'anofox_decide_doctor',
                            'decide_devices', 'anofox_decide_devices', 'decide_backends', 'anofox_decide_backends',
-                           'decide_accelerate', 'anofox_decide_accelerate')
+                           'decide_accelerate', 'anofox_decide_accelerate', 'decide_services',
+                           'anofox_decide_services')
   AND len(parameters) = 0
 ----
 0
@@ -86,7 +87,7 @@ SELECT count(DISTINCT function_name)
 FROM duckdb_functions()
 WHERE function_name LIKE 'decide\_%' ESCAPE '\' AND alias_of = 'anofox_' || function_name
 ----
-28
+29
 
 # Spot-check the documented signatures.
 query T

@@ -213,10 +213,12 @@ void DecideRegistry::RegisterModel(ClientContext &context, const string &id, con
 			        provider + "', MAP {'endpoint': 'https://host'}); file paths are only for provider 'local'."));
 		}
 		const bool openai = remote_profile->wire == DecideWire::OPENAI_DECISIONS;
-		if (openai && !options.criteria.empty()) {
+		const bool gemini = remote_profile->wire == DecideWire::GEMINI_DECISIONS;
+		if ((openai || gemini) && !options.criteria.empty()) {
 			throw InvalidInputException(DecideMsg(
-			    fn, "option 'criteria' does not apply to provider 'openai'",
-			    "drop it: OpenAI Decisions always sends each option with its own text as the description"));
+			    fn, "option 'criteria' does not apply to provider '" + provider + "'",
+			    openai ? "drop it: OpenAI Decisions always sends each option with its own text as the description"
+			           : "drop it: Gemini Decisions always sends the choice options without descriptions"));
 		}
 		for (auto &opt : {std::make_pair("input", !options.input_mode.empty()),
 		                  std::make_pair("prompt_cache_key", options.prompt_cache_key_set)}) {
@@ -535,6 +537,18 @@ string DecideRemoteEndpointOf(const DecideModelEntry &entry) {
 	                                entry.wire_model.empty() ? entry.id : entry.wire_model, entry.account_id);
 }
 
+string DecideRemoteKeySource(ClientContext &context, const DecideModelEntry &entry) {
+	auto profile = DecideFindRemoteProfile(entry.provider);
+	if (!profile) {
+		return "";
+	}
+	const auto key = DecideResolveTargetKey(context, TargetOf(entry));
+	if (key.key.empty()) {
+		return profile->requires_key ? "" : "none needed";
+	}
+	return key.source;
+}
+
 DecideModelStatus DecideDescribeModel(ClientContext &context, const DecideModelEntry &entry) {
 	DecideModelStatus status;
 	if (entry.provider == "stub") {
@@ -550,7 +564,9 @@ DecideModelStatus DecideDescribeModel(ClientContext &context, const DecideModelE
 			allow = BooleanValue::Get(allow_v.DefaultCastAs(LogicalType::BOOLEAN));
 		}
 		if (!allow) {
-			status.detail = "remote calls are off: your text would be sent to " + DecideRemoteEndpointOf(entry);
+			const string source = DecideRemoteKeySource(context, entry);
+			status.detail = "remote calls are off: your text would be sent to " + DecideRemoteEndpointOf(entry) +
+			                (source.empty() ? string(" (no API key is found for it yet)") : " (key from " + source + ")");
 			status.fix = "SET anofox_decide_allow_remote = true;";
 			return status;
 		}

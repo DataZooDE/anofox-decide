@@ -1,13 +1,13 @@
 # Providers
 
 Hosted and local models answer the same three question kinds (`binary`, `choice` and `score`, probabilities
-back). Most speak one wire format (System One); OpenAI Decisions has its own, which the extension maps onto the
-same functions. A model is just a registered id, and several can be used side by side
+back). Most speak one wire format (System One); OpenAI Decisions has its own, and Gemini Decisions a variant
+of System One, which the extension maps onto the same functions. A model is just a registered id, and several can be used side by side
 in one session with no `SET` in between. Which one to pick: [Choosing a model](../guides/02-choosing-a-model.md).
 
 - [Overview](#overview)
 - [Registering a model](#registering-a-model)
-- [Hosted providers](#hosted-providers): [TypeSafe Jev](#typesafe-jev), [Liquid AI D1](#liquid-ai-d1), [Cloudflare Clef](#cloudflare-clef), [OpenAI Decisions](#openai-decisions)
+- [Hosted providers](#hosted-providers): [TypeSafe Jev](#typesafe-jev), [Liquid AI D1](#liquid-ai-d1), [Cloudflare Clef](#cloudflare-clef), [OpenAI Decisions](#openai-decisions), [Gemini Decisions](#gemini-decisions)
 - [API keys and secrets](#api-keys-and-secrets)
 - [Local servers](#local-servers)
 
@@ -21,6 +21,7 @@ Every provider answers all three question kinds (`binary`, `choice`, `score`).
 | `liquid` | Liquid AI D1 (`d1`) | hosted API; same opt-in | `https://api.liquid.ai` | `LIQUID_API_KEY` |
 | `cloudflare` | Cloudflare Clef (`clef`), Clef-flash (`clef-flash`) | hosted API (Workers AI); same opt-in | `https://api.cloudflare.com` | `CLOUDFLARE_API_TOKEN` |
 | `openai` | OpenAI Decisions (`gpt-6-luna`) | hosted API; same opt-in | `https://api.openai.com` | `OPENAI_API_KEY` |
+| `gemini` | Gemini Decisions (`gemini-decision-1`) | hosted API; same opt-in | `https://generativelanguage.googleapis.com` | `GEMINI_API_KEY` |
 | `strands` | [strands-decider](https://github.com/strands-labs/strands-decider) 2B | local server on loopback; same opt-in | `http://127.0.0.1:8000` | none |
 | `systemone` | any System One compatible server, e.g. [Kev](https://github.com/jaredpalmer/kev) | your endpoint (`https://`, or `http://` on loopback); same opt-in | you set it | required (any value for keyless servers such as Kev; or use provider `strands`): [Local servers](#local-servers) |
 | `local` | Julia-1, Laya multilingual, Laya typed-decisions | in-process on CPU (or a [GPU](04-gpu.md)), offline after setup | — | none ([Local models](03-local-models.md)) |
@@ -76,7 +77,7 @@ Each hosted provider receives the text you score. How they compare on a 200-tick
 | Provider | `typesafe` |
 | Model id | `jev-latest` |
 | Default endpoint | `https://api.typesafe.ai` |
-| Key | `TYPESAFE_API_KEY`, or a secret scoped to `api.typesafe.ai` |
+| Key | `TYPESAFE_API_KEY`, or `CREATE SECRET (TYPE anofox_decide, SERVICE 'typesafe', API_KEY '...')` |
 
 ```bash
 export TYPESAFE_API_KEY=...          # before starting DuckDB
@@ -88,8 +89,9 @@ SELECT decide_probability('I want my money back.', 'A refund is requested.', mod
 ```
 
 Two legacy settings apply to this provider
-only: `anofox_decide_api_key` (kept in plain text and visible through `current_setting`, so prefer a secret
-or the env var) and `anofox_decide_endpoint`; other providers take a per-model `endpoint`.
+only: `anofox_decide_api_key` (deprecated: used only when no secret, `key_env` or `TYPESAFE_API_KEY` gives a
+key; it is kept in plain text and visible through `current_setting`, so use a secret) and `anofox_decide_endpoint`;
+other providers take a per-model `endpoint`.
 
 ### Liquid AI D1
 
@@ -194,6 +196,50 @@ Things worth knowing:
   message, even when the service echoes it.
 - **Not supported:** images (OpenAI Decisions accepts them; the functions here take text only).
 
+### Gemini Decisions
+
+[Gemini Decisions](https://ai.google.dev/gemini-api/docs) (`POST /v1beta/decisions`, model `gemini-decision-1`)
+answers the same three question kinds, so the call is the same:
+
+| | |
+|---|---|
+| Provider | `gemini` |
+| Model id | `gemini-decision-1` |
+| Default endpoint | `https://generativelanguage.googleapis.com` (path `/v1beta/decisions`) |
+| Key | `GEMINI_API_KEY`, or `CREATE SECRET (TYPE anofox_decide, SERVICE 'gemini', API_KEY '...')` |
+
+```bash
+export GEMINI_API_KEY=...            # before starting DuckDB (a key from aistudio.google.com/apikey)
+```
+```sql
+SET anofox_decide_allow_remote = true;
+SELECT decide_register_model('gemini-decision-1', 'gemini');   -- the id is the model name on the wire
+SELECT decide_choice('I was charged twice.', 'Which team should handle this?',
+                     ['billing', 'technical', 'sales'], model := 'gemini-decision-1');
+```
+
+Things worth knowing:
+
+- **Question ids:** Gemini only takes ids of 1 to 64 letters, digits, `_` and `-`. The extension always sends
+  neutral ids (`q0`, `q1`, ...) and maps the answers back, so any id works in `decide_table` and `decide_many`
+  (`'is urgent?'`, `'team.v2'`, `'Ärger'`) and every message names your id.
+- **Safety blocks:** Gemini can block a whole request for safety reasons (an HTTP 400 with `safety`,
+  `prohibited_content`, `blocklist`, `image_safety` or `content_blocked`). Every question of that row is then a
+  refusal: NULL in the scalar functions and `kind = 'refusal'` in `decide_table` / `decide_answers`, as for
+  [OpenAI refusals](#openai-decisions). The request is not retried and the query does not fail.
+- **The key** travels in the `x-goog-api-key` header, never in the URL. A wrong key is an HTTP 400
+  (`API_KEY_INVALID`) that the message reports as a key error naming where the key came from.
+- **Limits and cost:** up to **1000 questions** per request (raise [`anofox_decide_max_questions`](05-settings.md),
+  default 100, to send more than 100), 2 to 255 options per choice; an empty text is refused before anything is
+  sent. Input tokens are billed ($0.10 per million); output tokens are not. There is no context caching and no
+  batch API.
+- **Answers:** the response names no model, so the `model` column shows the registered id. A structured state
+  (`to_json(row)`) is sent as text.
+- **Errors:** a model name Gemini does not know is an HTTP 404, and the message names `gemini-decision-1`.
+- **Options:** `endpoint`, `path`, `model`, `key_env` and `calibration`; `criteria` does not apply (choice
+  options are always sent without descriptions).
+- **Not supported:** images, audio and PDFs (multimodal input), media `resolution`, and the Vertex AI endpoint.
+
 <!--
   ADD MORE HOSTED PROVIDERS HERE.
   One "### <Service name>" section per provider, in the same shape as the ones above:
@@ -204,21 +250,69 @@ Things worth knowing:
 
 ## API keys and secrets
 
-Environment variables work out of the box (`export LIQUID_API_KEY=...`), and a DuckDB secret always
-overrides them. Precedence, highest first:
+Every online service gets its key the same way. Environment variables work out of the box
+(`export GEMINI_API_KEY=...`), and a DuckDB secret always overrides them. One secret type, `anofox_decide`,
+holds the key of any service; `SERVICE` names which one:
 
-1. A stored secret (write-only, redacted in `duckdb_secrets()`), matched by the endpoint host:
-   ```sql
-   CREATE SECRET (TYPE anofox_decide, API_KEY 'sk-...', SCOPE 'api.liquid.ai');
-   CREATE SECRET (TYPE anofox_decide, API_KEY getenv('LIQUID_API_KEY'), SCOPE 'api.liquid.ai');  -- copy from the env
-   ```
-2. `anofox_decide_api_key` (legacy, `typesafe` only; visible through `current_setting`, so prefer a secret).
-3. The model's explicit `key_env` variable.
-4. The provider's own env var ([Overview](#overview)), only on that provider's default host.
+```sql
+CREATE SECRET (TYPE anofox_decide, SERVICE 'gemini', API_KEY 'AIza...');
+CREATE SECRET (TYPE anofox_decide, SERVICE 'liquid', API_KEY getenv('LIQUID_API_KEY'));      -- copy from the env
+CREATE SECRET (TYPE anofox_decide, SERVICE 'cloudflare', API_KEY '...', ACCOUNT_ID '<32-character id>');
+CREATE SECRET (TYPE anofox_decide, SERVICE 'systemone', API_KEY '...', SCOPE 'llm.internal'); -- your own server
+CREATE SECRET (TYPE anofox_decide, SERVICE 'huggingface', API_KEY 'hf_...');                 -- gated downloads
+```
 
-A key is never sent to a host it was not configured for: a redirected endpoint gets nothing from the
-environment, and a secret scoped to one host is not used for another. Cleartext `http://` works for
-loopback hosts only. Behind a proxy, see [Environment variables](05-settings.md#environment-variables).
+| Service (`SERVICE`) | Default host | Env var | Secret fields |
+|---|---|---|---|
+| `typesafe` | `api.typesafe.ai` | `TYPESAFE_API_KEY` | `API_KEY`, `SCOPE` (optional) |
+| `liquid` | `api.liquid.ai` | `LIQUID_API_KEY` | `API_KEY`, `SCOPE` (optional) |
+| `cloudflare` | `api.cloudflare.com` | `CLOUDFLARE_API_TOKEN` (and `CLOUDFLARE_ACCOUNT_ID`) | `API_KEY`, `ACCOUNT_ID`, `SCOPE` (optional) |
+| `openai` | `api.openai.com` | `OPENAI_API_KEY` | `API_KEY`, `SCOPE` (optional) |
+| `gemini` | `generativelanguage.googleapis.com` | `GEMINI_API_KEY` | `API_KEY`, `SCOPE` (optional) |
+| `systemone` | none: your endpoint | none (use `key_env`) | `API_KEY`, `SCOPE` (required) |
+| `huggingface` | `huggingface.co` | `HF_TOKEN` | `API_KEY` (the access token), `SCOPE` (optional) |
+| `strands` | `127.0.0.1` | none | none: keyless |
+
+`SELECT * FROM decide_services();` shows the same table for this build, and whether a key is found for each
+service right now (where it comes from, never the key). `decide_models()` has a `key_source` column per remote
+model, and `decide_doctor()` reports both.
+
+Precedence, the same for every service, highest first:
+
+1. A stored secret (write-only, redacted in `duckdb_secrets()`) for the endpoint host. A secret with `SERVICE`
+   belongs to that service only, and to its default host only (or exactly the host given as `SCOPE`, for a
+   self-hosted endpoint): it never follows an endpoint that a model redirected elsewhere, and never reaches
+   another provider registered at the same host. A secret without `SERVICE` (the older form,
+   `CREATE SECRET (TYPE anofox_decide, API_KEY '...', SCOPE 'api.liquid.ai')`) still works for the remote
+   providers: it matches by its `SCOPE` (a host prefix), or every host when it has none; it is never sent to
+   Hugging Face.
+2. The model's own `key_env` variable (named at registration; any host).
+3. The service's env var, only on the service's default host.
+4. Deprecated, `typesafe` only: the `anofox_decide_api_key` setting (plain text, visible through
+   `current_setting`). Use a secret instead.
+
+The Cloudflare account id follows the same order: the model's `account_id` option, then the secret's
+`ACCOUNT_ID`, then `CLOUDFLARE_ACCOUNT_ID`.
+
+Secrets are bound to a host, not a port: a secret with `SCOPE '127.0.0.1'` is sent to every server on that
+machine that a model of its service points at, as DuckDB's own secret scopes and the env vars are. When several
+secrets match, the longest scope wins, then a `SERVICE` secret over an older-form one, then a temporary secret
+over a persistent one, then the lower secret name, so `CREATE OR REPLACE SECRET <name>` replaces the one in use.
+`key_source` and every key error name the secret that was used. `decide_doctor()` warns about the deprecated
+setting and about older-form secrets without `SCOPE`, which reach every remote host, including providers added
+later (such as `gemini`).
+
+Without a key, every service answers with the same message, for example:
+
+```text
+decide_probability: no API key for Gemini at generativelanguage.googleapis.com. Fix: provide one: (1) CREATE
+SECRET (TYPE anofox_decide, SERVICE 'gemini', API_KEY '<key>'); (2) export GEMINI_API_KEY=<key> before
+starting DuckDB
+```
+
+A key is never sent to a host it was not configured for. Cleartext `http://` works for loopback hosts only.
+Behind a proxy, see [Environment variables](05-settings.md#environment-variables). Hugging Face tokens are only
+needed for gated repositories: [Local models](03-local-models.md#gated-repositories).
 
 ## Local servers
 
@@ -242,7 +336,7 @@ SELECT decide_choice('Help! My payouts have been failing.', 'Which team?', ['bil
 Kev (Qwen3.5 + LoRA, Apache 2.0) is run the same way: `python -m kev.serve --run jaredpalmer/kev-0.8b
 --port 8009`, register it as `systemone` ([Registering a model](#registering-a-model)) and give it any key,
 since it ignores the value but the provider requires one:
-`CREATE SECRET (TYPE anofox_decide, API_KEY 'local', SCOPE '127.0.0.1')`. Kev-4B, 9B and 27B are more
+`CREATE SECRET (TYPE anofox_decide, SERVICE 'systemone', API_KEY 'local', SCOPE '127.0.0.1')`. Kev-4B, 9B and 27B are more
 accurate than 0.8B and need a GPU or a large Mac.
 
 How many requests run at once, per provider: [`anofox_decide_max_concurrency`](05-settings.md).

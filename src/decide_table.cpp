@@ -14,6 +14,9 @@
 
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/secret/secret.hpp"
+#include "duckdb/main/secret/secret_manager.hpp"
+#include "duckdb/transaction/meta_transaction.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/execution/execution_context.hpp"
 #include "duckdb_compat.hpp"
@@ -33,6 +36,7 @@ struct DecideModelsGlobalState : public GlobalTableFunctionState {
 	vector<DecideModelEntry> rows;
 	vector<DecideModelStatus> status;
 	vector<Value> device; // the serving device of each local model (NULL when it has none or cannot be resolved)
+	vector<Value> key_source; // where each remote model's key comes from (NULL: none found, or not remote)
 	string default_model;
 	idx_t offset = 0;
 };
@@ -76,6 +80,11 @@ unique_ptr<FunctionData> DecideModelsBind(ClientContext &context, TableFunctionB
 	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("prompt_cache_key");
 	return_types.emplace_back(LogicalType::VARCHAR);
+	// Remote models: where the API key comes from ("a stored secret (service gemini)", "env var GEMINI_API_KEY",
+	// "none needed" for a keyless server); NULL when no key is found (hint says how to give one) and for local
+	// and test models. Never the key itself.
+	names.emplace_back("key_source");
+	return_types.emplace_back(LogicalType::VARCHAR);
 	return make_uniq<DecideModelsData>();
 }
 
@@ -108,6 +117,8 @@ unique_ptr<GlobalTableFunctionState> DecideModelsInitGlobal(ClientContext &conte
 			}
 		}
 		gstate->device.push_back(std::move(device));
+		const auto source = DecideRemoteKeySource(context, row);
+		gstate->key_source.push_back(source.empty() ? Value(LogicalType::VARCHAR) : Value(source));
 	}
 	return gstate;
 }
@@ -143,10 +154,84 @@ void DecideModelsScan(ClientContext &context, TableFunctionInput &data, DataChun
 		                openai ? Value(row.input_mode.empty() ? string("auto") : row.input_mode) : Value(LogicalType::VARCHAR));
 		output.SetValue(13, row_count,
 		                openai ? Value(row.prompt_cache_key_set ? row.prompt_cache_key : row.id) : Value(LogicalType::VARCHAR));
+		output.SetValue(14, row_count, gstate.key_source[gstate.offset]);
 		gstate.offset++;
 		row_count++;
 	}
 	duckdb_compat::SetChildCardinality(output, row_count);
+}
+
+//===----------------------------------------------------------------------===//
+// decide_services() — every online service that takes a key: default host, env var, secret fields, and whether
+// a key is found for the default host right now (never the key itself).
+//===----------------------------------------------------------------------===//
+
+struct DecideServicesData : public TableFunctionData {};
+
+struct DecideServicesGlobalState : public GlobalTableFunctionState {
+	vector<vector<Value>> rows;
+	idx_t offset = 0;
+};
+
+unique_ptr<FunctionData> DecideServicesBind(ClientContext &context, TableFunctionBindInput &input,
+                                            vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
+	(void)context;
+	(void)input;
+	PostHogTelemetry::Instance().RecordFunctionCall("decide_services");
+	for (auto n : {"service", "display", "default_host", "env_var", "secret_fields"}) {
+		names.emplace_back(n);
+		return_types.emplace_back(LogicalType::VARCHAR);
+	}
+	names.emplace_back("key_found");
+	return_types.emplace_back(LogicalType::BOOLEAN);
+	names.emplace_back("key_source");
+	return_types.emplace_back(LogicalType::VARCHAR);
+	return make_uniq<DecideServicesData>();
+}
+
+unique_ptr<GlobalTableFunctionState> DecideServicesInitGlobal(ClientContext &context, TableFunctionInitInput &input) {
+	(void)input;
+	auto gstate = make_uniq<DecideServicesGlobalState>();
+	const Value null_v(LogicalType::VARCHAR);
+	for (auto &svc : DecideServices()) {
+		string fields;
+		for (auto &f : svc.secret_fields) {
+			fields += (fields.empty() ? "" : ", ") + f;
+		}
+		if (!fields.empty()) {
+			fields += svc.default_host.empty() ? ", SCOPE (required)" : ", SCOPE (optional)";
+		}
+		Value found(LogicalType::BOOLEAN);
+		Value source = null_v;
+		if (!svc.requires_key) {
+			source = Value("none needed");
+		} else if (svc.default_host.empty()) {
+			source = Value("per model: a secret with SCOPE '<host>' or the model's key_env (see decide_models())");
+		} else {
+			auto key = DecideResolveServiceKey(context, svc.id, svc.default_host);
+			found = Value::BOOLEAN(!key.key.empty());
+			source = key.key.empty() ? null_v : Value(key.source);
+		}
+		gstate->rows.push_back({Value(svc.id), Value(svc.display),
+		                        svc.default_host.empty() ? null_v : Value(svc.default_host),
+		                        svc.env_key.empty() ? null_v : Value(svc.env_key), fields.empty() ? null_v : Value(fields),
+		                        found, source});
+	}
+	return std::move(gstate);
+}
+
+void DecideServicesScan(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
+	(void)context;
+	auto &gstate = data.global_state->Cast<DecideServicesGlobalState>();
+	idx_t n = 0;
+	while (gstate.offset < gstate.rows.size() && n < STANDARD_VECTOR_SIZE) {
+		auto &row = gstate.rows[gstate.offset++];
+		for (idx_t c = 0; c < row.size(); c++) {
+			output.SetValue(c, n, row[c]);
+		}
+		n++;
+	}
+	duckdb_compat::SetChildCardinality(output, n);
 }
 
 //===----------------------------------------------------------------------===//
@@ -231,6 +316,75 @@ unique_ptr<GlobalTableFunctionState> DecideDoctorInitGlobal(ClientContext &conte
 	} else {
 		rows.push_back({"remote calls", "warn", "anofox_decide_allow_remote is off: remote models cannot be called",
 		                "SET anofox_decide_allow_remote = true;"});
+	}
+
+	// 3b. API keys: which online services have one, and where to see them all; warn when a registered remote
+	//     model has none.
+	{
+		string missing;
+		for (auto &e : entries) {
+			auto profile = DecideFindRemoteProfile(e.provider);
+			if (profile && profile->requires_key && DecideRemoteKeySource(context, e).empty()) {
+				missing += (missing.empty() ? "" : ", ") + e.id;
+			}
+		}
+		string found;
+		for (auto &svc : DecideServices()) {
+			if (!svc.requires_key || svc.default_host.empty()) {
+				continue;
+			}
+			auto key = DecideResolveServiceKey(context, svc.id, svc.default_host);
+			if (!key.key.empty()) {
+				found += (found.empty() ? "" : ", ") + svc.id + " (" + key.source + ")";
+			}
+		}
+		rows.push_back({"api keys", missing.empty() ? "ok" : "warn",
+		                (found.empty() ? string("no API key found for any online service") : "keys found for " + found) +
+		                    (missing.empty() ? string() : "; no key for the model(s) " + missing) +
+		                    "; SELECT * FROM decide_services() lists every service, its env var and secret",
+		                missing.empty() ? "" : "the model rows below say how to give each one a key"});
+	}
+
+	// 3c. The deprecated plain-text key setting: say that it is deprecated and whether something shadows it.
+	{
+		Value key_v;
+		if (context.TryGetCurrentSetting("anofox_decide_api_key", key_v) && !key_v.IsNull() &&
+		    !key_v.ToString().empty()) {
+			auto key = DecideResolveServiceKey(context, "typesafe", "api.typesafe.ai");
+			const bool shadowed = key.source.find("anofox_decide_api_key") == string::npos;
+			rows.push_back({"anofox_decide_api_key", "warn",
+			                "the setting is deprecated (plain text, visible through current_setting)" +
+			                    (shadowed ? "; it is not used for api.typesafe.ai because " + key.source + " wins"
+			                              : string("; it is used as the TypeSafe key because nothing else gives one")),
+			                "CREATE SECRET (TYPE anofox_decide, SERVICE 'typesafe', API_KEY '<key>'); then RESET "
+			                "anofox_decide_api_key;"});
+		}
+	}
+
+	// 3d. Older-form secrets without SERVICE and without SCOPE match every remote host (also providers added later).
+	{
+		auto &manager = SecretManager::Get(*context.db);
+		auto transaction = CatalogTransaction::GetSystemTransaction(*context.db);
+		for (auto &entry : manager.AllSecrets(transaction)) {
+			if (!entry.secret || entry.secret->GetType() != "anofox_decide") {
+				continue;
+			}
+			auto kv = dynamic_cast<const KeyValueSecret *>(entry.secret.get());
+			Value svc;
+			const bool named = kv && kv->TryGetValue("service", svc) && !svc.IsNull() && !svc.ToString().empty();
+			bool unscoped = true;
+			for (auto &scope : entry.secret->GetScope()) {
+				unscoped = unscoped && scope.empty();
+			}
+			if (kv && !named && unscoped) {
+				const string name = duckdb_compat::Str(entry.secret->GetName());
+				rows.push_back({"secret '" + name + "'", "warn",
+				                "the secret has neither SERVICE nor SCOPE, so its key is sent to every remote host, "
+				                "including providers added later",
+				                "CREATE OR REPLACE SECRET " + name +
+				                    " (TYPE anofox_decide, SERVICE '<provider>', API_KEY '<key>');"});
+			}
+		}
 	}
 
 	// 4. One row per real model, from the same readiness check as decide_models().
@@ -657,6 +811,18 @@ void RegisterDecideTableFunctions(ExtensionLoader &loader) {
 		               "(ok / warn / fail), detail, fix. Run it first when a call does not work.",
 		               "models", {{{}, {}, "SELECT * FROM decide_doctor();"}}));
 	}
+	{
+		TableFunction func("anofox_decide_services", {}, DECIDE_GUARD(DecideServicesScan),
+		                   DECIDE_GUARD(DecideServicesBind), DecideServicesInitGlobal);
+		RegisterTableFunctionWithAlias(
+		    loader, std::move(func), "decide_services",
+		    DecideDocs("List every online service that takes an API key (the remote providers and huggingface for "
+		               "decide_download) and whether a key is found for it now. Columns: service (the SERVICE of "
+		               "CREATE SECRET (TYPE anofox_decide, SERVICE ..., API_KEY ...)), display, default_host, env_var "
+		               "(read only for the default host), secret_fields, key_found, key_source (where the key comes "
+		               "from; keys are never shown). Order: a stored secret, the model's key_env, the env var.",
+		               "models", {{{}, {}, "SELECT * FROM decide_services();"}}));
+	}
 	// Primary names are anofox_decide_*; decide_* are aliases (tabfm convention).
 	{
 		TableFunction func("anofox_decide_models", {}, DECIDE_GUARD(DecideModelsScan),
@@ -665,7 +831,8 @@ void RegisterDecideTableFunctions(ExtensionLoader &loader) {
 		    loader, std::move(func), "decide_models",
 		    DecideDocs("List the models registered on this database instance and whether each can be called now. "
 		               "Columns: model, provider, mode ('test' / 'local' / 'remote'), path, is_default, ready, hint "
-		               "(what to do when it is not ready), profile, endpoint, wire_model. The built-in 'stub' test "
+		               "(what to do when it is not ready), profile, endpoint, wire_model, calibration, device, input, "
+		               "prompt_cache_key, key_source (where a remote model's API key comes from). The built-in 'stub' test "
 		               "model is always present; register more with decide_register_model.",
 		               "models", {{{}, {}, "SELECT * FROM decide_models();"}}));
 	}

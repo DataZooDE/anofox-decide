@@ -7,6 +7,7 @@ For a GPU, see [GPU acceleration](04-gpu.md).
 - [Your own exported model](#your-own-exported-model)
 - [Long text](#long-text)
 - [Batching rows](#batching-rows)
+- [Gated repositories](#gated-repositories)
 
 ## The built-in catalog: Julia-1 and Laya
 
@@ -93,3 +94,18 @@ On CPU the effect on speed is small and inconsistent (200 tickets: 112 s and 122
 to keep a GPU busy: with one row per call a GPU waits, with a batch it does not.
 
 See [`examples/05_local_model.sql`](../../examples/05_local_model.sql).
+
+## Gated repositories
+
+The catalog models are public: `decide_download` needs no login. A Hugging Face repository that is gated (you
+must accept its terms first) answers HTTP 401 or 403 without a token, and the message says so. Give an access
+token from huggingface.co/settings/tokens the same way as any other key
+([API keys and secrets](02-providers.md#api-keys-and-secrets)):
+
+```sql
+CREATE SECRET (TYPE anofox_decide, SERVICE 'huggingface', API_KEY 'hf_...');
+```
+
+or `export HF_TOKEN=hf_...` before starting DuckDB. The secret wins over `HF_TOKEN`. The token is sent only to
+`huggingface.co` (over HTTPS), never on to the CDN hosts that a download is redirected to, and without a token
+nothing changes.

@@ -20,7 +20,7 @@ example.
 | `anofox_decide_gpu_precision` | `fp32` | Numeric precision of the GPU backends. Only `fp32`; other values are rejected, never silently run in fp32 |
 | `anofox_decide_plugin_dir` | *(unset: `plugins` inside the cache directory)* | Where the GPU plugins are installed and loaded from; `decide_accelerate()` fills it |
 | `anofox_decide_on_truncate` | `error` | `error`: a local model refuses text, question or options that do not fit its window; `ignore`: score the shortened input |
-| `anofox_decide_api_key` | *(unset)* | Legacy key for the `typesafe` provider, kept in plain text; prefer `CREATE SECRET` or the env var ([API keys](02-providers.md#api-keys-and-secrets)) |
+| `anofox_decide_api_key` | *(unset)* | Deprecated key for the `typesafe` provider, kept in plain text and used last (after a secret, `key_env` and `TYPESAFE_API_KEY`); use `CREATE SECRET (TYPE anofox_decide, SERVICE 'typesafe', ...)` ([API keys](02-providers.md#api-keys-and-secrets)) |
 | `anofox_decide_endpoint` | `https://api.typesafe.ai` | Legacy endpoint for `typesafe`; other providers take a per-model `endpoint` |
 | `anofox_telemetry_enabled` | `true` | Anonymous usage telemetry, see [TELEMETRY.md](../../TELEMETRY.md) |
 | `anofox_telemetry_key` | *(the project's PostHog key)* | PostHog API key the telemetry is sent with; there is no need to change it |
@@ -30,8 +30,9 @@ example.
 
 | Variable | Used for |
 |---|---|
-| `TYPESAFE_API_KEY`, `LIQUID_API_KEY`, `CLOUDFLARE_API_TOKEN` | the hosted providers' keys, on their default hosts only ([API keys](02-providers.md#api-keys-and-secrets)) |
-| `CLOUDFLARE_ACCOUNT_ID` | the Cloudflare account in the Workers AI URL, unless a model sets `account_id` |
+| `TYPESAFE_API_KEY`, `LIQUID_API_KEY`, `CLOUDFLARE_API_TOKEN`, `OPENAI_API_KEY`, `GEMINI_API_KEY` | the hosted providers' keys, on their default hosts only; a stored secret wins over them ([API keys](02-providers.md#api-keys-and-secrets)) |
+| `HF_TOKEN` | a Hugging Face access token for `decide_download` from gated repositories, sent to `huggingface.co` only ([Gated repositories](03-local-models.md#gated-repositories)) |
+| `CLOUDFLARE_ACCOUNT_ID` | the Cloudflare account in the Workers AI URL, unless a model sets `account_id` or the secret has `ACCOUNT_ID` |
 | `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY` | a proxy for remote models (`HTTPS_PROXY` for `https://` endpoints, `HTTP_PROXY` for `http://`, `ALL_PROXY` as the fallback) and for `decide_download`; `NO_PROXY` lists hosts to reach directly. The lowercase forms are also read; `localhost`, `127.0.0.1` and `::1` are never proxied |
 | `DATAZOO_DISABLE_TELEMETRY=1` | turns telemetry off, like `SET anofox_telemetry_enabled = false` |
 | `DATAZOO_NO_BANNER=1` | silences the feedback banner, like `SET datazoo_banner = false` |
