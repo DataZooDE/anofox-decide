@@ -14,13 +14,13 @@ description: >
   the extension (INSTALL anofox_decide FROM community). Use when setting up a
   model or a key, picking a provider, comparing hosted vs local, or when a decide_* call fails with
   "no model selected", "not registered", "remote calls are off", "no API key" or an HTTP error.
-version: 2026.10.31
+version: 2026.11.13
 user-invocable: false
 ---
 
 # Anofox Decide — Models, Providers, Keys & Setup
 
-**Extension:** `anofox_decide` v2026.10.31 | **DuckDB:** v1.5.6 / v2.0 | **Dual naming:** `decide_*` and
+**Extension:** `anofox_decide` v2026.11.13 | **DuckDB:** v1.5.6 / v2.0 | **Dual naming:** `decide_*` and
 `anofox_decide_*` (identical)
 
 A model is a **registered id**. Every provider answers the same three question kinds through the same
