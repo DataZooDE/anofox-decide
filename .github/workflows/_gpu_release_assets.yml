@@ -11,9 +11,10 @@
 #   verify    DECIDE_PLUGIN_RELEASE_TAG must equal the tag; both files must exist under exactly the expected
 #             names; the sidecar must list the plugin under its own file name (the loader matches the line by
 #             name, and a sidecar that does not mention the file proves nothing about it); the digest must match.
-#   draft     the release is created as a DRAFT. The three plugin workflows race here; only "already exists" is
-#             accepted from a losing racer, every other failure fails the job.
-#   upload    the plugin and its sidecar are attached to the draft.
+#   draft     the release is created as a DRAFT unless the tag has one. The three plugin workflows race here, and a
+#             draft is not bound to its tag, so two may be created: tools/ci/release_draft.sh keeps the first
+#             (the canonical one, lowest id) and deletes the empty duplicates.
+#   upload    the plugin and its sidecar are attached to the canonical draft.
 #   publish   when all six assets (three plugins, three sidecars) are on the draft, it is published; until then
 #             it stays a draft, so nobody can fetch a plugin without its sidecar or a release with half the
 #             plugins. If one plugin build fails the release simply never publishes.
@@ -103,21 +104,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Create the release as a draft (an existing one is fine, any other failure is not)
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: One draft release for the tag (create it unless it exists, drop a racer's empty duplicate)
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          # `gh release upload` does not create the release object. The three plugin workflows race here: the
-          # loser finds it already there, which is the only error that passes.
-          if out="$(gh release create "${GITHUB_REF_NAME}" --draft --verify-tag --generate-notes \
-                      --repo "${GITHUB_REPOSITORY}" 2>&1)"; then
-            echo "${out}"
-          elif grep -qiE 'already exists|already_exists' <<<"${out}"; then
-            echo "release ${GITHUB_REF_NAME} already exists: attaching to it"
-          else
-            echo "::error::could not create the release: ${out}"
-            exit 1
-          fi
+        run: echo "canonical release id $(tools/ci/release_draft.sh ensure "${GITHUB_REF_NAME}")"
 
   upload:
     name: Attach ${{ inputs.plugin }} to the draft
@@ -128,18 +119,18 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: ${{ inputs.artifact }}
           path: assets
-      - name: Upload the plugin and its sidecar
+      - name: Upload the plugin and its sidecar to the canonical draft
         env:
           GH_TOKEN: ${{ github.token }}
           PLUGIN: ${{ inputs.plugin }}
           SIDECAR: ${{ inputs.sidecar }}
         run: |
-          gh release upload "${GITHUB_REF_NAME}" "assets/${PLUGIN}" "assets/${SIDECAR}" \
-            --repo "${GITHUB_REPOSITORY}" --clobber
+          tools/ci/release_draft.sh upload "${GITHUB_REF_NAME}" "assets/${PLUGIN}" "assets/${SIDECAR}"
 
   publish:
     name: Publish the release when all six assets are attached
@@ -157,7 +148,7 @@ jobs:
         run: |
           if missing="$(tools/ci/release_assets_complete.sh "${GITHUB_REF_NAME}")"; then
             # Idempotent: the last of the three workflows to get here publishes, an earlier racer may too.
-            gh release edit "${GITHUB_REF_NAME}" --draft=false --repo "${GITHUB_REPOSITORY}"
+            tools/ci/release_draft.sh publish "${GITHUB_REF_NAME}"
             echo "published ${GITHUB_REF_NAME} with all six GPU assets"
           else
             echo "still missing, so ${GITHUB_REF_NAME} stays a draft for now:"
