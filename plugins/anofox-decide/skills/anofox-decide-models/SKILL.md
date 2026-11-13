@@ -10,7 +10,8 @@ description: >
   local (Julia-1, Laya). Covers the anofox_decide_allow_remote opt-in, the anofox_decide_model
   default, API keys as DuckDB secrets (CREATE SECRET TYPE anofox_decide, SERVICE ...) or env vars
   and their precedence, decide_services, decide_models, decide_doctor, every anofox_decide_*
-  setting, the error-message shape and the common errors with their fixes. Use when setting up a
+  setting, the error-message shape and the common errors with their fixes, and installing / loading
+  the extension (INSTALL anofox_decide FROM community). Use when setting up a
   model or a key, picking a provider, comparing hosted vs local, or when a decide_* call fails with
   "no model selected", "not registered", "remote calls are off", "no API key" or an HTTP error.
 version: 2026.10.31
@@ -147,7 +148,7 @@ every remote host, and `decide_doctor()` warns about them.
 |---|---|---|
 | `anofox_decide_model` | unset | default model id |
 | `anofox_decide_allow_remote` | `false` | opt-in for hosted and server models |
-| `anofox_decide_max_concurrency` | `0` (auto: 8 hosted, 1 strands) | remote requests in flight, 0 to 64 |
+| `anofox_decide_max_concurrency` | `0` (auto: 8 hosted, 1 strands) | remote requests in flight per chunk of rows, 0 to 64. DuckDB threads multiply it on large tables: for a strict rate limit also `SET threads = ...` |
 | `anofox_decide_timeout_ms` | `30000` | per remote request |
 | `anofox_decide_max_retries` | `3` | after 429 / 5xx / connection failure, 0 to 10 |
 | `anofox_decide_max_questions` | `100` | per `decide_table` / `decide_many` call, up to 1000 |
@@ -166,7 +167,7 @@ Every error has the shape `<function>: <what went wrong>. Fix: <what to run>`. R
 | `no model selected` | `model := '<id>'` or `SET anofox_decide_model = '<id>'` |
 | `model '<id>' is not registered` | the message lists registered ids and a close match. Register it, or check `decide_models()` |
 | `... remote calls are off` | `SET anofox_decide_allow_remote = true;` |
-| `no API key for <service> at <host>` | `CREATE SECRET (TYPE anofox_decide, SERVICE '<service>', API_KEY '...')` or export the env var. A keyless local server uses provider `strands` |
+| `no API key for <service> at <host>` | `CREATE SECRET <name> (TYPE anofox_decide, SERVICE '<service>', API_KEY '...')`, plus `SCOPE '<host>'` (host only, no scheme or path) when the model's endpoint is not the provider's default host, and always for `systemone`. Or export the env var (default host only) or the model's `key_env`. A keyless local server uses provider `strands` |
 | `rejected the API key (HTTP 401)` (Gemini: 400) | replace it: `CREATE OR REPLACE SECRET ...` |
 | `Authentication error (code 10000)` (Cloudflare) | wrong token, or a token of another account: check `CLOUDFLARE_ACCOUNT_ID` and the token's Workers AI Read+Edit |
 | `does not know the model ... (HTTP 404)` | register with `MAP {'model': '<provider model name>'}` |
@@ -184,6 +185,8 @@ Every error has the shape `<function>: <what went wrong>. Fix: <what to run>`. R
 
 ```sql
 -- needs: LIQUID_API_KEY exported before starting DuckDB, and network access
+INSTALL anofox_decide FROM community;   -- once per machine
+LOAD anofox_decide;                     -- every session
 SELECT * FROM decide_doctor();
 SET anofox_decide_allow_remote = true;
 SELECT decide_register_model('d1', 'liquid');
