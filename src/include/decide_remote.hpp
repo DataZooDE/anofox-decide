@@ -179,6 +179,8 @@ public:
 	// within the same second shrink the window only once.
 	void Throttle();
 	int Limit();
+	// Another caller sharing this gate allows at most `cap` in flight: never raises the limit.
+	void Cap(int cap);
 
 private:
 	std::mutex lock;
@@ -188,6 +190,12 @@ private:
 	std::chrono::steady_clock::time_point last_throttle;
 	bool throttled = false;
 };
+
+// The gate shared by every request in flight to the same endpoint with the same key, across DuckDB threads,
+// chunks and connections of this process, so anofox_decide_max_concurrency (and a 429's halving) bounds what
+// the provider sees, not what one chunk sends. It lives while a caller holds it: the next query starts with
+// the configured limit again. A caller asking for a lower limit lowers it for everyone sharing it.
+std::shared_ptr<DecideInflightGate> DecideSharedGate(const string &host, int port, const string &api_key, int limit);
 
 struct DecideRemoteConfig {
 	string host = "api.typesafe.ai";

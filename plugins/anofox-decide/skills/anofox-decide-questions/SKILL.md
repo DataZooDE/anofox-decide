@@ -203,9 +203,9 @@ FROM (SELECT refund, decide_probability(text, 'A refund is requested.', model :=
 
 | You write | Requests |
 |---|---|
-| a scalar function (`decide_probability`, `decide_choice`, `decide_score`, `decide_decision`, `decide_many`) over a table | one per row **for each such call** (repeats within a chunk are sent once), up to 8 at a time per chunk |
+| a scalar function (`decide_probability`, `decide_choice`, `decide_score`, `decide_decision`, `decide_many`) over a table | one per row **for each such call** (repeats within a chunk are sent once), up to 8 at a time |
 | `decide_table(...)` with constant arguments | one request for all of its questions |
-| `unnest(decide_answers(t.text, ...), recursive := true)` over a table | one per row for all questions (repeats within a chunk are sent once), up to 8 at a time per chunk |
+| `unnest(decide_answers(t.text, ...), recursive := true)` over a table | one per row for all questions (repeats within a chunk are sent once), up to 8 at a time |
 | `LATERAL decide_table(t.text, ...)` | one per row, **one after another**. Fine for a handful of rows only |
 
 ```sql
@@ -214,9 +214,9 @@ SET anofox_decide_timeout_ms = 60000;    -- per request
 SET anofox_decide_max_retries = 5;       -- after a 429, a 5xx or a connection failure
 ```
 
-The limit applies per chunk of rows. On a large table DuckDB scores several chunks in parallel threads, so
-up to `threads × max_concurrency` requests can be in flight. For a strict rate limit, lower both (e.g.
-`SET threads = 1;` for the scoring query). A `429` halves the window and honours `Retry-After`. The first
+The limit holds per endpoint and key for the whole process: parallel DuckDB threads, chunks and concurrent
+queries to the same provider share it, so it is what the provider sees. A `429` halves the window for all of
+them and honours `Retry-After`. The first
 failing row's error is reported, and no new requests start after it, so on a very large table insert in
 chunks (`... WHERE text NOT IN (SELECT text FROM answers) LIMIT 10000`) and keep what was already paid for. Local models score one text at a time, or in batches with
 `anofox_decide_batch_tokens` (see `anofox-decide-local`).

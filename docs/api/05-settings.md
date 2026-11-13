@@ -8,7 +8,7 @@ example.
 |---|---|---|
 | `anofox_decide_model` | *(unset)* | Model id used when a call names none. Unset: name one per call or set it |
 | `anofox_decide_allow_remote` | `false` | Opt-in for hosted and server models; the text you score goes to their endpoint ([Providers](02-providers.md)) |
-| `anofox_decide_max_concurrency` | `0` | Remote requests in flight at once, 0 to 64. `0` = automatic: 8 hosted, 1 for the local strands server ([Scoring many rows](01-functions.md#scoring-many-rows)) |
+| `anofox_decide_max_concurrency` | `0` | Remote requests in flight at once per endpoint and key, shared by every thread and query of the process, 0 to 64. `0` = automatic: 8 hosted, 1 for the local strands server ([Scoring many rows](01-functions.md#scoring-many-rows)) |
 | `anofox_decide_timeout_ms` | `30000` | Per-request timeout for remote calls |
 | `anofox_decide_max_retries` | `3` | Retries after a `429`, a `5xx` or a connection failure, 0 to 10 |
 | `anofox_decide_max_questions` | `100` | Most questions in one `decide_many` / `decide_table` call, up to 1000 |

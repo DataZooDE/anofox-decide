@@ -152,6 +152,43 @@ TEST_CASE("a limit of 1 sends the requests one after another", "[anofox_decide][
 	REQUIRE(server.Connections() == 1);
 }
 
+TEST_CASE("the limit holds for the endpoint, across concurrent queries and databases of the process",
+          "[anofox_decide][concurrency]") {
+	// Two databases (as two parallel DuckDB threads or two notebooks would) score at the same time against the
+	// same endpoint with the same key. Each alone may send 2 at a time; together they must not exceed 2 either,
+	// because the limit stands for what the provider accepts. Before the shared gate the peak was 4.
+	ConcurrencyServer server(100);
+	Session a(server, "systemone");
+	Session b(server, "systemone");
+	a.Run("SET anofox_decide_max_concurrency = 2");
+	b.Run("SET anofox_decide_max_concurrency = 2");
+	const string sql =
+	    "SELECT count(decide_probability(text, 'A refund is requested.', model := 'm')) FROM " + Tickets(16, 16);
+	string error_a, error_b;
+	std::thread ta([&]() {
+		auto r = a.con.Query(sql);
+		error_a = r->HasError() ? r->GetError() : "";
+	});
+	std::thread tb([&]() {
+		auto r = b.con.Query(sql);
+		error_b = r->HasError() ? r->GetError() : "";
+	});
+	ta.join();
+	tb.join();
+	REQUIRE(error_a.empty());
+	REQUIRE(error_b.empty());
+	REQUIRE(server.hits == 32);
+	REQUIRE(server.peak <= 2);
+	REQUIRE(server.peak >= 2);
+
+	// The gate lives only while requests are in flight: a later query alone gets its full limit again.
+	server.peak = 0;
+	a.Run("SET anofox_decide_max_concurrency = 4");
+	a.Run("SELECT count(decide_probability(text, 'Thanks are given.', model := 'm')) FROM " + Tickets(16, 16));
+	REQUIRE(server.peak <= 4);
+	REQUIRE(server.peak >= 3);
+}
+
 TEST_CASE("the default is automatic: 8 for hosted providers, 1 for the local strands server",
           "[anofox_decide][concurrency]") {
 	{

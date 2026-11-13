@@ -29,6 +29,7 @@
 #include <cstring>
 #include <map>
 #include <thread>
+#include <unordered_map>
 #include <chrono>
 #include <cstdlib>
 #include <set>
@@ -2030,6 +2031,29 @@ int DecideInflightGate::Limit() {
 	return limit;
 }
 
+void DecideInflightGate::Cap(int cap) {
+	std::lock_guard<std::mutex> guard(lock);
+	limit = std::max(1, std::min(limit, cap));
+}
+
+std::shared_ptr<DecideInflightGate> DecideSharedGate(const string &host, int port, const string &api_key, int limit) {
+	static std::mutex registry_lock;
+	static std::unordered_map<string, std::weak_ptr<DecideInflightGate>> registry;
+	// The key is hashed so that the registry never holds it in clear text.
+	const string id = host + ":" + std::to_string(port) + "#" + std::to_string(std::hash<string> {}(api_key));
+	std::lock_guard<std::mutex> guard(registry_lock);
+	for (auto it = registry.begin(); it != registry.end();) { // drop gates nobody holds any more
+		it = it->second.expired() ? registry.erase(it) : std::next(it);
+	}
+	if (auto gate = registry[id].lock()) {
+		gate->Cap(limit);
+		return gate;
+	}
+	auto gate = std::make_shared<DecideInflightGate>(limit);
+	registry[id] = gate;
+	return gate;
+}
+
 //--- Transport ---------------------------------------------------------------
 
 // Connections kept open between the requests of one worker (HTTP keep-alive): a chunk of rows pays the
@@ -2873,9 +2897,9 @@ void DecideRemoteRunJobs(vector<DecideRemoteJob> &jobs) {
 	for (auto &job : jobs) {
 		limit = std::min(limit, std::max(1, job.cfg.max_concurrency));
 	}
-	auto gate = std::make_shared<DecideInflightGate>(limit);
+	// One gate per endpoint and key, shared with every other chunk and query sending to it right now.
 	for (auto &job : jobs) {
-		job.cfg.gate = gate;
+		job.cfg.gate = DecideSharedGate(job.cfg.host, job.cfg.port, job.cfg.api_key, limit);
 	}
 	std::atomic<size_t> next {0};
 	std::atomic<bool> failed {false};
