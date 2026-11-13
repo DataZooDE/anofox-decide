@@ -1,0 +1,16 @@
+{
+  "name": "anofox-decide",
+  "description": "Claude Code skills for anofox_decide, natural-language decisions on your data inside DuckDB.",
+  "owner": {
+    "name": "DataZoo GmbH",
+    "url": "https://github.com/DataZooDE"
+  },
+  "plugins": [
+    {
+      "name": "anofox-decide",
+      "source": "./plugins/anofox-decide",
+      "description": "Natural-language decision skills for the anofox_decide DuckDB extension: yes/no, choice and score questions as SQL functions, hosted and in-process decision models, API keys and secrets, local models and GPU, and evaluating and calibrating the probabilities.",
+      "keywords": ["duckdb", "decisions", "classification", "llm", "sql", "claude-code"]
+    }
+  ]
+}

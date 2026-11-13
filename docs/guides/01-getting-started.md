@@ -38,6 +38,10 @@ Check which build you got:
 SELECT extension_version FROM duckdb_extensions() WHERE extension_name = 'anofox_decide';
 ```
 
+> **Using an AI assistant?** In Claude Code, run `/plugin marketplace add DataZooDE/anofox-decide` and then
+> `/plugin install anofox-decide@anofox-decide`. The [skills plugin](../../README.md#claude-code-skills) teaches
+> Claude every function, provider and error on this page and the ones after it.
+
 The extension ships no model weights and calls nothing until you register a model and, for hosted
 models, opt in. Local models are downloaded only when you run `decide_download`.
 

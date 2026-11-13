@@ -7,6 +7,13 @@ All notable changes to `anofox_decide` are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Claude Code plugin.** `/plugin marketplace add DataZooDE/anofox-decide`, then
+  `/plugin install anofox-decide@anofox-decide`, installs four skills (`anofox-decide-questions`,
+  `anofox-decide-models`, `anofox-decide-local` and `anofox-decide-evaluate`). They teach Claude Code every function,
+  question format, provider, key and setting, the error messages and their fixes, local models and GPUs, and
+  evaluation and calibration. The docs tests check them like the documentation: their SQL runs on the stub model,
+  every name they use exists, every function has a skill, and their versions follow the release. The README,
+  Getting Started and `docs/BUILDING.md` (which now also lists every version string to bump at a release) describe it.
 - **Gemini Decisions** (`gemini-decision-1`, `POST https://generativelanguage.googleapis.com/v1beta/decisions`) as
   the provider `gemini`: `export GEMINI_API_KEY=...`, then `SELECT decide_register_model('gemini-decision-1',
   'gemini');`. The same functions and questions as the other models; up to 1000 questions per request. Question

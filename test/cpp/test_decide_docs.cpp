@@ -1,22 +1,26 @@
 // The documentation cannot drift from the extension: every example a function documents binds, the offline
 // example files run, the others parse, and on the README and every guide and API page under docs/ every SQL
 // block parses, every function and setting named exists, and every relative link and anchor resolves (as do
-// the documentation links in the error messages in src/).
+// the documentation links in the error messages in src/). The same holds for the skills of the Claude Code plugin
+// (plugins/anofox-decide), whose offline SQL blocks also run, and whose versions follow the extension's.
 #include "catch.hpp"
 #include "anofox_decide_extension.hpp"
 
 #include "duckdb.hpp"
 #include "duckdb_compat.hpp"
+#include "yyjson.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <fstream>
 #include <regex>
+#include <map>
 #include <set>
 #include <sstream>
 #include <vector>
 
 using namespace duckdb;
+using namespace duckdb_yyjson; // NOLINT
 
 namespace {
 
@@ -62,7 +66,14 @@ std::vector<std::string> GlobFiles(Connection &con, const std::string &pattern) 
 	return files;
 }
 
-// README.md plus every guide and API page, found at runtime so a new page is checked without listing it here.
+// The SKILL.md of every skill of the Claude Code plugin.
+std::vector<std::string> SkillPages(Connection &con) {
+	auto pages = GlobFiles(con, "plugins/anofox-decide/skills/*/SKILL.md");
+	REQUIRE(pages.size() >= 4);
+	return pages;
+}
+
+// README.md plus every guide and API page and every skill, found at runtime so a new page is checked without listing it here.
 std::vector<std::string> DocPages(Connection &con) {
 	std::vector<std::string> pages = {"README.md"};
 	for (auto &file : GlobFiles(con, "docs/guides/*.md")) {
@@ -71,7 +82,10 @@ std::vector<std::string> DocPages(Connection &con) {
 	for (auto &file : GlobFiles(con, "docs/api/*.md")) {
 		pages.push_back(file);
 	}
-	REQUIRE(pages.size() >= 10);
+	for (auto &file : SkillPages(con)) {
+		pages.push_back(file);
+	}
+	REQUIRE(pages.size() >= 14);
 	return pages;
 }
 
@@ -308,4 +322,178 @@ TEST_CASE("every documentation link in an error message resolves", "[anofox_deci
 		}
 	}
 	REQUIRE(links > 0);
+}
+
+namespace {
+
+// The first match of `pattern`'s first group in `text`, or "" when there is none.
+std::string FirstMatch(const std::string &text, const std::string &pattern) {
+	std::smatch match;
+	const std::regex re(pattern);
+	return std::regex_search(text, match, re) ? match[1].str() : "";
+}
+
+// The release version the extension reports when built without a version tag.
+std::string ExtensionVersion() {
+	const auto version = FirstMatch(ReadFile("src/anofox_decide_extension.cpp"), R"re(version = "([0-9.]+)";)re");
+	REQUIRE_FALSE(version.empty());
+	return version;
+}
+
+// A string field of a parsed JSON object (`path` names nested keys, e.g. {"plugins", "0", "source"}), or "".
+std::string JsonString(yyjson_val *val, const std::vector<std::string> &path) {
+	for (auto &key : path) {
+		if (yyjson_is_arr(val)) {
+			val = yyjson_arr_get(val, std::stoul(key));
+		} else {
+			val = yyjson_obj_get(val, key.c_str());
+		}
+		if (!val) {
+			return "";
+		}
+	}
+	return yyjson_is_str(val) ? std::string(yyjson_get_str(val), yyjson_get_len(val)) : "";
+}
+
+// The frontmatter of a SKILL.md: the text between the first two "---" lines.
+std::string Frontmatter(const std::string &text) {
+	REQUIRE(text.rfind("---\n", 0) == 0);
+	const auto end = text.find("\n---\n", 3);
+	REQUIRE(end != std::string::npos);
+	return text.substr(4, end - 4);
+}
+
+// A skill block that needs a key, the network, a GPU or files on disk has "-- needs: <what>" as its first line;
+// it only parses.
+bool NeedsSomething(const std::string &block) {
+	return block.substr(0, block.find('\n')).rfind("-- needs:", 0) == 0;
+}
+
+// A frontmatter field written at the start of a line ("name: ..."), so a word in the folded description never
+// matches.
+std::string FrontmatterField(const std::string &front, const std::string &field) {
+	return FirstMatch("\n" + front, "\n" + field + ": ([^\n]+)");
+}
+
+} // namespace
+
+TEST_CASE("the Claude Code plugin is consistent", "[anofox_decide][docs]") {
+	Docs docs;
+	const auto version = ExtensionVersion();
+	// The marketplace lists the plugin and points at its folder; both manifests parse as JSON.
+	const auto marketplace = ReadFile(".claude-plugin/marketplace.json");
+	const auto manifest = ReadFile("plugins/anofox-decide/.claude-plugin/plugin.json");
+	auto market_doc = yyjson_read(marketplace.c_str(), marketplace.size(), 0);
+	auto manifest_doc = yyjson_read(manifest.c_str(), manifest.size(), 0);
+	REQUIRE(market_doc);
+	REQUIRE(manifest_doc);
+	const auto market_root = yyjson_doc_get_root(market_doc);
+	const auto manifest_root = yyjson_doc_get_root(manifest_doc);
+	CHECK(JsonString(market_root, {"plugins", "0", "name"}) == "anofox-decide");
+	CHECK(JsonString(market_root, {"plugins", "0", "source"}) == "./plugins/anofox-decide");
+	CHECK(JsonString(manifest_root, {"name"}) == "anofox-decide");
+	{
+		INFO("plugins/anofox-decide/.claude-plugin/plugin.json: bump \"version\" with the release (now " << version << ")");
+		CHECK(JsonString(manifest_root, {"version"}) == version);
+	}
+	yyjson_doc_free(market_doc);
+	yyjson_doc_free(manifest_doc);
+	// Every skill: name = folder, the extension's version, a description, and not a slash command.
+	std::string all_skills;
+	for (auto &page : SkillPages(docs.con)) {
+		const auto text = ReadFile(page);
+		const auto front = Frontmatter(text);
+		const auto folder = page.substr(0, page.rfind('/'));
+		INFO("skill: " << page);
+		REQUIRE(FrontmatterField(front, "name") == folder.substr(folder.rfind('/') + 1));
+		REQUIRE(FrontmatterField(front, "user-invocable") == "false");
+		REQUIRE(FrontmatterField(front, "description") == ">");
+		{
+			INFO("bump the skill's version: line with the release (now " << version << ")");
+			REQUIRE(FrontmatterField(front, "version") == version);
+		}
+		// An installed plugin is copied out of the repository: links must be absolute (or in-page anchors).
+		std::regex link(R"re(\]\(([^)\s]+)\))re");
+		for (std::sregex_iterator it(text.begin(), text.end(), link), end; it != end; ++it) {
+			const auto target = (*it)[1].str();
+			INFO("relative link " << target << ": use https://github.com/DataZooDE/anofox-decide/blob/main/<path>");
+			REQUIRE((target.rfind("https://", 0) == 0 || target.rfind("#", 0) == 0));
+		}
+		all_skills += text;
+	}
+	// Every public function is taught by at least one skill, so a new function cannot ship without one.
+	auto fn = docs.con.Query("SELECT DISTINCT function_name FROM duckdb_functions() WHERE function_name LIKE 'decide\\_%' ESCAPE '\\'");
+	REQUIRE_FALSE(fn->HasError());
+	REQUIRE(fn->RowCount() > 20);
+	for (idx_t i = 0; i < fn->RowCount(); i++) {
+		const auto name = duckdb_compat::ResultValue(*fn, 0, i).ToString();
+		INFO("no skill under plugins/anofox-decide/skills mentions " << name);
+		REQUIRE(std::regex_search(all_skills, std::regex("\\b" + name + "\\b")));
+	}
+}
+
+TEST_CASE("every name a skill writes in code exists", "[anofox_decide][docs]") {
+	Docs docs;
+	std::set<std::string> names;
+	auto fn = docs.con.Query("SELECT DISTINCT function_name FROM duckdb_functions() WHERE function_name LIKE '%decide_%' "
+	                         "UNION SELECT name FROM duckdb_settings() WHERE name LIKE 'anofox_%'");
+	REQUIRE_FALSE(fn->HasError());
+	for (idx_t i = 0; i < fn->RowCount(); i++) {
+		names.insert(duckdb_compat::ResultValue(*fn, 0, i).ToString());
+	}
+	// In a skill a function is often named in backticks without the call, and the frontmatter description
+	// (what makes Claude pick the skill) names them bare: every decide_* word there must be real.
+	std::regex code(R"(`((?:anofox_)?decide_[a-z_]+)`)");
+	std::regex bare(R"(\b((?:anofox_)?decide_[a-z_]+)\b)");
+	// A settings table row "| `anofox_decide_x` | `default` | ..." must state the setting's real default.
+	std::map<std::string, std::string> defaults;
+	auto st = docs.con.Query("SELECT name, value FROM duckdb_settings() WHERE name LIKE 'anofox_%'");
+	REQUIRE_FALSE(st->HasError());
+	for (idx_t i = 0; i < st->RowCount(); i++) {
+		defaults[duckdb_compat::ResultValue(*st, 0, i).ToString()] = duckdb_compat::ResultValue(*st, 1, i).ToString();
+	}
+	std::regex default_row(R"(\n\| `(anofox_[a-z_]+)` \| `([^`<]+)`)");
+	for (auto &page : SkillPages(docs.con)) {
+		const auto text = ReadFile(page);
+		const auto front = Frontmatter(text);
+		INFO("skill: " << page);
+		for (std::sregex_iterator it(text.begin(), text.end(), default_row), end; it != end; ++it) {
+			INFO("the skill gives " << (*it)[1].str() << " the default " << (*it)[2].str());
+			REQUIRE(defaults.count((*it)[1].str()) == 1);
+			REQUIRE(defaults[(*it)[1].str()] == (*it)[2].str());
+		}
+		for (std::sregex_iterator it(text.begin(), text.end(), code), end; it != end; ++it) {
+			INFO("the skill names `" << (*it)[1].str() << "`, which is neither a function nor a setting");
+			REQUIRE(names.count((*it)[1].str()) == 1);
+		}
+		for (std::sregex_iterator it(front.begin(), front.end(), bare), end; it != end; ++it) {
+			INFO("the description names " << (*it)[1].str() << ", which is neither a function nor a setting");
+			REQUIRE(names.count((*it)[1].str()) == 1);
+		}
+	}
+}
+
+TEST_CASE("the offline SQL blocks of every skill run", "[anofox_decide][docs]") {
+	size_t ran = 0;
+	Docs lister; // the glob needs a connection; the blocks get a fresh database per skill
+	const auto pages = SkillPages(lister.con);
+	for (auto &page : pages) {
+		// One database per skill, blocks in order: a later block may use a table an earlier one created.
+		Docs docs;
+		for (auto &block : SqlBlocks(ReadFile(page))) {
+			if (NeedsSomething(block)) {
+				continue; // parsed by "every SQL block of the documentation parses"
+			}
+			// Statements are reported by their block: not every statement can be printed (CREATE SECRET cannot).
+			for (auto &statement : docs.con.ExtractStatements(block)) {
+				auto result = docs.con.Query(std::move(statement));
+				INFO("skill: " << page);
+				INFO("block: " << block);
+				INFO("error: " << (result->HasError() ? result->GetError() : ""));
+				REQUIRE_FALSE(result->HasError());
+				ran++;
+			}
+		}
+	}
+	REQUIRE(ran >= 40);
 }
