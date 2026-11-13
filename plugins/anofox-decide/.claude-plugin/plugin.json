@@ -1,0 +1,12 @@
+{
+  "name": "anofox-decide",
+  "description": "Natural-language decision skills for the anofox_decide DuckDB extension: yes/no, choice and score questions as SQL functions, hosted and in-process decision models, API keys and secrets, local models and GPU, and evaluating and calibrating the probabilities.",
+  "version": "2026.10.31",
+  "author": {
+    "name": "DataZoo GmbH",
+    "url": "https://github.com/DataZooDE"
+  },
+  "homepage": "https://github.com/DataZooDE/anofox-decide",
+  "repository": "https://github.com/DataZooDE/anofox-decide",
+  "license": "MIT"
+}

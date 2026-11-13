@@ -128,12 +128,14 @@ FROM (SELECT refund, decide_probability(text, 'A refund is requested.', model :=
 
 ## Scoring many rows
 
-A remote call takes one text plus any number of questions, so the cost is **one request per row**
-whatever the SQL looks like. What you control is how many run at the same time.
+A remote request takes one text plus any number of questions, and each `decide_*` call in a query sends its
+own: the cost is **one request per row for each call**. Three scalar calls in one `SELECT` send three requests
+per row; `decide_answers` (or `decide_many`) with the three questions sends one. What you also control is how
+many run at the same time.
 
 | You write | Requests | Notes |
 |---|---|---|
-| `decide_probability` / `decide_choice` / `decide_score` / `decide_decision` / `decide_many` over a table | one per distinct row, **up to 8 at a time** | The fast path. A chunk of rows is evaluated together: identical rows are sent once, connections are reused, and a `429` makes the query back off |
+| `decide_probability` / `decide_choice` / `decide_score` / `decide_decision` / `decide_many` over a table | one per distinct row for each such call, **up to 8 at a time** | The fast path. A chunk of rows is evaluated together: identical rows are sent once, connections are reused, and a `429` makes the query back off |
 | `decide_table(text, questions)` with constant arguments | one request for all questions | One document, many questions |
 | `unnest(decide_answers(t.text, questions), recursive := true)` over a table | one per distinct row, **up to 8 at a time** | The fast way to get `decide_table`'s rows (one per question) for every row of a table: same columns, same answers, scalar speed |
 | `LATERAL decide_table(t.text, ...)` over a table | one per row, **one after another** | Gives the same rows, but DuckDB gives the function one row per call in a lateral join, so it cannot be concurrent (measured: with 8 DuckDB threads the peak is still 1 request in flight). Fine for a few rows; use `decide_answers` for many |

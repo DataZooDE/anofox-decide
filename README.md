@@ -5,12 +5,18 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <a href="https://duckdb.org"><img src="https://img.shields.io/badge/DuckDB-1.5.6%20%7C%202.0-green.svg" alt="DuckDB 1.5.6 | 2.0"></a>
   <a href="https://github.com/DataZooDE/anofox-decide/actions/workflows/MainDistributionPipeline.yml"><img src="https://github.com/DataZooDE/anofox-decide/actions/workflows/MainDistributionPipeline.yml/badge.svg?branch=main" alt="Build"></a>
+  <a href="#claude-code-skills"><img src="https://img.shields.io/badge/Claude_Code-AI_skills_plugin-8A2BE2.svg" alt="Claude Code AI skills plugin"></a>
 </p>
 
 Ask a yes/no question, pick one of the options *you* define, or rate a text on an ordered scale — as a
 SQL function, over any text or structured state. Purpose-built **decision models** answer with calibrated
 probabilities, not just labels, so you choose the threshold and can measure how good the answers are. No
 training, no prompt engineering, no glue code: the questions and the answer sets are written in the query.
+
+> **Built for AI pair programming.** anofox-decide ships an installable [Claude Code plugin](#claude-code-skills):
+> four skills that give your assistant tested knowledge of every function, provider, setting and error. Describe
+> the decision in plain English, and Claude writes correct `decide_*` SQL. Install it with
+> `/plugin marketplace add DataZooDE/anofox-decide`, then `/plugin install anofox-decide@anofox-decide`.
 
 ```sql
 SELECT id,
@@ -50,6 +56,7 @@ FROM tickets;
 - [Quick Start](#quick-start)
 - [Models](#models)
 - [Documentation](#documentation)
+- [Claude Code Skills](#claude-code-skills)
 - [Status](#status)
 - [Development](#development)
 - [License](#license)
@@ -112,6 +119,8 @@ SELECT id,
 FROM tickets ORDER BY id;
 ```
 
+> **Using an AI assistant?** Install the [Claude Code skills plugin](#claude-code-skills) so that it knows the full SQL API.
+
 The scalar functions score the rows concurrently. Several questions per text in one request, with one row
 per question: [`decide_answers`](docs/api/01-functions.md#several-questions-at-once). The full walk-through
 with real output and metrics: [Getting Started](docs/guides/01-getting-started.md); runnable files in
@@ -171,6 +180,32 @@ Which one to pick, and how they did on a 200-ticket evaluation: [Choosing a mode
 | [docs/SPIKE_RESULTS.md](docs/SPIKE_RESULTS.md) | History: provider contract spikes |
 | [docs/REVIEW_FOLLOWUP.md](docs/REVIEW_FOLLOWUP.md) | History: design decisions and model investigations |
 | [CHANGELOG.md](CHANGELOG.md) | Every release |
+
+## Claude Code Skills
+
+**Your AI assistant writes better decision SQL when it knows the API.** anofox-decide ships a
+[Claude Code](https://claude.com/claude-code) plugin with four skills. They teach Claude every function,
+question format, provider option, setting and error message, so a request like *"route these tickets to
+billing, defect or other, flag refunds, and tell me how accurate Liquid D1 is on our labels"* becomes
+correct SQL.
+
+Install it in any Claude Code session:
+
+```
+/plugin marketplace add DataZooDE/anofox-decide
+/plugin install anofox-decide@anofox-decide
+```
+
+| Skill | Covers |
+|---|---|
+| `anofox-decide-questions` | binary, choice and score questions; `decide_probability`, `decide_choice`, `decide_score`, `decide_table`, `decide_answers`; NULLs, refusals, scoring many rows |
+| `anofox-decide-models` | every provider, registering models and their options, the remote opt-in, API keys and secrets, settings, errors and their fixes |
+| `anofox-decide-local` | Julia-1 and Laya in-process, `decide_download`, your own ONNX export, long text, batching, GPU plugins |
+| `anofox-decide-evaluate` | metrics, ROC and calibration curves, comparing models, Platt calibration, thresholds, abstaining |
+
+The skills live in [`plugins/anofox-decide/`](plugins/anofox-decide/README.md). The test suite checks them on every
+build: every SQL block parses, the offline ones run, every function named exists, and every function has a
+skill. For in-repo development, load them with `claude --plugin-dir ./plugins/anofox-decide`.
 
 ## Status
 
