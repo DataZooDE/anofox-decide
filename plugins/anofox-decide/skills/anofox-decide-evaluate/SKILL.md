@@ -30,19 +30,23 @@ models, calibrate the chosen one, then pick the threshold.
 1. **Metrics take `(probability, outcome)`.** The probability must be 0 to 1, not percents or logits. The
    outcome is BOOLEAN or 0/1. Anything else is an error that says what to fix. NaN is an error too
    (`NULLIF(p, 'NaN'::DOUBLE)`).
-2. **NULL rows are skipped**, so refusals silently drop out. Coalesce them to the wrong side to count them
-   as errors (see `anofox-decide-questions`). Empty input gives NULL. `decide_auc` is NULL when only one
-   outcome is present.
+2. **NULL rows are skipped**, so refusals silently drop out, and two models end up compared on different
+   rows (the one that refuses the hard cases looks better). Always report `count(*) FILTER (WHERE p IS NULL)`
+   and score a refusal as wrong: `coalesce(p, CASE WHEN label THEN 0.0 ELSE 1.0 END)`. Empty input gives
+   NULL. `decide_auc` is NULL when only one outcome is present.
 3. **`decide_accuracy` thresholds at 0.5** unless you pass a third argument.
 4. **Calibration only changes yes/no probabilities** (`decide_probability`, `decide_decision`,
    `decide_many` / `decide_table` binary answers). Choice and score are untouched. Platt scaling has
    `a > 0`, so the ranking (AUC) never changes. It fixes the cut-off and the sharpness.
 5. **`decide_fit_calibration` refuses** a single outcome, constant probabilities, and models that rank no
-   better than chance. Fit on about 50 or more labelled rows. **Fit on one sample and check on another.**
-   Refit for each data distribution.
-6. **The `_by` producers take a table name as a string** plus unquoted columns:
-   `decide_metrics_by('runs', model, p, label)`. Materialise a CTE into a table first.
-7. **Don't evaluate on `stub`.** It returns 0.5 for everything.
+   better than chance. Fit on about 50 or more labelled rows. **Fit on one sample and check on another**,
+   which costs no requests: the check runs on the stored probabilities (see Calibration). Refit for each
+   data distribution.
+6. **The `_by` producers take a table or view name as a string** plus unquoted columns:
+   `decide_metrics_by('runs', model, p, label)`. A CTE is not visible to them: create a (temp) view or table
+   first. They return **long** tables (one row per point or metric), not one column per metric.
+7. **Don't evaluate on `stub`.** It returns 0.5 for every yes/no question, 1.0 on the first option of a
+   choice and a uniform distribution for a score.
 
 ## Metric aggregates
 
@@ -65,6 +69,8 @@ CREATE OR REPLACE TABLE runs AS SELECT * FROM (VALUES
 ) t(model, id, refund, p);
 
 SELECT model,
+       count(*) FILTER (WHERE p IS NULL)         AS refusals,   -- report them, and count them as wrong:
+       round(decide_accuracy(coalesce(p, CASE WHEN refund THEN 0.0 ELSE 1.0 END), refund), 3) AS acc_refusal_wrong,
        round(decide_accuracy(p, refund), 3)      AS acc_at_50,
        round(decide_accuracy(p, refund, 0.8), 3) AS acc_at_80,
        round(decide_auc(p, refund), 3)           AS auc,
@@ -76,8 +82,9 @@ FROM runs GROUP BY model ORDER BY brier;
 
 Read it like this: AUC says whether a model *ranks* well. Brier, ECE and log loss say whether its
 probabilities can be *taken at face value*. In the demo, `model-b` ranks perfectly (AUC 1) but is right only
-half the time at 0.5: its cut-off is wrong, so calibrate it or pick another threshold. `model-a` ranks one
-pair wrongly (AUC below 1) and is better at 0.5.
+half the time at 0.5: its cut-off is wrong, so calibrate it or pick another threshold. `model-a` ranks two of
+its 16 (true, false) pairs wrongly (AUC 0.875) but is right 7 of 8 times at 0.5. Rank candidates by AUC
+first: calibration fixes the cut-off and the sharpness, never the ranking.
 
 ## Building `runs` from real models
 
@@ -91,6 +98,11 @@ SELECT 'd1', id, refund,
        decide_probability(text, 'A refund is requested.', model := 'd1') FROM tickets;
 ```
 
+`jev-latest` (TypeSafe) and `d1` (Liquid) are **hosted** models: each row is a paid request, the text
+leaves the machine, and they need a key, `SET anofox_decide_allow_remote = true` and registration (see
+`anofox-decide-models`). Store `runs` once and compute every metric from the table. Local catalog models
+(`laya-multilingual`, `laya-typed-decisions`, `julia-1`) cost nothing per row (see `anofox-decide-local`).
+
 For choice questions, compare `decide_choice(...) = label` with `avg(...::INT)` per model. For score
 questions, compare `round(decide_score(...))` with the label's level index.
 
@@ -99,17 +111,24 @@ questions, compare `round(decide_score(...))` with the label's level index.
 ```text
 decide_roc_curve_by(source VARCHAR, group_col, p_col, outcome_col)                    -> TABLE (curve schema)
 decide_calibration_curve_by(source, group_col, p_col, outcome_col[, n_bins := 10])    -> TABLE (curve schema, Wilson intervals)
-decide_metrics_by(source, group_col, p_col, outcome_col)                              -> TABLE (summary: accuracy, auc, brier, ece, log_loss per group)
+decide_metrics_by(source, group_col, p_col, outcome_col)                              -> TABLE(group_col, model_id, metric, value, conf_low,
+                                                                                         conf_high, row_order)  -- long: one row per (group, metric);
+                                                                                         accuracy at 0.5; no auc row when one outcome is present;
+                                                                                         conf_low / conf_high are always NULL (no intervals)
 ```
 
 ```sql
 SELECT * FROM decide_metrics_by('runs', model, p, refund);
 SELECT * FROM decide_roc_curve_by('runs', model, p, refund);
 SELECT * FROM decide_calibration_curve_by('runs', model, p, refund, n_bins := 5);
+
+-- one row per model, one column per metric
+PIVOT (SELECT model_id, metric, value FROM decide_metrics_by('runs', model, p, refund)) ON metric USING first(value);
 ```
 
 ```sql
 -- needs: the anofox_visualization extension
+LOAD json;                     -- anofox_plot needs it (INSTALL json; once, if it is not installed)
 LOAD anofox_visualization;
 SELECT anofox_plot(t) FROM decide_roc_curve_by('runs', model, p, refund) t;          -- one ROC curve per model
 SELECT anofox_plot(t) FROM decide_calibration_curve_by('runs', model, p, refund) t;  -- reliability diagram
@@ -121,13 +140,28 @@ These follow the anofox integration contract (`curve` / `summary` schemas, a tra
 
 ## Calibration (Platt scaling)
 
+Fit on one half, check on the other, then register. The check costs no requests: a calibration is a pure
+function of the raw probability, `sigmoid(a * logit(p) + b)` with `p` clamped to [1e-6, 1 - 1e-6], exactly
+what a registered `calibration` applies, so it runs on the stored `p`.
+
 ```sql
--- the call on the demo data (8 rows: only to show it; a real fit needs 50+ rows of the same model)
-SELECT decide_fit_calibration(p, refund) AS spec FROM runs WHERE model = 'model-b';   -- 'platt:a,b'
+-- the demo has 8 rows per model: only to show the calls (split on ids here; with real data hash(id) % 2 = 0)
+SET VARIABLE spec = (SELECT decide_fit_calibration(p, refund) FROM runs WHERE model = 'model-b' AND id <= 4);
+SELECT getvariable('spec') AS spec;                                                  -- 'platt:a,b'
+
+-- held-out check: raw vs calibrated on the other half; Brier and ECE should drop, AUC stays
+WITH ab AS (SELECT string_split(replace(getvariable('spec'), 'platt:', ''), ',') AS v),
+held AS (SELECT refund, p, greatest(least(p, 1 - 1e-6), 1e-6) AS q
+         FROM runs WHERE model = 'model-b' AND id > 4)
+SELECT round(decide_brier_score(p, refund), 3) AS brier_raw,
+       round(decide_brier_score(1 / (1 + exp(-(v[1]::DOUBLE * ln(q / (1 - q)) + v[2]::DOUBLE))), refund), 3) AS brier_cal,
+       round(decide_ece(p, refund), 3) AS ece_raw,
+       round(decide_ece(1 / (1 + exp(-(v[1]::DOUBLE * ln(q / (1 - q)) + v[2]::DOUBLE))), refund), 3) AS ece_cal
+FROM held, ab;
 ```
 
-The real flow fits on one model's own raw probabilities and registers **that** spec on a variant of
-**the same** model. A calibration never carries over to another model or another kind of data:
+When the check passes, refit on all rows of **that** model and register the spec on a variant of **the
+same** model. A calibration never carries over to another model or another kind of data:
 
 ```sql
 -- needs: a Liquid key and runs holding d1's probabilities on 50+ labelled rows (built as in the section above)
@@ -136,11 +170,11 @@ SET VARIABLE d1_spec = (SELECT decide_fit_calibration(p, refund) FROM runs WHERE
 SELECT decide_register_model('d1-cal', 'liquid',
                              MAP {'model': 'd1', 'calibration': getvariable('d1_spec')});       -- 2. register
 SELECT calibration FROM decide_models() WHERE model = 'd1-cal';                                 -- 3. check
--- every yes/no probability of 'd1-cal' is now calibrated; local models take the MAP as the 6th argument
+-- every yes/no probability of 'd1-cal' is now calibrated. Hosted models take the MAP as the 3rd argument,
+-- a model registered from your own ONNX files as the 6th (see anofox-decide-local)
 ```
 
-Check the gain on a held-out half with `decide_brier_score` / `decide_ece`. In the project's evaluation,
-calibration cut D1's refund error from 23% to 9%.
+In the project's evaluation, calibration cut D1's refund error from 23% to 9%.
 
 ## Picking a threshold for `decide_decision`
 
@@ -163,6 +197,7 @@ Then use it explicitly: `decide_decision(text, 'A refund is requested.', 0.8, mo
 
 ```sql
 -- route only when the winning option has at least 60% probability; NULL = send to a human
+-- (on stub the first option always wins with 1.0: a real model is needed to see a NULL)
 SELECT id,
        CASE WHEN list_max(map_values(d)) >= 0.6
             THEN list_extract(map_keys(d), list_position(map_values(d), list_max(map_values(d)))) END AS team

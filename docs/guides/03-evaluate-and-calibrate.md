@@ -28,6 +28,7 @@ anofox integration contract (the `curve` and `summary` schemas), so
 takes a table name, the column that tells the models (or groups) apart, the probability and the outcome:
 
 ```sql
+LOAD json;                  -- anofox_plot needs it
 LOAD anofox_visualization;
 SELECT anofox_plot(t) FROM decide_roc_curve_by('runs', model, p, refund) t;          -- one ROC curve per model
 SELECT anofox_plot(t) FROM decide_calibration_curve_by('runs', model, p, refund) t;  -- reliability diagram

@@ -101,9 +101,10 @@ SELECT id, decide_token_count(text, model := 'julia-1') AS tokens FROM tickets O
 
 ```sql
 SET anofox_decide_on_truncate = 'ignore';   -- score the shortened input instead of failing (default 'error')
-SET anofox_decide_max_length = 8192;        -- julia-1 window in tokens (Laya uses its own config)
+SET anofox_decide_max_length = 4096;        -- julia-1 window, 32..8192 (8192 = default = maximum); lower saves memory. Laya ignores it
 SET anofox_decide_head_length = 512;        -- tokens reserved for the question and options
 SET anofox_decide_batch_tokens = 16384;     -- batch the rows of a chunk (0 = off; 1024..131072)
+SET anofox_decide_max_length = 8192;
 SET anofox_decide_on_truncate = 'error';
 SET anofox_decide_batch_tokens = 0;
 ```
@@ -130,7 +131,8 @@ CALL decide_download_runtime('cuda');         -- or 'rocm', 'mlx'
 ```sql
 -- needs: an AMD GPU with ROCm and MIGraphX (refused on CUDA, MLX and the CPU: they compile nothing)
 SET anofox_decide_device = 'rocm';
-CALL decide_gpu_precompile('laya-multilingual');   -- compile every shape bucket up front, minutes each, once
+CALL decide_gpu_precompile('laya-multilingual');               -- compile every shape bucket up front, minutes each, once
+CALL decide_gpu_precompile('laya-multilingual', seq := 1024);  -- or only the buckets that hold texts of up to 1024 tokens
 ```
 
 | Setting | Default | Meaning |
@@ -150,7 +152,7 @@ GPU probabilities match the CPU to within 4e-5 on the evaluation set.
 | `... enable_external_access is off` | `SET enable_external_access = true;` or `SET anofox_decide_device = 'cpu';` |
 | `does not match its published checksum` | the plugin was deleted. Retry `CALL decide_download_runtime('<backend>');` |
 | `a runtime library it needs is missing` / `ran out of device memory` | install CUDA/cuDNN, MIGraphX or MLX. For memory, `SET anofox_decide_batch_tokens = 4096;` |
-| `the text is N tokens but the local model reads at most M` | shorten it, raise `anofox_decide_max_length` (julia-1), or `SET anofox_decide_on_truncate = 'ignore';` |
+| `the text is N tokens but the local model reads at most M` | the window cannot grow (8192 tokens is the maximum). Shorten the text (strip quoted replies and signatures, or split it into parts and combine the scores), lower `anofox_decide_head_length` when the question is short (julia-1), or accept the cut: `SET anofox_decide_on_truncate = 'ignore';` |
 
 Reference pages: [Local models](https://github.com/DataZooDE/anofox-decide/blob/main/docs/api/03-local-models.md),
 [GPU acceleration](https://github.com/DataZooDE/anofox-decide/blob/main/docs/api/04-gpu.md),

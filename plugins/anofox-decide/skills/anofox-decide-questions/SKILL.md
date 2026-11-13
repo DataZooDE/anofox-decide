@@ -9,8 +9,9 @@ description: >
   several questions per text with decide_table (one row per question), decide_answers (the same
   rows as a LIST(STRUCT), unnested for whole tables) and decide_many (JSON). Also covers the
   questions JSON format, the decide_table output columns, NULLs and refusals, the model := argument
-  and the anofox_decide_model default, structured state via to_json, and how many requests run
-  at once when scoring many rows. Use when writing decide_probability / decide_decision /
+  and the anofox_decide_model default, structured state via to_json, installing and loading the
+  extension, and the cheapest way to score a whole table (one decide_answers request per distinct
+  text, joined back). Use when writing decide_probability / decide_decision /
   decide_choice / decide_choice_distribution / decide_score / decide_table / decide_answers /
   decide_many calls: classifying tickets, routing, flagging, rating, or tagging rows with an LLM
   decision model in SQL.
@@ -27,14 +28,21 @@ You write the question and the possible answers in the query. A purpose-built de
 with **probabilities**, not just labels. Picking and registering a model: `anofox-decide-models`.
 Measuring the answers: `anofox-decide-evaluate`.
 
+```sql
+-- needs: network, once per machine (a community extension)
+INSTALL anofox_decide FROM community;
+LOAD anofox_decide;   -- in every new session
+```
+
 ## Critical gotchas
 
 1. **No model answers until one is chosen.** A call needs `model := '<id>'` or a default set with
    `SET anofox_decide_model = '<id>'`. Otherwise it fails with `no model selected`. Hosted models must be
    registered first and need `SET anofox_decide_allow_remote = true` (see `anofox-decide-models`).
    The built-in `stub` model needs nothing. Use it to check the SQL.
-2. **`stub` returns constants:** probability 0.5, the first option, the middle level. It never passes for a
-   real answer. Do not read results produced with it.
+2. **`stub` returns constants:** probability 0.5 for yes/no, the first option (with probability 1.0) for a
+   choice, a uniform distribution (so the middle level) for a score. It never passes for a real answer. Do
+   not read results produced with it.
 3. **`decide_decision` never guesses a threshold.** Its third argument is required and is a fraction
    (`0.7`, not `70`). To pick a cut-off from data, see `anofox-decide-evaluate`.
 4. **`decide_score` returns an expected level, not a label.** The result is a 0-based `DOUBLE`. `1.4` means
@@ -47,14 +55,15 @@ Measuring the answers: `anofox-decide-evaluate`.
    literal). `score` takes a question plus ordered levels.
 7. **Many rows: do not use `LATERAL decide_table(...)`.** DuckDB calls a table function once per row in a
    lateral join, so the rows are scored one after another. Use
-   `unnest(decide_answers(text, questions), recursive := true)`, which runs up to 8 requests at a time.
+   `unnest(decide_answers(text, questions), recursive := true)`, which scores the rows concurrently.
 8. **NULL in, NULL out.** A NULL text, question, option list or threshold gives NULL, and nothing is sent.
    A **refusal** (OpenAI Decisions, Gemini safety blocks) is also NULL in the scalar functions, and
    `kind = 'refusal'` in `decide_table` / `decide_answers`. The query keeps running.
-9. **Cost is one request per distinct row, per `decide_*` call.** Three scalar calls in one `SELECT` send
-   three requests per text. For several questions about the same text in **one** request, use
-   `decide_answers` (or `decide_many`). Identical `(text, question)` pairs in one chunk are sent once.
-   Nothing is cached across queries.
+9. **Cost is one request per row, per `decide_*` call.** Three scalar calls in one `SELECT` send three
+   requests per text. For several questions about the same text in **one** request, use `decide_answers`
+   (or `decide_many`). Identical rows are sent once only **within one chunk** (2048 rows), and nothing is
+   cached across queries: when texts repeat, score `SELECT DISTINCT text` and join the answers back (see
+   the recipe at the end). Store paid answers in a table instead of re-running the query.
 
 ## The three kinds
 
@@ -194,9 +203,9 @@ FROM (SELECT refund, decide_probability(text, 'A refund is requested.', model :=
 
 | You write | Requests |
 |---|---|
-| a scalar function (`decide_probability`, `decide_choice`, `decide_score`, `decide_decision`, `decide_many`) over a table | one per distinct row **for each such call**, up to 8 at a time |
+| a scalar function (`decide_probability`, `decide_choice`, `decide_score`, `decide_decision`, `decide_many`) over a table | one per row **for each such call** (repeats within a chunk are sent once), up to 8 at a time per chunk |
 | `decide_table(...)` with constant arguments | one request for all of its questions |
-| `unnest(decide_answers(t.text, ...), recursive := true)` over a table | one per distinct row, up to 8 at a time |
+| `unnest(decide_answers(t.text, ...), recursive := true)` over a table | one per row for all questions (repeats within a chunk are sent once), up to 8 at a time per chunk |
 | `LATERAL decide_table(t.text, ...)` | one per row, **one after another**. Fine for a handful of rows only |
 
 ```sql
@@ -205,27 +214,45 @@ SET anofox_decide_timeout_ms = 60000;    -- per request
 SET anofox_decide_max_retries = 5;       -- after a 429, a 5xx or a connection failure
 ```
 
-A `429` halves the window and honours `Retry-After`. The first failing row's error is reported, and no
-new requests start after it. Local models score one text at a time, or in batches with
+The limit applies per chunk of rows. On a large table DuckDB scores several chunks in parallel threads, so
+up to `threads × max_concurrency` requests can be in flight. For a strict rate limit, lower both (e.g.
+`SET threads = 1;` for the scoring query). A `429` halves the window and honours `Retry-After`. The first
+failing row's error is reported, and no new requests start after it, so on a very large table insert in
+chunks (`... WHERE text NOT IN (SELECT text FROM answers) LIMIT 10000`) and keep what was already paid for. Local models score one text at a time, or in batches with
 `anofox_decide_batch_tokens` (see `anofox-decide-local`).
 
 ## Recipe: triage a ticket table
 
-Three scalar calls are the easiest to read. With a hosted model they cost three requests per ticket. The
-`decide_answers` form above asks the same in one request per ticket.
+The cheapest form: every distinct text is sent **once**, with all three questions in that one request.
+Three scalar calls (`decide_probability` + `decide_choice` + `decide_score`) give the same answers for
+three times the requests.
 
 ```sql
 SET anofox_decide_model = 'stub';        -- replace with a registered real model
+CREATE OR REPLACE TABLE triage_answers AS
+SELECT text,
+       max(probability) FILTER (WHERE question_id = 'refund')  AS p_refund,
+       max(choice)      FILTER (WHERE question_id = 'team')    AS team,
+       max(score)       FILTER (WHERE question_id = 'urgency') AS urgency   -- 0 = low ... 3 = critical
+FROM (SELECT text, unnest(decide_answers(text,
+        '[{"id": "refund",  "kind": "binary", "instruction": "A refund is requested."},
+          {"id": "team",    "kind": "choice", "instruction": "Which team owns this?", "options": ["billing", "defect", "other"]},
+          {"id": "urgency", "kind": "score",  "instruction": "How urgent is this?", "levels": ["low", "normal", "high", "critical"]}]'),
+        recursive := true)
+      FROM (SELECT DISTINCT text FROM tickets WHERE text IS NOT NULL))
+GROUP BY text;
+
+-- join back: repeated texts share one answer, and tickets without text stay (with NULL answers)
 CREATE OR REPLACE TABLE triaged AS
-SELECT id, text,
-       decide_probability(text, 'A refund is requested.')                                AS p_refund,
-       decide_choice(text, 'Which team owns this?', ['billing', 'defect', 'other'])      AS team,
-       decide_score(text, 'How urgent is this?', ['low', 'normal', 'high', 'critical'])  AS urgency
-FROM tickets;
+SELECT t.id, t.text, a.p_refund, a.team, a.urgency
+FROM tickets t LEFT JOIN triage_answers a USING (text);
 
 SELECT team, count(*) AS n, round(avg(urgency), 2) AS mean_urgency
 FROM triaged GROUP BY team ORDER BY n DESC;
 ```
+
+`unnest` drops a row whose `decide_answers` is NULL (NULL text), which is why the result is joined back to
+`tickets`. A refusal keeps its rows with `kind = 'refusal'` and NULL answers.
 
 Reference pages: [Functions](https://github.com/DataZooDE/anofox-decide/blob/main/docs/api/01-functions.md),
 [Getting started](https://github.com/DataZooDE/anofox-decide/blob/main/docs/guides/01-getting-started.md).
