@@ -16,6 +16,7 @@ on:
     paths:
       - 'tools/ci/check_plugin_pin.sh'
       - 'tools/ci/release_assets_complete.sh'
+      - 'tools/ci/release_draft.sh'
       - 'src/include/decide_plugin_artifacts.hpp'
       - '.github/workflows/gpu_release_gate.yml'
       - '.github/workflows/_gpu_release_assets.yml'
@@ -50,3 +51,11 @@ jobs:
             echo "::error::five assets were accepted as complete"; exit 1
           fi
           test "${out}" = "mlx_plugin.sha256" || { echo "::error::wrong missing list: ${out}"; exit 1; }
+      - name: Only the racers' empty drafts are dropped; the first release, published ones and ones with assets stay
+        run: |
+          out="$(printf '%s\n' '300 true 0' '100 true 0' '200 true 0' | tools/ci/release_draft.sh extras - | tr '\n' ' ')"
+          test "${out}" = "200 300 " || { echo "::error::wrong duplicates: '${out}'"; exit 1; }
+          out="$(printf '%s\n' '100 true 0' '200 true 2' '300 false 0' | tools/ci/release_draft.sh extras -)"
+          test -z "${out}" || { echo "::error::deleted a draft with assets or a published release: '${out}'"; exit 1; }
+          out="$(printf '%s\n' '100 false 6' | tools/ci/release_draft.sh extras -)"
+          test -z "${out}" || { echo "::error::a single release is never a duplicate: '${out}'"; exit 1; }

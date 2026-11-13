@@ -213,7 +213,9 @@ that `DECIDE_PLUGIN_RELEASE_TAG` (`src/include/decide_plugin_artifacts.hpp`) nam
    `--precompile`) and `plugins/mlx/gpu_test/device_parity.py` (Apple silicon). CI has no GPU, so these are the only
    scoring evidence. `DECIDE_TEST_MIGRAPHX=1` also runs the MIGraphX tiny-fixture test.
 3. **Push the tag.** The three plugin workflows build, verify and upload to a *draft* release, which is published
-   only when all six assets (three plugins, three `.sha256` files) are attached. A manual (workflow_dispatch) run of
+   only when all six assets (three plugins, three `.sha256` files) are attached. The three workflows share one
+   draft: `tools/ci/release_draft.sh` keeps the first one created for the tag and deletes a racer's empty
+   duplicate, so the release page shows exactly one release per tag. A manual (workflow_dispatch) run of
    a plugin workflow does the verification without touching any release.
 4. **After publishing**, on a clean Linux and a clean macOS machine run `CALL decide_accelerate();` against the real
    assets and score the two recorded sentences; confirm that a wrong tag's 404 names the tag and the asset.

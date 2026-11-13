@@ -50,6 +50,13 @@ All notable changes to `anofox_decide` are documented here. The format follows
   match, DuckDB's own order applies (longest scope, then a `SERVICE` secret, temporary before persistent, then the
   name); `key_source` and key errors name the secret used.
 
+### Fixed
+- **A release no longer leaves two empty draft releases behind.** The three GPU plugin workflows each created a
+  draft for the tag (a draft is not bound to its tag, so none of them saw the others'). They now share one
+  (`tools/ci/release_draft.sh`: the first draft created for the tag; empty duplicates are deleted), and upload and
+  publish address that release by id, so the assets can never split across drafts. The eight empty drafts of the
+  2026.10.14 to 2026.10.31 releases were removed.
+
 ## [2026.10.31] - 2026-10-31
 
 ### Added
