@@ -94,3 +94,28 @@ JULIA_WEIGHTS_DIR=./weights/julia-1 JULIA_ONNX=./out/julia1.onnx uv run pytest  
 `scripts/compare_upstream.py` compares the DuckDB output with the upstream Python implementation on the
 example tickets (`test/fixtures/support_tickets.csv`); each local ONNX model reproduces its upstream
 reference to within 5e-5 in probability on a small check set.
+
+## Half-precision evidence gates (CPU only, no GPU needed)
+
+Tooling that decides whether the committed graphs can run with half-precision GEMMs on a GPU. Everything
+works on throwaway copies; `resources/` is never modified. Run the scripts with the exporter venv python
+and `-I`. The real-weight gates read the cached checkpoints under `~/.cache/anofox-decide/<model>/<rev>/`
+(`ANOFOX_DECIDE_CACHE` overrides the root) and take an optional `--tickets tickets.csv` (the output of
+`tools/eval/make_sample.py`; without it the 9 fixture tickets are used). `tiny` is the offline fixture.
+
+- `scripts/half_ready.py --out DIR graph_*.onnx` applies two CPU-neutral passes and writes patched copies:
+  `sanitize_masks` (every float Constant that is `-inf` or `<= -65504`, namely the encoder's
+  `finfo(float32).min` masks and the head `-inf` masks, becomes `-10000.0`; `+inf`/NaN are refused) and
+  `rotary_outer_product_to_mul` (each `*rotary_emb*` K=1 MatMul becomes a broadcasting Mul). Both are
+  importable functions and idempotent. The tiny fixture has the other mask form (`-inf` Where plus an
+  `IsNaN` guard), so it exercises the `-inf` path only, not the `finfo.min` one.
+- `scripts/gate_g0_identity.py`: original vs patched (masks only, rotary only, both) on ORT CPU with the
+  same weights over padded batches; requires max |delta| of `scores` on the valid markers to be exactly 0.0.
+- `scripts/gate_g1_nan.py`: fp16 conversion (`onnxruntime.transformers.float16`, `keep_io_types`, RoPE /
+  LayerNorm / Softmax / Erf / Where / Cast kept fp32) of the original and the half-ready graph; counts
+  non-finite valid-marker scores (padded rows beyond the 64-token window give NaN on the original graph) and
+  measures the half-GEMM-only policy's probability delta.
+- `scripts/gate_g2_ranges.py`: max |x| and smallest non-zero |x| at every MatMul input and output (reduced
+  inside the graph, so T = 8192 is feasible) and the verdict fp16 feasible / bf16 needed per model.
+
+Each prints a final `G0/G1/G2 PASS|FAIL|FINDING` line. `tests/test_half_ready.py` covers the passes offline.
