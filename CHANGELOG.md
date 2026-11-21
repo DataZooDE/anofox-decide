@@ -6,6 +6,13 @@ All notable changes to `anofox_decide` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **Builds on DuckDB v2.0.1** (was v2.0.0), the version community-extensions builds against. The 2.0 line in CI
+  now builds every platform on pull requests too, runs the smoke test against the released v2.0.1 CLI, and
+  deploys. The v1.5.6 line is unchanged. Local builds default to v2.0.1 (the `duckdb` submodule).
+- Release deploys write the versioned path (`anofox_decide/vYYYY.MM.DD/...`) only from the tag run, so a
+  `main` push of the same commit can no longer overwrite a release with its pre-tag build.
+
 ## [2026.11.13] - 2026-11-13
 
 ### Added

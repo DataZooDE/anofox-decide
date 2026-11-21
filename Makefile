@@ -10,10 +10,11 @@ endif
 EXT_NAME=anofox_decide
 EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 
-# DuckDB / extension-ci-tools pins (same as tabfm: v1.5.6 / v1.5-variegata).
+# DuckDB / extension-ci-tools pins for local builds: v2.0.1 / v2.0-cyanoptera (the duckdb
+# submodule). CI also builds, smoke-tests and deploys v1.5.6 (v1.5-variegata).
 # Bootstrap: `make init` clones the submodules at these pins.
-DUCKDB_VER ?= v1.5.6
-CI_TOOLS_BRANCH ?= v1.5-variegata
+DUCKDB_VER ?= v2.0.1
+CI_TOOLS_BRANCH ?= v2.0-cyanoptera
 
 # Release/distribution builds link ONNX Runtime statically via the vcpkg
 # "ort-vcpkg" manifest feature (single self-contained loadable extension).
@@ -24,6 +25,19 @@ EXT_RELEASE_FLAGS += -DVCPKG_MANIFEST_FEATURES=ort-vcpkg
 endif
 
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
+
+# `make test_release` (what CI runs) must run OUR suite below on every extension-ci-tools line. v1.5-variegata
+# routes it to test_release_internal; v2.0-cyanoptera gives it its own recipe (run_tests.py over test/*), which
+# skipped the Catch2 [anofox_decide] cases and the offline environment on the DuckDB 2.0 line. This recipe
+# replaces that one (make reports "overriding recipe" on v2.0-cyanoptera) and keeps SKIP_TESTS working (CI sets it
+# for the build outside the Docker container, where unittest cannot run).
+ifeq ($(SKIP_TESTS),1)
+test_release:
+	@echo "Tests are skipped in this run..."
+else
+test_release: test_release_internal
+	@:
+endif
 
 BUILD_ROOT:=$(or $(DECIDE_BUILD_ROOT),build)
 
