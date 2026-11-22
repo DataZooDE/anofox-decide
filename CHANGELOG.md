@@ -6,6 +6,16 @@ All notable changes to `anofox_decide` are documented here. The format follows
 
 ## [Unreleased]
 
+## [2026.11.23] - 2026-11-22
+
+### Fixed
+- Release deploys to get.erpl.io upload with a repo-local copy of the aws-cli upload script
+  (`scripts/extension-upload-single.sh`). DuckDB 2.0.1's own copy needs rclone and `AWS_ENDPOINT_URL`, so every
+  DuckDB 2.0 deploy of v2026.11.22 failed and that release has no 2.0.1 binaries on get.erpl.io; this release does.
+
+### Known issues
+- The CUDA plugin is still not attached (see 2026.11.22).
+
 ## [2026.11.22] - 2026-11-22
 
 ### Changed
@@ -383,7 +393,8 @@ First public release.
 - Platforms: Linux (amd64, arm64), macOS (arm64) and Windows (amd64) against DuckDB 1.5.6. Not built:
   macOS on Intel (ONNX Runtime ships no archive after v1.23.2), WebAssembly, musl and MinGW.
 
-[Unreleased]: https://github.com/DataZooDE/anofox-decide/compare/v2026.11.22...HEAD
+[Unreleased]: https://github.com/DataZooDE/anofox-decide/compare/v2026.11.23...HEAD
+[2026.11.23]: https://github.com/DataZooDE/anofox-decide/compare/v2026.11.22...v2026.11.23
 [2026.11.22]: https://github.com/DataZooDE/anofox-decide/compare/v2026.11.13...v2026.11.22
 [2026.11.13]: https://github.com/DataZooDE/anofox-decide/compare/v2026.10.31...v2026.11.13
 [2026.10.31]: https://github.com/DataZooDE/anofox-decide/compare/v2026.10.26...v2026.10.31
