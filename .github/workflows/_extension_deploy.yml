@@ -12,6 +12,14 @@ on:
       duckdb_version:
         required: true
         type: string
+      # extension-ci-tools ref the BUILD job used (its ci_tools_version). The deploy arch matrix is parsed from
+      # it, not from this repository's extension-ci-tools submodule: v2.0-cyanoptera dropped osx_amd64, so the
+      # submodule's matrix would make one line expect an artifact the build never produced (artifact not found)
+      # or silently skip an arch it did produce. Falls back to duckdb_version when empty.
+      ci_tools_version:
+        required: false
+        type: string
+        default: ""
       exclude_archs:
         required: false
         type: string
@@ -42,6 +50,7 @@ jobs:
     name: Generate matrix
     timeout-minutes: 15
     runs-on: ubuntu-latest
+    if: ${{ inputs.deploy_latest || inputs.deploy_versioned }}
     outputs:
       deploy_matrix: ${{ steps.parse-matrices.outputs.deploy_matrix }}
     steps:
@@ -53,7 +62,18 @@ jobs:
       - name: Checkout DuckDB to version
         run: |
           cd duckdb
+          git fetch origin tag ${{ inputs.duckdb_version }} || true
           git checkout ${{ inputs.duckdb_version }}
+
+      - name: Checkout extension-ci-tools to version
+        # The SAME tools ref the build job used, so the parsed arch matrix lines up with what it built.
+        # Branch first, tag fallback.
+        run: |
+          cd extension-ci-tools
+          REF="${{ inputs.ci_tools_version != '' && inputs.ci_tools_version || inputs.duckdb_version }}"
+          git fetch --depth 1 origin "$REF" || \
+            git fetch --depth 1 origin tag "$REF"
+          git checkout FETCH_HEAD
 
       - id: parse-matrices
         run: |
@@ -87,7 +107,18 @@ jobs:
       - name: Checkout DuckDB to version
         run: |
           cd duckdb
+          git fetch origin tag ${{ inputs.duckdb_version }} || true
           git checkout ${{ inputs.duckdb_version }}
+
+      - name: Checkout extension-ci-tools to version
+        # The SAME tools ref the build job used, so the parsed arch matrix lines up with what it built.
+        # Branch first, tag fallback.
+        run: |
+          cd extension-ci-tools
+          REF="${{ inputs.ci_tools_version != '' && inputs.ci_tools_version || inputs.duckdb_version }}"
+          git fetch --depth 1 origin "$REF" || \
+            git fetch --depth 1 origin tag "$REF"
+          git checkout FETCH_HEAD
 
       - uses: actions/download-artifact@v4
         with:
