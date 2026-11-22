@@ -6,12 +6,21 @@ All notable changes to `anofox_decide` are documented here. The format follows
 
 ## [Unreleased]
 
+## [2026.11.22] - 2026-11-22
+
 ### Changed
 - **Builds on DuckDB v2.0.1** (was v2.0.0), the version community-extensions builds against. The 2.0 line in CI
   now builds every platform on pull requests too, runs the smoke test against the released v2.0.1 CLI, and
   deploys. The v1.5.6 line is unchanged. Local builds default to v2.0.1 (the `duckdb` submodule).
 - Release deploys write the versioned path (`anofox_decide/vYYYY.MM.DD/...`) only from the tag run, so a
   `main` push of the same commit can no longer overwrite a release with its pre-tag build.
+- The ONNX Runtime source archive (v1.29.0) falls back to a DataZoo mirror
+  (`DataZooDE/onnxruntime-mirror`, the unmodified upstream archive, same SHA512) when github.com/microsoft/onnxruntime
+  is unreachable.
+
+### Known issues
+- The CUDA plugin is not attached to this release: its build downloads the prebuilt ONNX Runtime GPU archive from
+  github.com/microsoft/onnxruntime, which is unavailable. The MIGraphX and MLX plugins are attached as before.
 
 ## [2026.11.13] - 2026-11-13
 
@@ -374,7 +383,8 @@ First public release.
 - Platforms: Linux (amd64, arm64), macOS (arm64) and Windows (amd64) against DuckDB 1.5.6. Not built:
   macOS on Intel (ONNX Runtime ships no archive after v1.23.2), WebAssembly, musl and MinGW.
 
-[Unreleased]: https://github.com/DataZooDE/anofox-decide/compare/v2026.11.13...HEAD
+[Unreleased]: https://github.com/DataZooDE/anofox-decide/compare/v2026.11.22...HEAD
+[2026.11.22]: https://github.com/DataZooDE/anofox-decide/compare/v2026.11.13...v2026.11.22
 [2026.11.13]: https://github.com/DataZooDE/anofox-decide/compare/v2026.10.31...v2026.11.13
 [2026.10.31]: https://github.com/DataZooDE/anofox-decide/compare/v2026.10.26...v2026.10.31
 [2026.10.26]: https://github.com/DataZooDE/anofox-decide/compare/v2026.10.24...v2026.10.26
