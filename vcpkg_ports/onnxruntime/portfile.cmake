@@ -7,11 +7,18 @@ if(VCPKG_TARGET_IS_OSX OR VCPKG_TARGET_IS_IOS)
     endif()
 endif()
 
-vcpkg_from_github(
-    OUT_SOURCE_PATH SOURCE_PATH
-    REPO microsoft/onnxruntime
-    REF "v${VERSION}"
+# Source archive: upstream GitHub first, then an unmodified DataZoo mirror
+# (github.com/microsoft/onnxruntime returned 404 on 2026-11-21). Same SHA512 and
+# the same FILENAME vcpkg_from_github uses, so existing download caches still hit.
+vcpkg_download_distfile(ORT_ARCHIVE
+    URLS
+        "https://github.com/microsoft/onnxruntime/archive/v${VERSION}.tar.gz"
+        "https://github.com/DataZooDE/onnxruntime-mirror/releases/download/v${VERSION}/onnxruntime-v${VERSION}.tar.gz"
+    FILENAME "microsoft-onnxruntime-v${VERSION}.tar.gz"
     SHA512 9ea05f5279fc93fd243a967f3664aaabe9216f6e3ce9358ead662653984476e9cb0cb950947f31f8602541224c946a3ceac91d7c1990ffe2b8314d61361c300f
+)
+vcpkg_extract_source_archive(SOURCE_PATH
+    ARCHIVE "${ORT_ARCHIVE}"
     PATCHES
         fix-cmake.patch # .framework install, re2 -pthread override (WASM)
         fix-cmake-cuda.patch # vcpkg-provided cudnn_frontend/cutlass instead of ORT's own FetchContent
