@@ -46,7 +46,7 @@ WRAPPER = ("import resource, subprocess, sys\n"
 def cell(duckdb, ext, model, tokens, rows, batch, extra):
     texts = ",".join("('" + text_of(tokens, i).replace("'", "''") + "')" for i in range(rows))
     query = (f"SELECT count(*) FROM (SELECT unnest(decide_answers(text, '{QUESTIONS}', model := '{model}'), recursive := true) FROM t);\n"
-             f"SELECT 'engine=' || current_setting('anofox_decide_local_engine') || ' tokens=' || round(avg(decide_token_count(text, '{model}'))) FROM t;")
+             f"SELECT 'engine=' || (SELECT coalesce(string_agg(DISTINCT engine, ',' ORDER BY engine), 'none') FROM __anofox_decide_local_sessions()) || ' tokens=' || round(avg(decide_token_count(text, '{model}'))) FROM t;")
     sql = (f"LOAD '{ext}';\n{extra}\nSET anofox_decide_batch_tokens = {batch};\n"
            f"CREATE TABLE t AS SELECT * FROM (VALUES {texts}) v(text);\n"
            + query + "\n")

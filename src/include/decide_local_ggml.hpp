@@ -18,13 +18,18 @@ struct DecideLocalBatch;
 struct DecideLoadedWeights;
 class DecideGgmlModel;
 
+//! Both open functions check the graph's inputs against `required_inputs` right after parsing, before the op coverage, as the ONNX
+//! Runtime path does: a graph that is not a scores graph is told to export again, not to switch engine.
+
 //! A user-registered graph: the bytes of a full .onnx (initializers inline). `what` names it in errors.
 //! `bytes` is consumed: it is released as soon as the graph is parsed (the parsed graph keeps its own copy of the weights).
-shared_ptr<DecideGgmlModel> DecideGgmlOpenFull(string bytes, const string &what, int threads, const string &function);
+shared_ptr<DecideGgmlModel> DecideGgmlOpenFull(string bytes, const string &what, const vector<string> &required_inputs, int threads,
+                                               const string &function);
 
 //! A catalog model: an embedded weight-free graph whose external initializers are served from `weights` (the model owns them).
 shared_ptr<DecideGgmlModel> DecideGgmlOpenWeightFree(const void *graph, idx_t size, unique_ptr<DecideLoadedWeights> weights,
-                                                     const string &what, int threads, const string &function);
+                                                     const string &what, const vector<string> &required_inputs, int threads,
+                                                     const string &function);
 
 //! The graph's inputs (initializers excluded), for the input-contract check.
 vector<string> DecideGgmlInputs(const DecideGgmlModel &model);

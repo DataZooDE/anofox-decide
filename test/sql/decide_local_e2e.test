@@ -179,15 +179,16 @@ SELECT round(decide_accuracy(g.p_refund, k.refund), 4), round(avg((g.team = k.te
 0.4889	0.3778
 
 # several questions at once (decide_answers, one padded batch per text) give the scalar answers
-query IIII
-SELECT count(*),
+query IIIIII
+-- one row per question per ticket: a renamed question_id would make the filters below vacuous
+SELECT count(*) FILTER (a.question_id = 'refund'), count(*) FILTER (a.question_id = 'team'), count(*) FILTER (a.question_id = 'mood'),
        count(*) FILTER (a.question_id = 'refund' AND NOT same_p(a.probability, g.p_refund)),
        count(*) FILTER (a.question_id = 'team' AND NOT coalesce(a.choice = g.team, false)),
        count(*) FILTER (a.question_id = 'mood' AND NOT same_x(a.score, g.mood))
 FROM (SELECT id, unnest(decide_answers(text, '[{"id": "refund", "kind": "binary", "instruction": "A refund is requested."}, {"id": "team", "kind": "choice", "instruction": "Which team owns this?", "options": ["billing", "defect", "account", "shipping", "other"]}, {"id": "mood", "kind": "score", "instruction": "How frustrated is the writer?", "levels": ["calm", "frustrated", "angry"]}]', model := 'julia-1'), recursive := true) FROM tickets) a
 JOIN got_julia_1 g USING (id)
 ----
-135	0	0	0
+45	45	45	0	0	0
 
 # decide_many returns one JSON document per text with all three answers
 query I
@@ -351,15 +352,16 @@ SELECT round(decide_accuracy(g.p_refund, k.refund), 4), round(avg((g.team = k.te
 0.9318	0.7273
 
 # several questions at once (decide_answers, one padded batch per text) give the scalar answers
-query IIII
-SELECT count(*),
+query IIIIII
+-- one row per question per ticket: a renamed question_id would make the filters below vacuous
+SELECT count(*) FILTER (a.question_id = 'refund'), count(*) FILTER (a.question_id = 'team'), count(*) FILTER (a.question_id = 'mood'),
        count(*) FILTER (a.question_id = 'refund' AND NOT same_p(a.probability, g.p_refund)),
        count(*) FILTER (a.question_id = 'team' AND NOT coalesce(a.choice = g.team, false)),
        count(*) FILTER (a.question_id = 'mood' AND NOT same_x(a.score, g.mood))
 FROM (SELECT id, unnest(decide_answers(text, '[{"id": "refund", "kind": "binary", "instruction": "A refund is requested."}, {"id": "team", "kind": "choice", "instruction": "Which team owns this?", "options": ["billing", "defect", "account", "shipping", "other"]}, {"id": "mood", "kind": "score", "instruction": "How frustrated is the writer?", "levels": ["calm", "frustrated", "angry"]}]', model := 'laya-multilingual'), recursive := true) FROM tickets) a
 JOIN got_laya_multilingual g USING (id)
 ----
-132	0	0	0
+44	44	44	0	0	0
 
 # decide_many returns one JSON document per text with all three answers
 query I
@@ -523,15 +525,16 @@ SELECT round(decide_accuracy(g.p_refund, k.refund), 4), round(avg((g.team = k.te
 0.8409	0.6818
 
 # several questions at once (decide_answers, one padded batch per text) give the scalar answers
-query IIII
-SELECT count(*),
+query IIIIII
+-- one row per question per ticket: a renamed question_id would make the filters below vacuous
+SELECT count(*) FILTER (a.question_id = 'refund'), count(*) FILTER (a.question_id = 'team'), count(*) FILTER (a.question_id = 'mood'),
        count(*) FILTER (a.question_id = 'refund' AND NOT same_p(a.probability, g.p_refund)),
        count(*) FILTER (a.question_id = 'team' AND NOT coalesce(a.choice = g.team, false)),
        count(*) FILTER (a.question_id = 'mood' AND NOT same_x(a.score, g.mood))
 FROM (SELECT id, unnest(decide_answers(text, '[{"id": "refund", "kind": "binary", "instruction": "A refund is requested."}, {"id": "team", "kind": "choice", "instruction": "Which team owns this?", "options": ["billing", "defect", "account", "shipping", "other"]}, {"id": "mood", "kind": "score", "instruction": "How frustrated is the writer?", "levels": ["calm", "frustrated", "angry"]}]', model := 'laya-typed-decisions'), recursive := true) FROM tickets) a
 JOIN got_laya_typed_decisions g USING (id)
 ----
-132	0	0	0
+44	44	44	0	0	0
 
 # decide_many returns one JSON document per text with all three answers
 query I

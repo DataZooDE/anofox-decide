@@ -6,7 +6,9 @@ refund decision (p >= 0.5) or routing choice differs; the probabilities are comp
 
   python3 tools/eval/compare_runs.py <reference dir> <candidate dir> [--models julia-1,laya-multilingual,laya-typed-decisions]
 
-Exits 1 when any flip is found or a metric differs at 3 decimals.
+Exits 1 when any flip is found, a metric differs at 3 decimals, a probability moved by more than --max-dp (default 1e-3, the GPU
+bar; the CPU runs agree to ~1e-5), or a run was not served by the engine it is meant to test (--ref-engine ort, --cand-engine ggml;
+the engine recorded is the one that SERVED, read from __anofox_decide_local_sessions(), so a GPU plugin or a silent fallback shows).
 """
 import argparse
 import csv
@@ -28,6 +30,9 @@ def main():
     ap.add_argument("reference")
     ap.add_argument("candidate")
     ap.add_argument("--models", default="julia-1,laya-multilingual,laya-typed-decisions")
+    ap.add_argument("--max-dp", type=float, default=1e-3)
+    ap.add_argument("--ref-engine", default="ort")
+    ap.add_argument("--cand-engine", default="ggml")
     a = ap.parse_args()
     ref_dir, cand_dir = Path(a.reference), Path(a.candidate)
     ref_report = json.loads((ref_dir / "report.json").read_text())
@@ -68,7 +73,13 @@ def main():
               f"engine {res_r.get('local_engine')} -> {res_c.get('local_engine')}")
         for line in flips + metrics:
             print("   ", line)
-        bad = bad or bool(flips) or bool(metrics)
+        served = [(which, want, res.get("local_engine")) for which, want, res in
+                  (("reference", a.ref_engine, res_r), ("candidate", a.cand_engine, res_c)) if res.get("local_engine") != want]
+        for which, want, got in served:
+            print(f"    the {which} run was served by '{got}', not '{want}'")
+        if max_diff > a.max_dp:
+            print(f"    max |dp| {max_diff:.2e} is above --max-dp {a.max_dp:g}")
+        bad = bad or bool(flips) or bool(metrics) or bool(served) or max_diff > a.max_dp
     sys.exit(1 if bad else 0)
 
 

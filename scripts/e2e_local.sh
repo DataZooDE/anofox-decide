@@ -17,6 +17,8 @@ for v in ANOFOX_DECIDE_LOCAL_ENGINE DECIDE_EXPORTS_DIR JULIA_WEIGHTS_DIR JULIA_O
 	fi
 done
 export DECIDE_REAL_WEIGHTS=1 DATAZOO_DISABLE_TELEMETRY=1
+# offline, like the Makefile's DECIDE_OFFLINE_ENV: a key in the shell must not turn this into a network run
+unset TYPESAFE_API_KEY LIQUID_API_KEY CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID OPENAI_API_KEY GEMINI_API_KEY HF_TOKEN
 # the unittest runs each SQL test with its own HOME: the downloaded models are passed in explicitly
 export DECIDE_CACHE_DIR="${DECIDE_CACHE_DIR:-$HOME/.cache/anofox-decide}"
 fail=0
@@ -24,9 +26,9 @@ fail=0
 "$unittest" "test/sql/decide_local_e2e_registered.test" || fail=1
 out=$("$unittest" "[anofox_decide]" 2>&1) || fail=1
 echo "$out" | tail -3
-if echo "$out" | grep -q "skipped (needs"; then
+if echo "$out" | grep -qE "skipped \(needs|skipped: "; then
 	echo "e2e_local: a real-weight C++ test was skipped:"
-	echo "$out" | grep "skipped (needs"
+	echo "$out" | grep -E "skipped \(needs|skipped: "
 	fail=1
 fi
 [ "$fail" = 0 ] && echo "e2e_local: OK on engine $ANOFOX_DECIDE_LOCAL_ENGINE"

@@ -2,6 +2,7 @@
 
 #include "decide_errors.hpp"
 #include "decide_local_nli.hpp"
+#include "decide_ort_errors.hpp"
 #include "decide_local_weights.hpp"
 
 #include "anofox_ggml_adapter/cpu_support.hpp"
@@ -34,7 +35,8 @@ namespace {
 
 //! What a user can do when the ggml engine cannot run a graph (until ONNX Runtime is removed, the way back to it).
 const char *kEngineRemedy = "SET anofox_decide_local_engine = 'ort'; and please report the model";
-const char *kExportFix = "export the model again with tools/export_julia (see https://github.com/DataZooDE/anofox-decide#local-models) and "
+const char *kExportFix = "export the model again with tools/export_julia (see "
+                         "https://github.com/DataZooDE/anofox-decide/blob/main/docs/api/03-local-models.md#your-own-exported-model) and "
                          "register the .onnx file it writes";
 
 bool IsMemory(const std::exception &e) {
@@ -98,7 +100,8 @@ shared_ptr<DecideGgmlModel> Finish(shared_ptr<DecideGgmlModel> model, int thread
 
 } // namespace
 
-shared_ptr<DecideGgmlModel> DecideGgmlOpenFull(string bytes, const string &what, int threads, const string &function) {
+shared_ptr<DecideGgmlModel> DecideGgmlOpenFull(string bytes, const string &what, const vector<string> &required_inputs, int threads,
+                                               const string &function) {
 	RequireCpu(function);
 	auto model = make_shared_ptr<DecideGgmlModel>();
 	model->what = what;
@@ -113,12 +116,14 @@ shared_ptr<DecideGgmlModel> DecideGgmlOpenFull(string bytes, const string &what,
 		                                          kExportFix));
 	}
 	string().swap(bytes); // the file's bytes are no longer needed: halve the load peak of a large model
+	DecideRequireGraphInputs(DecideGgmlInputs(*model), required_inputs, function, what);
 	RequireOps(model->graph, what, function);
 	return Finish(std::move(model), threads, function);
 }
 
 shared_ptr<DecideGgmlModel> DecideGgmlOpenWeightFree(const void *graph, idx_t size, unique_ptr<DecideLoadedWeights> weights,
-                                                     const string &what, int threads, const string &function) {
+                                                     const string &what, const vector<string> &required_inputs, int threads,
+                                                     const string &function) {
 	RequireCpu(function);
 	auto model = make_shared_ptr<DecideGgmlModel>();
 	model->what = what;
@@ -127,6 +132,7 @@ shared_ptr<DecideGgmlModel> DecideGgmlOpenWeightFree(const void *graph, idx_t si
 	} catch (const std::exception &e) {
 		throw InternalException("anofox_decide: the embedded graph '%s' cannot be read: %s", what, e.what());
 	}
+	DecideRequireGraphInputs(DecideGgmlInputs(*model), required_inputs, function, what);
 	RequireOps(model->graph, what, function);
 	model->weights = std::move(weights);
 	auto &w = *model->weights;
@@ -196,9 +202,16 @@ vector<vector<float>> DecideGgmlScore(DecideGgmlModel &model, const DecideLocalB
 	}
 	const auto it = out.find("scores");
 	if (it == out.end() || it->second.shape.size() != 2 || it->second.shape[0] != batch.batch || it->second.shape[1] != batch.markers) {
-		throw InvalidInputException(DecideMsg(function, "the graph '" + model.what + "' did not return scores of shape [" +
-		                                                    std::to_string(batch.batch) + ", " + std::to_string(batch.markers) + "]",
-		                                      kExportFix));
+		// the ONNX Runtime path's wording (decide_local_nli.cpp), naming what the graph returned
+		const auto dims = it == out.end() ? std::vector<int64_t>() : it->second.shape;
+		throw InvalidInputException(DecideMsg(
+		    function,
+		    "the graph '" + model.what + "' returned scores of shape [" + std::to_string(dims.size() > 0 ? dims[0] : -1) + ", " +
+		        std::to_string(dims.size() > 1 ? dims[1] : -1) + "], expected [" + std::to_string(batch.batch) + ", " +
+		        std::to_string(batch.markers) + "]",
+		    "export the model again with tools/export_julia (see "
+		    "https://github.com/DataZooDE/anofox-decide/blob/main/docs/api/03-local-models.md#your-own-exported-model"
+		    ") and register the .onnx file it writes"));
 	}
 	const auto &scores = it->second.data;
 	vector<vector<float>> rows;

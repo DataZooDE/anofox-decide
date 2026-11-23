@@ -37,7 +37,6 @@ import json
 import math
 import os
 import re
-import re
 import subprocess
 import sys
 import time
@@ -154,7 +153,8 @@ COPY (
   ORDER BY 1, 2
 ) TO '{esc(str(res))}' (HEADER);
 {serving_sql}
-SELECT '@@engine ' || current_setting('anofox_decide_local_engine');
+-- the engine that SERVED (a GPU plugin session says plugin:<backend>; a remote model has no local session: none)
+SELECT '@@engine ' || (SELECT coalesce(string_agg(DISTINCT engine, ',' ORDER BY engine), 'none') FROM __anofox_decide_local_sessions());
 """
     e = dict(env, DATAZOO_DISABLE_TELEMETRY="1")
     t0 = time.time()
@@ -186,7 +186,7 @@ SELECT '@@engine ' || current_setting('anofox_decide_local_engine');
     # ru_maxrss is KiB on Linux, bytes on macOS
     rss_gb = int(usage[-1][1]) / (1024 ** 3 if sys.platform == "darwin" else 1024 ** 2) if usage else None
     cpu_s = float(usage[-1][2]) if usage else None
-    found = re.search(r"@@engine (\w+)", p.stdout)
+    found = re.search(r"@@engine ([\w:,]+)", p.stdout)
     RESOURCES[name] = {"wall_s": dt, "cpu_s": cpu_s, "peak_rss_gb": rss_gb, "local_engine": found.group(1) if found else "?"}
     print(f"ok   {name}: {dt:.0f}s" + (f" on {serving or 'n/a'}" if device is not None else "") +
           f", engine {RESOURCES[name]['local_engine']}" + (f", peak RSS {rss_gb:.2f} GB, CPU {cpu_s:.0f}s" if usage else ""),

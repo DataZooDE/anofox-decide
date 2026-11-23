@@ -424,6 +424,13 @@ TEST_CASE("ONNX Runtime failures while opening a graph are mapped to project err
 		                           "not used 'x'"));
 		REQUIRE_THAT(msg, Contains(" Fix: this is not a scores graph from tools/export_julia"));
 	}
+	SECTION("a graph that is not a scores graph is told so, even when it also uses an op the engine lacks") {
+		// The input contract is checked before the op coverage on both engines: the fix is to export again, not to switch engine.
+		auto msg = OpenError(con, "test/fixtures/wrong_inputs_unsupported_op.onnx");
+		INFO(msg);
+		REQUIRE_THAT(msg, Contains("has the inputs 'x', but a local model is fed"));
+		REQUIRE_THAT(msg, Contains(" Fix: this is not a scores graph from tools/export_julia"));
+	}
 	SECTION("the exception types are expected user errors (no report-it footer)") {
 		REQUIRE_THROWS_AS(DecideLocalSession::Open(*con.context, "test/fixtures/not_a_model.txt"), InvalidInputException);
 		REQUIRE_THROWS_AS(DecideLocalSession::Open(*con.context, "test/fixtures/wrong_inputs.onnx"), InvalidInputException);

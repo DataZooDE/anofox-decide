@@ -142,8 +142,8 @@ def answers_sql(model, table):
 
 
 def run(duckdb, ext, sql):
-    # The reference is ONNX Runtime, pinned here whatever ANOFOX_DECIDE_LOCAL_ENGINE says.
-    full = f"LOAD '{ext}';\nSET anofox_decide_local_engine = 'ort';\n{sql}"
+    # The reference is ONNX Runtime on the CPU, pinned here whatever ANOFOX_DECIDE_LOCAL_ENGINE or an installed GPU plugin says.
+    full = f"LOAD '{ext}';\nSET anofox_decide_local_engine = 'ort';\nSET anofox_decide_device = 'cpu';\n{sql}"
     env = {k: v for k, v in os.environ.items() if k != "ANOFOX_DECIDE_LOCAL_ENGINE"}
     out = subprocess.run([duckdb, "-unsigned", "-csv"], input=full, text=True, capture_output=True,
                          env={**env, "DATAZOO_DISABLE_TELEMETRY": "1"})
@@ -219,15 +219,16 @@ SELECT round(decide_accuracy(g.p_refund, k.refund), 4), round(avg((g.team = k.te
 {metrics['acc']}	{metrics['routing']}
 
 # several questions at once (decide_answers, one padded batch per text) give the scalar answers
-query IIII
-SELECT count(*),
+query IIIIII
+-- one row per question per ticket: a renamed question_id would make the filters below vacuous
+SELECT count(*) FILTER (a.question_id = 'refund'), count(*) FILTER (a.question_id = 'team'), count(*) FILTER (a.question_id = 'mood'),
        count(*) FILTER (a.question_id = 'refund' AND NOT same_p(a.probability, g.p_refund)),
        count(*) FILTER (a.question_id = 'team' AND NOT coalesce(a.choice = g.team, false)),
        count(*) FILTER (a.question_id = 'mood' AND NOT same_x(a.score, g.mood))
 FROM (SELECT id, unnest(decide_answers(text, '{QUESTIONS_JSON}', model := '{model}'), recursive := true) FROM tickets) a
 JOIN {t} g USING (id)
 ----
-{3 * n}	0	0	0
+{n}	{n}	{n}	0	0	0
 
 # decide_many returns one JSON document per text with all three answers
 query I

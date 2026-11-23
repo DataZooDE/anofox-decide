@@ -266,8 +266,8 @@ shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, 
 	auto handle = shared_ptr<DecideLocalSession>(new DecideLocalSession(graph_path, engine));
 	if (engine == "ggml") {
 		// Read through DuckDB's filesystem (F4): same access gate as read_csv.
-		handle->ggml = DecideGgmlOpenFull(DecideReadLocalFile(context, graph_path, "graph"), graph_path, EngineThreads(context), function);
-		DecideRequireGraphInputs(DecideGgmlInputs(*handle->ggml), kGraphInputs, function, graph_path);
+		handle->ggml = DecideGgmlOpenFull(DecideReadLocalFile(context, graph_path, "graph"), graph_path, kGraphInputs, EngineThreads(context),
+		                                  function);
 		cache->sessions[key] = handle;
 		return handle;
 	}
@@ -371,8 +371,8 @@ shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, 
 	auto handle = shared_ptr<DecideLocalSession>(new DecideLocalSession(base, engine));
 	if (engine == "ggml") {
 		auto weights = DecideLoadWeights(map, entry.weights_path, entry.id, function.c_str());
-		handle->ggml = DecideGgmlOpenWeightFree(graph.data, graph.size, std::move(weights), entry.bundled_graph, EngineThreads(context), function);
-		DecideRequireGraphInputs(DecideGgmlInputs(*handle->ggml), kGraphInputs, function, entry.bundled_graph);
+		handle->ggml = DecideGgmlOpenWeightFree(graph.data, graph.size, std::move(weights), entry.bundled_graph, kGraphInputs,
+		                                        EngineThreads(context), function);
 		cache->sessions[key] = handle;
 		return handle;
 	}
