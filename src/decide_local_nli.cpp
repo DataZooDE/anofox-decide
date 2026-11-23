@@ -1,14 +1,17 @@
 // DecideLocalNli — Julia-1 local scoring. ONLY TU including onnxruntime.
 
 #include "decide_local_nli.hpp"
+#include "duckdb_compat.hpp"
 #include "decide_bundled_resources.hpp"
 #include "decide_catalog.hpp"
 #include "decide_devices.hpp"
 #include "decide_errors.hpp"
+#include "decide_local_ggml.hpp"
 #include "decide_local_weights.hpp"
 #include "decide_ort_errors.hpp"
 #include "decide_plugin_loader.hpp"
 #include "decide_provider.hpp"
+#include "decide_registration.hpp"
 #include "decide_remote.hpp" // DecideQuestion/DecideAnswer (provider-neutral structs)
 #include "decide_tokenizer.hpp"
 
@@ -16,6 +19,9 @@
 #include "yyjson.hpp"
 
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/parallel/task_scheduler.hpp"
+#include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/function/table_function.hpp"
 #include "duckdb/storage/object_cache.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_system.hpp"
@@ -195,7 +201,35 @@ struct DecideLocalSession::Impl {
 	unique_ptr<DecidePluginSession> plugin;
 };
 
+string DecideLocalEngine(ClientContext &context, const string &function) {
+	Value v;
+	string engine = "ort";
+	if (context.TryGetCurrentSetting("anofox_decide_local_engine", v) && !v.IsNull()) {
+		engine = StringValue::Get(v);
+	}
+	if (engine.rfind("invalid:", 0) == 0) {
+		throw InvalidInputException(DecideMsg(
+		    function, "the environment variable ANOFOX_DECIDE_LOCAL_ENGINE is '" + engine.substr(8) +
+		                  "', which names no engine ('ort' or 'ggml')",
+		    "fix or unset ANOFOX_DECIDE_LOCAL_ENGINE, or SET anofox_decide_local_engine = 'ort';"));
+	}
+	return engine;
+}
+
 namespace {
+
+//! The ggml engine's threads: DuckDB's own thread count (anofox_decide runs one forward pass at a time per model).
+int EngineThreads(ClientContext &context) {
+	return static_cast<int>(TaskScheduler::GetScheduler(context).NumberOfThreads());
+}
+
+const vector<string> kGraphInputs = {"input_ids", "attention_mask", "marker_pos", "marker_mask", "qtype"};
+
+//! A CPU session belongs to the engine that built it: the engine is part of its cache key, so switching anofox_decide_local_engine never
+//! hands back a session of the other engine (tabfm's device-switch rule). GPU sessions run in a plugin whatever the setting.
+string EngineKey(const string &engine, const string &key) {
+	return engine + "|" + key;
+}
 
 // The session cache is keyed by what the session runs on: the CPU session of a graph is not the CUDA session
 // of the same graph, and a different precision is a different session.
@@ -221,14 +255,22 @@ shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, 
 		                                      "register it with the graph as the 3rd argument: SELECT "
 		                                      "decide_register_model('<id>', 'local', '<model.onnx path>')"));
 	}
+	const string engine = DecideLocalEngine(context, function);
 	auto cache = LocalCache(context);
 	std::lock_guard<std::mutex> guard(cache->lock);
-	const string key = SessionKey(graph_path, DecideDeviceChoice(), "fp32");
+	const string key = EngineKey(engine, SessionKey(graph_path, DecideDeviceChoice(), "fp32"));
 	auto it = cache->sessions.find(key);
 	if (it != cache->sessions.end()) {
 		return it->second;
 	}
-	auto handle = shared_ptr<DecideLocalSession>(new DecideLocalSession(graph_path));
+	auto handle = shared_ptr<DecideLocalSession>(new DecideLocalSession(graph_path, engine));
+	if (engine == "ggml") {
+		// Read through DuckDB's filesystem (F4): same access gate as read_csv.
+		handle->ggml = DecideGgmlOpenFull(DecideReadLocalFile(context, graph_path, "graph"), graph_path, EngineThreads(context), function);
+		DecideRequireGraphInputs(DecideGgmlInputs(*handle->ggml), kGraphInputs, function, graph_path);
+		cache->sessions[key] = handle;
+		return handle;
+	}
 	handle->impl = make_shared_ptr<Impl>();
 	// Read through DuckDB's filesystem (F4): same access gate as read_csv.
 	handle->impl->model_bytes = DecideReadLocalFile(context, graph_path, "graph");
@@ -280,7 +322,9 @@ shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, 
 	const string base = "weights:" + entry.bundled_graph + "|" + entry.weights_path;
 	const string plugin_path =
 	    device.backend == "cpu" ? string() : DecidePluginPath(DecidePluginDir(context), device.backend);
-	const string key = SessionKey(base, device, precision, plugin_path);
+	const string engine = DecideLocalEngine(context, function);
+	const string key = device.backend == "cpu" ? EngineKey(engine, SessionKey(base, device, precision, plugin_path))
+	                                           : SessionKey(base, device, precision, plugin_path);
 	auto cache = LocalCache(context);
 	std::lock_guard<std::mutex> guard(cache->lock);
 	auto it = cache->sessions.find(key);
@@ -316,7 +360,7 @@ shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, 
 		params.arch = device.arch.c_str();
 		params.precision = precision.c_str();
 		params.device_ordinal = device.ordinal;
-		auto handle = shared_ptr<DecideLocalSession>(new DecideLocalSession(base));
+		auto handle = shared_ptr<DecideLocalSession>(new DecideLocalSession(base, "plugin:" + device.backend));
 		handle->impl = make_shared_ptr<Impl>();
 		handle->impl->plugin = DecideLoadPlugin(plugin_path, params, function);
 		cache->sessions[key] = handle;
@@ -324,7 +368,14 @@ shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, 
 	}
 	auto map = DecideParseTensorMap(map_resource.data, map_resource.size,
 	                                entry.bundled_map);
-	auto handle = shared_ptr<DecideLocalSession>(new DecideLocalSession(base));
+	auto handle = shared_ptr<DecideLocalSession>(new DecideLocalSession(base, engine));
+	if (engine == "ggml") {
+		auto weights = DecideLoadWeights(map, entry.weights_path, entry.id, function.c_str());
+		handle->ggml = DecideGgmlOpenWeightFree(graph.data, graph.size, std::move(weights), entry.bundled_graph, EngineThreads(context), function);
+		DecideRequireGraphInputs(DecideGgmlInputs(*handle->ggml), kGraphInputs, function, entry.bundled_graph);
+		cache->sessions[key] = handle;
+		return handle;
+	}
 	handle->impl = make_shared_ptr<Impl>();
 	auto &im = *handle->impl;
 	im.weights = DecideLoadWeights(map, entry.weights_path, entry.id, function.c_str());
@@ -373,8 +424,12 @@ vector<vector<float>> DecideLocalSession::Score(const DecideLocalBatch &batch, c
 		throw InvalidInputException(DecideMsg(function, "refusing an empty batch for the local model",
 		                                      "pass at least one question and a text"));
 	}
-	if (impl->plugin) {
+	runs++;
+	if (impl && impl->plugin) {
 		return impl->plugin->Run(batch, function);
+	}
+	if (ggml) {
+		return DecideGgmlScore(*ggml, batch, function);
 	}
 	auto &im = impl->mem;
 	std::vector<int64_t> shape_bm {batch.batch, batch.markers};
@@ -989,6 +1044,53 @@ int64_t DecideLocalTokenCount(ClientContext &context, const DecideModelEntry &en
                               const string &function) {
 	const auto &tok = TokenizerFor(context, entry.tokenizer_path, entry.id, function);
 	return (int64_t)tok.Encode(CleanText(tok, text)).size();
+}
+
+//--- __anofox_decide_local_sessions(): which engine answered -------------------------------------------------
+
+namespace {
+
+struct LocalSessionsState : public GlobalTableFunctionState {
+	vector<std::tuple<string, string, int64_t>> rows; // model (graph or weights key), engine, forward passes
+	idx_t offset = 0;
+};
+
+unique_ptr<FunctionData> LocalSessionsBind(ClientContext &, TableFunctionBindInput &, vector<LogicalType> &types,
+                                           duckdb_compat::BindNames &names) {
+	duckdb_compat::AssignBindNames(names, {"model", "engine", "runs"});
+	types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::BIGINT};
+	return make_uniq<TableFunctionData>();
+}
+
+unique_ptr<GlobalTableFunctionState> LocalSessionsInit(ClientContext &context, TableFunctionInitInput &) {
+	auto state = make_uniq<LocalSessionsState>();
+	auto cache = LocalCache(context);
+	std::lock_guard<std::mutex> guard(cache->lock);
+	for (auto &kv : cache->sessions) {
+		state->rows.emplace_back(kv.second->GraphPath(), kv.second->Engine(), kv.second->Runs());
+	}
+	return std::move(state);
+}
+
+void LocalSessionsScan(ClientContext &, TableFunctionInput &data, DataChunk &output) {
+	auto &state = data.global_state->Cast<LocalSessionsState>();
+	idx_t n = 0;
+	while (state.offset < state.rows.size() && n < STANDARD_VECTOR_SIZE) {
+		auto &row = state.rows[state.offset++];
+		output.SetValue(0, n, Value(std::get<0>(row)));
+		output.SetValue(1, n, Value(std::get<1>(row)));
+		output.SetValue(2, n, Value::BIGINT(std::get<2>(row)));
+		n++;
+	}
+	output.SetCardinality(n);
+}
+
+} // namespace
+
+void RegisterDecideLocalDiagnostics(ExtensionLoader &loader) {
+	// A development diagnostic for the move to ggml (docs/GGML_DECIDE.md), not part of the documented surface.
+	TableFunction func("__anofox_decide_local_sessions", {}, LocalSessionsScan, LocalSessionsBind, LocalSessionsInit);
+	loader.RegisterFunction(func);
 }
 
 } // namespace anofox

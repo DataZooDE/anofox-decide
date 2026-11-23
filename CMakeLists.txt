@@ -30,6 +30,10 @@ find_package(OpenSSL REQUIRED)
 #   CMAKE_PREFIX_PATH=../anofox-tabfm/build/release/vcpkg_installed/x64-linux
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/ort.cmake)
 
+# The ggml engine shared with anofox-tabfm (vendor/anofox-ggml-adapter, ggml as its submodule): the in-process models move to it from
+# ONNX Runtime (docs/GGML_DECIDE.md; anofox_decide_local_engine picks the engine until ONNX Runtime is removed).
+include(${CMAKE_CURRENT_SOURCE_DIR}/vendor/anofox-ggml-adapter/cmake/anofox_ggml_adapter.cmake)
+
 # Weight-free graphs + tensor maps from resources/ compiled into the extension.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_resources.cmake)
 
@@ -59,6 +63,7 @@ set(EXTENSION_SOURCES
         src/decide_remote.cpp
         src/decide_tokenizer.cpp
         src/decide_local_nli.cpp
+        src/decide_local_ggml.cpp
         src/decide_ort_errors.cpp
         src/decide_local_validate.cpp
         src/decide_metrics.cpp
@@ -74,6 +79,7 @@ set(EXTENSION_SOURCES
         src/decide_gpu_precompile.cpp
         src/decide_contract.cpp
         ${DECIDE_BUNDLED_RESOURCES_SRC}
+        ${ANOFOX_GGML_ADAPTER_SOURCES}
 )
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
@@ -90,7 +96,9 @@ foreach(_tgt ${EXTENSION_NAME} ${LOADABLE_EXTENSION_NAME})
         datazoo_banner
         OpenSSL::SSL
         OpenSSL::Crypto
-        decide_onnxruntime)
+        decide_onnxruntime
+        anofox_ggml)
+    add_dependencies(${_tgt} ggml)
 endforeach()
 
 # posthog-telemetry reads the machine id from the IORegistry on macOS; DuckDB

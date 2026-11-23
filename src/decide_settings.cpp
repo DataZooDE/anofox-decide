@@ -7,6 +7,8 @@
 
 #include <algorithm>
 
+#include <cstdlib>
+
 namespace duckdb {
 namespace anofox {
 
@@ -168,6 +170,28 @@ void ValidateOnTruncate(ClientContext &context, SetScope scope, Value &parameter
 	parameter = Value(v);
 }
 
+void ValidateLocalEngine(ClientContext &context, SetScope scope, Value &parameter) {
+	ValidateNonNull("anofox_decide_local_engine", "'ort'", context, scope, parameter);
+	auto v = StringUtil::Lower(StringValue::Get(parameter.DefaultCastAs(LogicalType::VARCHAR)));
+	if (v != "ort" && v != "ggml") {
+		throw InvalidInputException(DecideMsg("anofox_decide_local_engine", "must be 'ort' or 'ggml', got '" + v + "'",
+		                                      "SET anofox_decide_local_engine = 'ort';"));
+	}
+	parameter = Value(v);
+}
+
+//! The default engine: ANOFOX_DECIDE_LOCAL_ENGINE, so a whole test run can target either engine. A value that names
+//! neither engine is kept as "invalid:<value>" and refused when a local model is opened (an extension load cannot
+//! throw usefully): a mistyped variable must not turn a "ggml" run into a silent ONNX Runtime run.
+string DefaultLocalEngine() {
+	const char *env = std::getenv("ANOFOX_DECIDE_LOCAL_ENGINE");
+	if (!env || !*env) {
+		return "ort";
+	}
+	const string v = StringUtil::Lower(env);
+	return v == "ort" || v == "ggml" ? v : "invalid:" + string(env);
+}
+
 void ValidateEndpoint(ClientContext &context, SetScope scope, Value &parameter) {
 	ValidateNonNull("anofox_decide_endpoint", "https://api.typesafe.ai", context, scope, parameter);
 	auto v = StringValue::Get(parameter.DefaultCastAs(LogicalType::VARCHAR));
@@ -247,6 +271,11 @@ void RegisterDecideSettings(ExtensionLoader &loader) {
 	                          "Where the GPU plugins are installed and loaded from (empty: the 'plugins' folder of "
 	                          "anofox_decide_cache_dir). CALL decide_accelerate() fills it",
 	                          LogicalType::VARCHAR, Value(""));
+	config.AddExtensionOption("anofox_decide_local_engine",
+	                          "Development switch while the in-process models move from ONNX Runtime to ggml: 'ort' "
+	                          "(the reference) or 'ggml'. Default from the ANOFOX_DECIDE_LOCAL_ENGINE environment "
+	                          "variable, else 'ort'. Removed once ONNX Runtime is gone",
+	                          LogicalType::VARCHAR, Value(DefaultLocalEngine()), ValidateLocalEngine);
 	config.AddExtensionOption("anofox_decide_head_length",
 	                          "Tokens reserved for the question and its options in local models (default 512); must "
 	                          "stay below anofox_decide_max_length",

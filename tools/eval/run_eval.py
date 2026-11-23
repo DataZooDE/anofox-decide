@@ -36,6 +36,8 @@ import csv
 import json
 import math
 import os
+import re
+import re
 import subprocess
 import sys
 import time
@@ -152,13 +154,22 @@ COPY (
   ORDER BY 1, 2
 ) TO '{esc(str(res))}' (HEADER);
 {serving_sql}
+SELECT '@@engine ' || current_setting('anofox_decide_local_engine');
 """
     e = dict(env, DATAZOO_DISABLE_TELEMETRY="1")
     t0 = time.time()
-    p = subprocess.run([str(duckdb), "-unsigned", "-c", sql], capture_output=True, text=True, env=e)
+    # A one-child wrapper: its RUSAGE_CHILDREN is exactly this DuckDB run's (peak RSS, CPU time).
+    wrapper = ("import resource, subprocess, sys\n"
+               "r = subprocess.run(sys.argv[1:])\n"
+               "u = resource.getrusage(resource.RUSAGE_CHILDREN)\n"
+               "print(f'@@usage {u.ru_maxrss} {u.ru_utime + u.ru_stime}', file=sys.stderr)\n"
+               "sys.exit(r.returncode)\n")
+    p = subprocess.run([sys.executable, "-I", "-c", wrapper, str(duckdb), "-unsigned", "-c", sql],
+                       capture_output=True, text=True, env=e)
     dt = time.time() - t0
+    usage = [l.split() for l in p.stderr.splitlines() if l.startswith("@@usage ")]
     if p.returncode != 0 or not res.exists():
-        err = "\n".join(l for l in p.stderr.splitlines() if "Schema error" not in l and l.strip())[:600]
+        err = "\n".join(l for l in p.stderr.splitlines() if "Schema error" not in l and not l.startswith("@@usage") and l.strip())[:600]
         if device not in (None, "auto") and "anofox_decide_device" in err:
             # An explicit device that cannot serve the model is a hard error of the extension, never a CPU run.
             raise DeviceRefused(f"REFUSED {name}: the extension would not serve it on '{device}': {err}")
@@ -172,8 +183,19 @@ COPY (
         if why:
             res.unlink(missing_ok=True)
             raise DeviceRefused(f"REFUSED {name}: {why}")
-    print(f"ok   {name}: {dt:.0f}s" + (f" on {serving or 'n/a'}" if device is not None else ""), file=sys.stderr)
+    # ru_maxrss is KiB on Linux, bytes on macOS
+    rss_gb = int(usage[-1][1]) / (1024 ** 3 if sys.platform == "darwin" else 1024 ** 2) if usage else None
+    cpu_s = float(usage[-1][2]) if usage else None
+    found = re.search(r"@@engine (\w+)", p.stdout)
+    RESOURCES[name] = {"wall_s": dt, "cpu_s": cpu_s, "peak_rss_gb": rss_gb, "local_engine": found.group(1) if found else "?"}
+    print(f"ok   {name}: {dt:.0f}s" + (f" on {serving or 'n/a'}" if device is not None else "") +
+          f", engine {RESOURCES[name]['local_engine']}" + (f", peak RSS {rss_gb:.2f} GB, CPU {cpu_s:.0f}s" if usage else ""),
+          file=sys.stderr)
     return dt, serving
+
+
+# per model: wall and CPU seconds, peak RSS and the local engine of its last run (report.json "resources")
+RESOURCES = {}
 
 
 class DeviceRefused(Exception):
@@ -393,6 +415,9 @@ def main():
             v["requested_device"] = a.device
             v["serving_device"] = serving.get(k, "")
             v["wall_seconds"] = times.get(k)
+    for k, t in RESOURCES.items():
+        if k in clean:
+            clean[k]["resources"] = t
     (out / "report.json").write_text(json.dumps(clean, indent=2))
     print(md)
 

@@ -13,6 +13,7 @@
 #include <exception>
 #include "duckdb/common/common.hpp"
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -28,6 +29,7 @@ struct DecideModelEntry;
 struct DecideAnswer;
 struct DecideQuestion;
 class DecideTokenizer;
+class DecideGgmlModel;
 
 // Padded batch in ORT feed order.
 struct DecideLocalBatch {
@@ -103,6 +105,10 @@ void DecideEnsureTokenizer(ClientContext &context, const string &path, const str
 void DecideEnsureLayaConfig(ClientContext &context, const string &path, const string &function);
 
 // ORT session handle (per graph path, cached per database instance).
+//! The engine that runs local models (anofox_decide_local_engine): "ort" or "ggml". Throws, naming the fix, for a
+//! mistyped ANOFOX_DECIDE_LOCAL_ENGINE.
+string DecideLocalEngine(ClientContext &context, const string &function);
+
 class DecideLocalSession {
 public:
 	//! `function` is the user-facing function named in errors (ONNX Runtime failures go through DecideMapOrtError).
@@ -129,11 +135,20 @@ public:
 	const string &GraphPath() const {
 		return graph_path;
 	}
+	const string &Engine() const {
+		return engine;
+	}
+	int64_t Runs() const {
+		return runs.load();
+	}
 
 private:
-	explicit DecideLocalSession(string path) : graph_path(std::move(path)) {
+	DecideLocalSession(string path, string engine_p) : graph_path(std::move(path)), engine(std::move(engine_p)) {
 	}
 	string graph_path;
+	string engine;
+	std::atomic<int64_t> runs {0};
+	shared_ptr<DecideGgmlModel> ggml; // the ggml engine's model (anofox_decide_local_engine = 'ggml'), else impl is ONNX Runtime
 	struct Impl;
 	shared_ptr<Impl> impl;
 };

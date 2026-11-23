@@ -2,6 +2,7 @@
 #include "anofox_decide_extension.hpp"
 #include "decide_local_nli.hpp"
 #include "decide_local_validate.hpp"
+#include "decide_local_weights.hpp"
 #include "decide_ort_errors.hpp"
 #include "decide_provider.hpp"
 #include "decide_remote.hpp"
@@ -12,6 +13,8 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <fstream>
+#include <functional>
 
 using namespace duckdb;
 using namespace duckdb::anofox;
@@ -608,4 +611,99 @@ TEST_CASE("local end-to-end over real Laya typed-decisions", "[anofox_decide][lo
 	REQUIRE(std::fabs(s1[0].expected - 1.4665) < 2e-4);
 	auto s2 = DecideLocalScore(*con.context, entry, "Thanks, everything works now!", {frustrated});
 	REQUIRE(std::fabs(s2[0].expected - 0.1438) < 2e-4);
+}
+
+// The engine switch (anofox_decide_local_engine) reaches EVERY way a session is opened, including the graph-path
+// overload the tests and the registered-model path use, and a mistyped ANOFOX_DECIDE_LOCAL_ENGINE is an error rather
+// than a silent fall back to ONNX Runtime (a "ggml" run that is really ONNX Runtime would prove nothing).
+TEST_CASE("local engine switch: every session open honours it, and a bad environment value is refused", "[anofox_decide][local]") {
+	SECTION("the graph-path overload") {
+		DuckDB db(nullptr);
+		Connection con(db);
+		REQUIRE(!con.Query("SET anofox_decide_local_engine = 'ggml'")->HasError());
+		auto ggml = DecideLocalSession::Open(*con.context, "test/fixtures/julia1_tiny.onnx");
+		REQUIRE(ggml->Engine() == "ggml");
+		REQUIRE(!con.Query("SET anofox_decide_local_engine = 'ort'")->HasError());
+		auto ort = DecideLocalSession::Open(*con.context, "test/fixtures/julia1_tiny.onnx");
+		REQUIRE(ort->Engine() == "ort");
+		REQUIRE(ort.get() != ggml.get()); // one session per engine, never the other engine's
+	}
+	SECTION("a mistyped environment value") {
+		const char *old = std::getenv("ANOFOX_DECIDE_LOCAL_ENGINE");
+		const string saved = old ? old : "";
+		setenv("ANOFOX_DECIDE_LOCAL_ENGINE", "gglm", 1);
+		{
+			DuckDB db(nullptr);
+			Connection con(db);
+			auto r = con.Query("SELECT decide_register_model('tiny-local', 'local', 'test/fixtures/julia1_tiny.onnx', "
+			                   "'test/fixtures/tiny_tokenizer.json')");
+			REQUIRE(!r->HasError());
+			r = con.Query("SELECT decide_probability('The bill is wrong.', 'A refund is requested.', model := 'tiny-local')");
+			REQUIRE(r->HasError());
+			REQUIRE_THAT(r->GetError(), Contains("ANOFOX_DECIDE_LOCAL_ENGINE"));
+			REQUIRE_THAT(r->GetError(), Contains("'gglm'"));
+		}
+		if (old) {
+			setenv("ANOFOX_DECIDE_LOCAL_ENGINE", saved.c_str(), 1);
+		} else {
+			unsetenv("ANOFOX_DECIDE_LOCAL_ENGINE");
+		}
+	}
+}
+
+// ggml against ONNX Runtime on the random-init fixtures, both load paths: a full graph (inline weights) and a weight-free graph with the
+// safetensors injected by name (how the catalog models load). Raw scores must agree to float rounding; this is the parity check that
+// runs without real weights.
+TEST_CASE("local ggml engine: the tiny fixtures score like ONNX Runtime on both load paths", "[anofox_decide][local]") {
+	DecideLocalBatch batch;
+	batch.batch = 2;
+	batch.seq = 8;
+	batch.markers = 2;
+	batch.ids = {2, 9, 7, 1, 0, 0, 0, 0, 2, 9, 10, 1, 5, 6, 0, 0};
+	batch.mask = {1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0};
+	batch.marker_pos = {1, 2, 1, 2};
+	batch.marker_mask = {1, 1, 1, 0};
+	batch.qtype = {0, 2};
+	auto compare = [&](const std::function<shared_ptr<DecideLocalSession>(Connection &)> &open) {
+		DuckDB db(nullptr);
+		Connection con(db);
+		REQUIRE(!con.Query("SET anofox_decide_local_engine = 'ort'")->HasError());
+		auto ort = open(con)->Score(batch);
+		REQUIRE(!con.Query("SET anofox_decide_local_engine = 'ggml'")->HasError());
+		auto session = open(con);
+		REQUIRE(session->Engine() == "ggml");
+		auto ggml = session->Score(batch);
+		REQUIRE(ggml.size() == ort.size());
+		for (size_t b = 0; b < ort.size(); b++) {
+			REQUIRE(ggml[b].size() == ort[b].size());
+			for (size_t m = 0; m < ort[b].size(); m++) {
+				INFO("row " << b << " marker " << m << ": ggml " << ggml[b][m] << ", ort " << ort[b][m]);
+				REQUIRE(std::fabs(ggml[b][m] - ort[b][m]) <= 1e-5f * std::max(1.0f, std::fabs(ort[b][m])));
+			}
+		}
+	};
+	SECTION("a full graph with its weights inside (a user-registered model)") {
+		compare([](Connection &con) { return DecideLocalSession::Open(*con.context, "test/fixtures/julia1_tiny.onnx"); });
+	}
+	SECTION("a weight-free graph with injected safetensors (a catalog model)") {
+		unordered_map<string, string> res;
+		auto read = [](const char *path) {
+			std::ifstream f(path, std::ios::binary);
+			return string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+		};
+		res["graph_test_tiny"] = read("test/fixtures/local_tiny/graph_tiny.onnx");
+		res["tensor_map_test_tiny.json"] = read("test/fixtures/local_tiny/tensor_map_tiny.json");
+		DecideSetTestResources(std::move(res));
+		struct Reset {
+			~Reset() {
+				DecideSetTestResources({}); // also when a REQUIRE below fails
+			}
+		} reset;
+		DecideModelEntry entry = TinyEntry();
+		entry.graph_path.clear();
+		entry.bundled_graph = "graph_test_tiny";
+		entry.bundled_map = "tensor_map_test_tiny.json";
+		entry.weights_path = "test/fixtures/local_tiny/tiny.safetensors";
+		compare([&](Connection &con) { return DecideLocalSession::Open(*con.context, entry); });
+	}
 }

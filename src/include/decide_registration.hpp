@@ -26,6 +26,7 @@ void RegisterDecideGpuPrecompile(ExtensionLoader &loader);   // decide_gpu_preco
 case_insensitive_set_t SnapshotSystemFunctionNames(ExtensionLoader &loader);
 void RegisterDecideContract(ExtensionLoader &loader);
 void ApplyDecideContractTags(ExtensionLoader &loader, const case_insensitive_set_t &preexisting);
+void RegisterDecideLocalDiagnostics(ExtensionLoader &loader); // decide_local_nli.cpp (__anofox_decide_local_sessions)
 
 } // namespace anofox
 } // namespace duckdb

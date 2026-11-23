@@ -135,6 +135,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	anofox::RegisterDecideGpuPrecompile(loader);
 	anofox::RegisterDecideContract(loader);
 	anofox::ApplyDecideContractTags(loader, preexisting);
+	anofox::RegisterDecideLocalDiagnostics(loader);
 
 	datazoo::RegisterBannerOption(loader);
 	// Last, so a load that fails earlier never advertises itself. Silent unless

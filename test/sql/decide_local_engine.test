@@ -1,0 +1,83 @@
+# name: test/sql/decide_local_engine.test
+# description: The engine that runs the in-process models during the move from ONNX Runtime to ggml
+#              (anofox_decide_local_engine, a development switch that goes away when ONNX Runtime is removed).
+#              'ort' is the reference; 'ggml' is the engine being brought to parity. Its default comes from the
+#              ANOFOX_DECIDE_LOCAL_ENGINE environment variable, so the same test files run against either engine.
+# group: [anofox_decide]
+
+require anofox_decide
+
+statement ok
+LOAD anofox_decide
+
+statement ok
+SET anofox_decide_local_engine = 'ort';
+
+query I
+SELECT current_setting('anofox_decide_local_engine')
+----
+ort
+
+statement ok
+SET anofox_decide_local_engine = 'GGML';
+
+query I
+SELECT current_setting('anofox_decide_local_engine')
+----
+ggml
+
+statement error
+SET anofox_decide_local_engine = 'cuda';
+----
+<REGEX>:.*anofox_decide_local_engine.*must be 'ort' or 'ggml', got 'cuda'.*
+
+statement error
+SET anofox_decide_local_engine = NULL;
+----
+<REGEX>:.*anofox_decide_local_engine.*cannot be NULL.*
+
+# the tiny fixture model answers on the reference engine
+statement ok
+SET anofox_decide_local_engine = 'ort';
+
+query I
+SELECT decide_register_model('tiny-local', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json')
+----
+1
+
+query I
+SELECT decide_probability('The bill is wrong.', 'A refund is requested.', model := 'tiny-local') BETWEEN 0 AND 1
+----
+true
+
+# which engine served, and how often: one session per (engine, model), with its forward passes counted
+query II
+SELECT engine, runs >= 1 FROM __anofox_decide_local_sessions() WHERE model LIKE '%julia1_tiny.onnx'
+----
+ort	true
+
+# and on ggml: the same answers as ONNX Runtime on the tiny fixture (the parity check CI can run without real weights), from a session of
+# its own (the engine is part of the session key)
+statement ok
+CREATE TABLE ort_answers AS SELECT
+  decide_probability('The bill is wrong.', 'A refund is requested.', model := 'tiny-local') AS p,
+  decide_choice_distribution('The bill is wrong.', 'Primary issue?', ['billing', 'defect', 'other'], model := 'tiny-local') AS d,
+  decide_score('Help! My payouts are failing.', 'How frustrated is the writer?', ['calm', 'frustrated', 'angry'], model := 'tiny-local') AS s;
+
+statement ok
+SET anofox_decide_local_engine = 'ggml';
+
+query III
+SELECT abs(g.p - o.p) <= 1e-5, abs(g.d['billing'] - o.d['billing']) <= 1e-5 AND abs(g.d['other'] - o.d['other']) <= 1e-5, abs(g.s - o.s) <= 1e-5
+FROM (SELECT decide_probability('The bill is wrong.', 'A refund is requested.', model := 'tiny-local') AS p,
+             decide_choice_distribution('The bill is wrong.', 'Primary issue?', ['billing', 'defect', 'other'], model := 'tiny-local') AS d,
+             decide_score('Help! My payouts are failing.', 'How frustrated is the writer?', ['calm', 'frustrated', 'angry'], model := 'tiny-local') AS s) g,
+     ort_answers o
+----
+true	true	true
+
+query II
+SELECT engine, runs >= 1 FROM __anofox_decide_local_sessions() WHERE model LIKE '%julia1_tiny.onnx' ORDER BY engine
+----
+ggml	true
+ort	true
