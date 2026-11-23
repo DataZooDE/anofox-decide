@@ -19,11 +19,18 @@ require-env DECIDE_EXPORTS_DIR
 
 require-env ANOFOX_DECIDE_LOCAL_ENGINE
 
+require-env DECIDE_CACHE_DIR
+
 statement ok
 LOAD anofox_decide
 
 statement ok
 SET anofox_decide_local_engine = '${ANOFOX_DECIDE_LOCAL_ENGINE}';
+
+# DuckDB's unittest gives every test its own HOME, so the downloaded models are found through DECIDE_CACHE_DIR
+# (scripts/e2e_local.sh sets it to ~/.cache/anofox-decide)
+statement ok
+SET anofox_decide_cache_dir = '${DECIDE_CACHE_DIR}';
 
 query I
 SELECT decide_register_model('my-julia', 'local', '${DECIDE_EXPORTS_DIR}/out/julia-1/julia1.onnx',

@@ -72,8 +72,9 @@ routing, frustration score, a thresholded decision, `decide_answers` and `decide
 expected answers were captured from ONNX Runtime; any engine must reproduce them (1e-4, labels exact).
 
 ```
-DECIDE_REAL_WEIGHTS=1 ANOFOX_DECIDE_LOCAL_ENGINE=ort  ./build/release/test/unittest test/sql/decide_local_e2e.test
-DECIDE_REAL_WEIGHTS=1 ANOFOX_DECIDE_LOCAL_ENGINE=ggml ./build/release/test/unittest test/sql/decide_local_e2e.test
+# DuckDB's unittest gives each SQL test its own HOME, so the downloaded models are passed in with DECIDE_CACHE_DIR
+DECIDE_REAL_WEIGHTS=1 DECIDE_CACHE_DIR=~/.cache/anofox-decide ANOFOX_DECIDE_LOCAL_ENGINE=ort  ./build/release/test/unittest test/sql/decide_local_e2e.test
+DECIDE_REAL_WEIGHTS=1 DECIDE_CACHE_DIR=~/.cache/anofox-decide ANOFOX_DECIDE_LOCAL_ENGINE=ggml ./build/release/test/unittest test/sql/decide_local_e2e.test
 make e2e_local ANOFOX_DECIDE_LOCAL_ENGINE=ggml   # both E2E files and the real-weight C++ goldens; fails if anything is missing
 ```
 

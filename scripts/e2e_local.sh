@@ -17,6 +17,8 @@ for v in ANOFOX_DECIDE_LOCAL_ENGINE DECIDE_EXPORTS_DIR JULIA_WEIGHTS_DIR JULIA_O
 	fi
 done
 export DECIDE_REAL_WEIGHTS=1 DATAZOO_DISABLE_TELEMETRY=1
+# the unittest runs each SQL test with its own HOME: the downloaded models are passed in explicitly
+export DECIDE_CACHE_DIR="${DECIDE_CACHE_DIR:-$HOME/.cache/anofox-decide}"
 fail=0
 "$unittest" "test/sql/decide_local_e2e.test" || fail=1
 "$unittest" "test/sql/decide_local_e2e_registered.test" || fail=1

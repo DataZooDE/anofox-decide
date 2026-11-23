@@ -20,11 +20,18 @@ require-env DECIDE_REAL_WEIGHTS
 
 require-env ANOFOX_DECIDE_LOCAL_ENGINE
 
+require-env DECIDE_CACHE_DIR
+
 statement ok
 LOAD anofox_decide
 
 statement ok
 SET anofox_decide_local_engine = '${ANOFOX_DECIDE_LOCAL_ENGINE}';
+
+# DuckDB's unittest gives every test its own HOME, so the downloaded models are found through DECIDE_CACHE_DIR
+# (scripts/e2e_local.sh sets it to ~/.cache/anofox-decide)
+statement ok
+SET anofox_decide_cache_dir = '${DECIDE_CACHE_DIR}';
 
 # all three models are downloaded and verified (offline: a cached file is checked, not fetched)
 query I
