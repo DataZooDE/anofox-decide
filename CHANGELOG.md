@@ -6,10 +6,15 @@ All notable changes to `anofox_decide` are documented here. The format follows
 
 ## [Unreleased]
 
+## [2026.11.24] - 2026-11-23
+
 ### Fixed
 - DuckDB v1.5.6 binaries carry the release tag as their extension version (they were stamped with the short
   commit SHA: DuckDB 1.5.6 passes the tag pattern to `git describe --match` with literal single quotes, so no tag
   matched). `extension_config.cmake` now passes `EXTENSION_VERSION` itself when HEAD is on a `vX.Y.Z` tag.
+
+### Known issues
+- The CUDA plugin is still not attached (see 2026.11.22).
 
 ## [2026.11.23] - 2026-11-22
 
@@ -398,7 +403,8 @@ First public release.
 - Platforms: Linux (amd64, arm64), macOS (arm64) and Windows (amd64) against DuckDB 1.5.6. Not built:
   macOS on Intel (ONNX Runtime ships no archive after v1.23.2), WebAssembly, musl and MinGW.
 
-[Unreleased]: https://github.com/DataZooDE/anofox-decide/compare/v2026.11.23...HEAD
+[Unreleased]: https://github.com/DataZooDE/anofox-decide/compare/v2026.11.24...HEAD
+[2026.11.24]: https://github.com/DataZooDE/anofox-decide/compare/v2026.11.23...v2026.11.24
 [2026.11.23]: https://github.com/DataZooDE/anofox-decide/compare/v2026.11.22...v2026.11.23
 [2026.11.22]: https://github.com/DataZooDE/anofox-decide/compare/v2026.11.13...v2026.11.22
 [2026.11.13]: https://github.com/DataZooDE/anofox-decide/compare/v2026.10.31...v2026.11.13
