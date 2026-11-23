@@ -22,6 +22,19 @@ using Catch::Matchers::Contains;
 
 namespace {
 
+//! setenv/unsetenv on POSIX, _putenv_s on Windows (an empty value unsets there), as in test_decide_secret.cpp.
+void SetEnv(const char *name, const char *value) {
+#ifdef _WIN32
+	_putenv_s(name, value ? value : "");
+#else
+	if (value) {
+		setenv(name, value, 1);
+	} else {
+		unsetenv(name);
+	}
+#endif
+}
+
 DecideModelEntry TinyEntry() {
 	DecideModelEntry entry;
 	entry.id = "tiny-local";
@@ -637,8 +650,14 @@ TEST_CASE("local engine switch: every session open honours it, and a bad environ
 	}
 	SECTION("a mistyped environment value") {
 		const char *old = std::getenv("ANOFOX_DECIDE_LOCAL_ENGINE");
-		const string saved = old ? old : "";
-		setenv("ANOFOX_DECIDE_LOCAL_ENGINE", "gglm", 1);
+		struct Restore {
+			bool had;
+			string value;
+			~Restore() {
+				SetEnv("ANOFOX_DECIDE_LOCAL_ENGINE", had ? value.c_str() : nullptr); // also when a REQUIRE below fails
+			}
+		} restore {old != nullptr, old ? old : ""};
+		SetEnv("ANOFOX_DECIDE_LOCAL_ENGINE", "gglm");
 		{
 			DuckDB db(nullptr);
 			Connection con(db);
@@ -649,11 +668,6 @@ TEST_CASE("local engine switch: every session open honours it, and a bad environ
 			REQUIRE(r->HasError());
 			REQUIRE_THAT(r->GetError(), Contains("ANOFOX_DECIDE_LOCAL_ENGINE"));
 			REQUIRE_THAT(r->GetError(), Contains("'gglm'"));
-		}
-		if (old) {
-			setenv("ANOFOX_DECIDE_LOCAL_ENGINE", saved.c_str(), 1);
-		} else {
-			unsetenv("ANOFOX_DECIDE_LOCAL_ENGINE");
 		}
 	}
 }
