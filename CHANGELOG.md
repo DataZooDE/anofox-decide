@@ -6,6 +6,11 @@ All notable changes to `anofox_decide` are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- DuckDB v1.5.6 binaries carry the release tag as their extension version (they were stamped with the short
+  commit SHA: DuckDB 1.5.6 passes the tag pattern to `git describe --match` with literal single quotes, so no tag
+  matched). `extension_config.cmake` now passes `EXTENSION_VERSION` itself when HEAD is on a `vX.Y.Z` tag.
+
 ## [2026.11.23] - 2026-11-22
 
 ### Fixed
