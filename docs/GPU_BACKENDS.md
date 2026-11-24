@@ -60,8 +60,8 @@ Plugins are native code the extension loads, so the checks are spelled out here 
   asset), not authenticity: it does not defend against a compromised release or a local attacker who can write to
   the plugin directory.
 
-Only the models from `decide_download` run on a GPU (the plugin reads their safetensors file itself); a model
-registered with its own `.onnx` graph stays on the CPU.
+The models from `decide_download` and models registered with their own `.onnx` graph both run on a GPU: a catalog model's
+plugin gets the weight-free graph and the safetensors weights, a registered model's plugin the whole graph with its weights.
 
 | Setting | Meaning |
 |---|---|
@@ -134,7 +134,7 @@ Test conditions: CUDA on an RTX 4090 (RunPod) with the ONNX Runtime 1.29 GPU cor
 - **Speed depends on the shape.** The GPU gains are largest for Laya typed-decisions and long texts; for short
   texts the CPU is already fast. Batching helps Laya multilingual and Julia-1 on a GPU, not Laya typed-decisions on
   MLX. Measure on your own data with `tools/eval/run_eval.py`.
-- Only models from `decide_download` run on a GPU; a model registered with its own `.onnx` stays on the CPU.
+- A registered `.onnx` that uses an ONNX op the plugin lacks is refused with the op names (score it on the CPU).
 - The GPU backends are not run in CI (the hosted runners have none). The plugins are built, checked and released
   by anofox-ggml-adapter; scoring is validated by hand on the hardware above with
   `test/sql/decide_local_e2e_gpu.test`.

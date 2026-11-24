@@ -57,8 +57,11 @@ struct DecideLoadedWeights;
 struct DecidePluginRequest {
 	const void *graph_data = nullptr;
 	idx_t graph_size = 0;
+	//! A graph that carries its own weights (a model registered with its own .onnx). The plugin ABI reads graph bytes during create
+	//! only, so they are released once the session exists. When set, graph_data / graph_size are ignored and `weights` is empty.
+	shared_ptr<const string> graph_bytes;
 	unique_ptr<DecideLoadedWeights> weights;
-	string model; //!< the catalog id
+	string model; //!< the catalog id, or the registered model's id
 	string arch;
 	string precision = "fp32";
 	string cache_dir;

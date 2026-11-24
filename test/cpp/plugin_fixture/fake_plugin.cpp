@@ -10,7 +10,9 @@
  *
  * Built twice, with DECIDE_FAKE_PLUGIN_BAD_ABI toggling the version, so the refusal is tested with a genuinely mismatched library.
  * create() refuses arch "refuse" (a create failure has to be testable too), arch "oom" (a memory failure) and a precision other than
- * fp32; it also fails without a graph or without weights, which proves the extension hands over the real graph and its weights.
+ * fp32; it also fails without a graph, and without weights for a catalog model (julia-1, laya-*, test-tiny: their graphs are
+ * weight-free), which proves the extension hands over the real graph and its weights. A registered model's graph carries its own
+ * weights, so create takes it without any.
  *===----------------------------------------------------------------------===*/
 
 #include "anofox_ggml_adapter/plugin_abi.h"
@@ -53,7 +55,9 @@ void *PluginCreate(const AnofoxGgmlCreateParams *params, char *err, size_t err_l
 		SetError(err, err_len, "only fp32 is implemented");
 		return nullptr;
 	}
-	if (params->weight_count == 0 || !params->weights[0].data || params->weights[0].count <= 0) {
+	const std::string model = params->model ? params->model : "";
+	const bool catalog = model == "julia-1" || model.rfind("laya-", 0) == 0 || model == "test-tiny";
+	if (catalog && (params->weight_count == 0 || !params->weights[0].data || params->weights[0].count <= 0)) {
 		SetError(err, err_len, "no weights were handed to create");
 		return nullptr;
 	}

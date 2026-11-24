@@ -175,14 +175,6 @@ DecideServability DecideEvaluateServability(const DecideServabilityInputs &in) {
 		out.fix = "SET anofox_decide_gpu_precision = 'fp32';";
 		return out;
 	}
-	if (!in.catalog_model) {
-		out.reason = "model '" + in.model +
-		             "' was registered with its own graph, and only the models from decide_download (julia-1, "
-		             "laya-multilingual, laya-typed-decisions) can run on a GPU: the plugin loads the weights from "
-		             "the safetensors file";
-		out.fix = "SET anofox_decide_device = 'cpu'; (or 'auto', which uses the CPU for this model)";
-		return out;
-	}
 	if (!in.device_usable) {
 		out.reason = in.device_reason.empty()
 		                 ? string("the device was discovered but is not usable on this machine")
@@ -379,9 +371,11 @@ DecideServabilityInputs ServabilityFor(ClientContext &context, const DecideModel
 	in.device_usable = device.usable;
 	in.device_reason = device.reason;
 	in.plugin_dir = plugin_dir;
-	if (!entry.weights_path.empty()) {
+	// A catalog model's weights are its safetensors download; a registered model's graph carries its own.
+	const string &weights_file = in.catalog_model ? entry.weights_path : entry.graph_path;
+	if (!weights_file.empty()) {
 		try {
-			in.weights_present = FileSystem::GetFileSystem(context).FileExists(entry.weights_path);
+			in.weights_present = FileSystem::GetFileSystem(context).FileExists(weights_file);
 		} catch (const std::exception &) {
 			in.weights_present = false;
 		}

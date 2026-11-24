@@ -33,8 +33,10 @@ Apple silicon with `brew install mlx mlx-c`.
 and the plugin serves the model, and `decide_backends()` is the same check, so `auto` never names a device that
 table calls unsupported. `cpu` always scores on the CPU. `cuda`, `rocm` or `mlx` are hard errors naming
 `CALL decide_accelerate()` when that device is missing, unusable or cannot serve the model: never a silent CPU run.
-Only the models from `decide_download` can run on a GPU (the plugin loads their safetensors file itself); a model
-registered with its own `.onnx` graph stays on the CPU. `anofox_decide_gpu_precision` accepts only `fp32`;
+Both kinds of local model run on a GPU: the models from `decide_download` (the plugin gets their weight-free graph and
+the weights from the safetensors file) and a model registered with its own `.onnx` (the plugin gets the whole graph,
+which carries its weights). A registered graph that needs an ONNX op the plugin lacks is refused with the op names;
+`SET anofox_decide_device = 'cpu'` scores it on the CPU. `anofox_decide_gpu_precision` accepts only `fp32`;
 `anofox_decide_ep_path` is where plugins are installed and loaded from (`anofox_decide_plugin_dir`, its old name,
 is still read when `anofox_decide_ep_path` is empty, and is removed in the next release).
 

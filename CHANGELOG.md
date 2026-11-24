@@ -24,6 +24,8 @@ All notable changes to `anofox_decide` are documented here. The format follows
   CUDA toolkit or cuDNN to install.
 - ROCm no longer compiles per shape: no shape buckets, no `.mxr` cache and no bucket limit on text length.
   `decide_gpu_precompile` is still accepted on ROCm but does no work.
+- **A model registered with its own `.onnx` runs on a GPU too** (it used to be refused there): the plugin gets the
+  whole graph, which carries its weights.
 - `__anofox_decide_local_sessions()` reports the engine `plugin:cuda`, `plugin:rocm` or `plugin:mlx` for a GPU session.
 - Verified with the local end-to-end suite on the GPU (`test/sql/decide_local_e2e_gpu.test`: probabilities within
   1e-3 of the CPU reference, labels exact, every block served by the plugin) on AMD gfx1150 and gfx1201 (ROCm) and an

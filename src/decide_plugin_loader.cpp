@@ -47,7 +47,7 @@ string FirstLine(const string &msg) {
 const char *kCpuFix = "SET anofox_decide_device = 'cpu'; to score on the CPU";
 
 //! A plugin session (anofox-ggml-adapter, plugin ABI v3) plus the weights it reads. `weights` is declared FIRST so it is destroyed
-//! LAST: the plugin reads the host's buffers for the session's whole life.
+//! LAST: the plugin reads the host's weight buffers for the session's whole life (the graph's bytes only during create).
 class LoadedPlugin : public DecidePluginSession {
 public:
 	LoadedPlugin(unique_ptr<DecideLoadedWeights> weights_p, std::unique_ptr<ga::PluginSession> session_p)
@@ -244,8 +244,8 @@ unique_ptr<DecidePluginSession> DecideLoadPlugin(const string &library_path, Dec
 		                            "CALL decide_accelerate(); fetches a verified copy"));
 	}
 	ga::PluginCreate params;
-	params.graph_data = request.graph_data;
-	params.graph_size = request.graph_size;
+	params.graph_data = request.graph_bytes ? static_cast<const void *>(request.graph_bytes->data()) : request.graph_data;
+	params.graph_size = request.graph_bytes ? request.graph_bytes->size() : request.graph_size;
 	params.model = request.model;
 	params.arch = request.arch;
 	params.precision = request.precision;
@@ -290,7 +290,7 @@ unique_ptr<DecidePluginSession> DecideLoadPlugin(const string &library_path, Dec
 		}
 		}
 	}
-	return make_uniq<LoadedPlugin>(std::move(request.weights), std::move(session));
+	return make_uniq<LoadedPlugin>(std::move(request.weights), std::move(session)); // request.graph_bytes is released here
 }
 
 } // namespace anofox

@@ -42,7 +42,7 @@ hosted models (see `anofox-decide-questions`).
 5. **An explicit GPU device never falls back to the CPU silently.** `anofox_decide_device = 'auto'` (the default) uses a GPU only when its
    plugin is installed, the device is usable and the plugin serves the model. `'cuda'`, `'rocm'` or `'mlx'`
    is a hard error with the fix when that device cannot serve the model. A model registered from your own
-   `.onnx` graph always stays on the CPU.
+   `.onnx` graph runs on a GPU too, unless it uses an ONNX op the plugin lacks (the error names the ops).
 6. **GPU plugins are native code.** They are verified against the release's `.sha256` file. A plugin copied
    by hand without a `.sha256` file beside it is trusted as-is.
 7. **No GPU needs a compile step.** The plugins build a shape's graph on first use. `decide_gpu_precompile`

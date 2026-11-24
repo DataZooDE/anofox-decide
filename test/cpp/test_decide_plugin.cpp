@@ -500,15 +500,16 @@ TEST_CASE("one predicate says whether a model can run on a device, and why not",
 	REQUIRE_THAT(v.reason, Contains("anofox_decide_gpu_precision = 'bf16' is not implemented on the 'cuda' backend"));
 	REQUIRE(v.fix == "SET anofox_decide_gpu_precision = 'fp32';");
 
-	// A model with its own graph cannot go to a plugin; installing one would not help, so it is not offered.
+	// A model registered with its own graph runs on a plugin like a catalog model (the graph carries its weights)...
 	in = Ready();
 	in.catalog_model = false;
 	in.model = "my-model";
+	REQUIRE(DecideEvaluateServability(in).supported);
+	// ... and is refused for the same reasons: here, no plugin installed.
 	in.plugin_installed = false;
 	v = DecideEvaluateServability(in);
 	REQUIRE_FALSE(v.supported);
-	REQUIRE_THAT(v.reason, Contains("model 'my-model' was registered with its own graph"));
-	REQUIRE_THAT(v.fix, !Contains("decide_accelerate"));
+	REQUIRE_THAT(v.reason, Contains("this model can run on 'cuda', but its plugin is not installed"));
 
 	in = Ready();
 	in.device_usable = false;
@@ -1182,13 +1183,13 @@ TEST_CASE("a GPU plugin serves a catalog model through SQL, and auto never names
 	const double cpu_probability = duckdb_compat::ResultValue(*cpu, 0, 0).GetValue<double>();
 	REQUIRE(duckdb_compat::ResultValue(*con.Query("SELECT device FROM decide_models() WHERE model = 'test-tiny'"), 0, 0).ToString() == "cpu");
 
-	// Install the plugin for cuda: auto now uses it for the catalog model and still the CPU for the other.
+	// Install the plugin for cuda: auto now uses it for both, the catalog model and the one registered with its own graph.
 	InstallPlugin(kFakePlugin, plugin_dir, "cuda");
 	auto m = con.Query("SELECT model, device FROM decide_models() WHERE model IN ('test-tiny', 'tiny-local') ORDER BY model");
 	REQUIRE_NO_FAIL(*m);
 	REQUIRE(duckdb_compat::ResultValue(*m, 0, 0).ToString() == "test-tiny");
 	REQUIRE(duckdb_compat::ResultValue(*m, 1, 0).ToString() == "cuda:1");
-	REQUIRE(duckdb_compat::ResultValue(*m, 1, 1).ToString() == "cpu");
+	REQUIRE(duckdb_compat::ResultValue(*m, 1, 1).ToString() == "cuda:1");
 
 	// The invariant: whatever device a model reports, decide_backends() calls it supported.
 	auto violations = con.Query("SELECT count(*) FROM decide_models() m WHERE m.device IS NOT NULL AND m.device <> 'cpu' "
@@ -1211,8 +1212,7 @@ TEST_CASE("a GPU plugin serves a catalog model through SQL, and auto never names
 	REQUIRE(supported["test-tiny/mlx:0"] == Value::BOOLEAN(false));
 	REQUIRE_THAT(reason["test-tiny/mlx:0"], Contains("plugin is not installed"));
 	REQUIRE(supported["tiny-local/cpu"] == Value::BOOLEAN(true));
-	REQUIRE(supported["tiny-local/cuda:1"] == Value::BOOLEAN(false));
-	REQUIRE_THAT(reason["tiny-local/cuda:1"], Contains("registered with its own graph"));
+	REQUIRE(supported["tiny-local/cuda:1"] == Value::BOOLEAN(true));
 
 	// The fake plugin scores: a different answer than the CPU's, and the same one every time.
 	auto gpu = con.Query(kQuestion);
@@ -1257,14 +1257,20 @@ TEST_CASE("a GPU plugin serves a catalog model through SQL, and auto never names
 	REQUIRE(mlx->HasError());
 	REQUIRE_THAT(mlx->GetError(), Contains("cannot run on mlx:0: this model can run on 'mlx', but its plugin is not installed"));
 	REQUIRE_THAT(mlx->GetError(), Contains("Fix: CALL decide_accelerate();"));
+	// The model registered with its own graph runs on the plugin too: the plugin's answer, not the CPU's, served by plugin:cuda.
+	REQUIRE_NO_FAIL(con.Query("SET anofox_decide_device = 'cpu'"));
+	auto own_cpu = con.Query("SELECT decide_probability('x', 'y?', model := 'tiny-local')");
+	REQUIRE_NO_FAIL(*own_cpu);
 	REQUIRE_NO_FAIL(con.Query("SET anofox_decide_device = 'cuda'"));
 	auto own = con.Query("SELECT decide_probability('x', 'y?', model := 'tiny-local')");
-	REQUIRE(own->HasError());
-	REQUIRE_THAT(own->GetError(), Contains("model 'tiny-local' cannot run on cuda:1: model 'tiny-local' was registered with its own graph"));
-	// decide_models does not fail for it: the model has no serving device under this setting.
+	REQUIRE_NO_FAIL(*own);
+	REQUIRE(duckdb_compat::ResultValue(*own, 0, 0).GetValue<double>() != duckdb_compat::ResultValue(*own_cpu, 0, 0).GetValue<double>());
+	auto served = con.Query("SELECT count(*) FROM __anofox_decide_local_sessions() WHERE engine = 'plugin:cuda' AND model LIKE '%julia1_tiny.onnx%' AND runs > 0");
+	REQUIRE_NO_FAIL(*served);
+	REQUIRE(duckdb_compat::ResultValue(*served, 0, 0) == Value::BIGINT(1));
 	auto listed = con.Query("SELECT model, device FROM decide_models() WHERE model = 'tiny-local'");
 	REQUIRE_NO_FAIL(*listed);
-	REQUIRE(duckdb_compat::ResultValue(*listed, 1, 0).IsNull());
+	REQUIRE(duckdb_compat::ResultValue(*listed, 1, 0).ToString() == "cuda:1");
 	auto doctor = con.Query("SELECT item, status FROM decide_doctor() WHERE item LIKE 'gpu%' ORDER BY item");
 	REQUIRE_NO_FAIL(*doctor);
 	std::map<string, string> doctor_rows;

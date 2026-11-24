@@ -65,7 +65,7 @@ Both SentencePiece-style tokenizers (Julia-1, Laya multilingual) and ByteLevel B
 typed-decisions) are supported. Registration checks the files, not only that they exist: a weights file
 (`.safetensors`), a text file or a zip as the graph, a tokenizer that is not BPE, and a Laya config
 without its keys are rejected with a message that says what the file is. `decide_models()` and
-`decide_doctor()` run the same checks. A model registered with its own `.onnx` graph stays on the CPU
+`decide_doctor()` run the same checks. A model registered with its own `.onnx` graph runs on a GPU as well
 ([GPU acceleration](04-gpu.md)).
 
 ## Long text

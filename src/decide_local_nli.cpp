@@ -312,11 +312,35 @@ shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, 
                                                         const char *function_name) {
 	const string function = function_name;
 	// Where this call runs: anofox_decide_device, the discovered hardware and the installed plugins. An explicit
-	// device that cannot serve the model throws here, with the fix; a model registered with its own graph can
-	// only run on the CPU (the check is the shared servability predicate).
+	// device that cannot serve the model throws here, with the fix (the check is the shared servability predicate).
 	const auto device = DecideResolveDevice(context, entry, function.c_str());
-	if (entry.bundled_graph.empty()) {
+	if (entry.bundled_graph.empty() && device.backend == "cpu") {
 		return Open(context, entry.graph_path, function.c_str());
+	}
+	if (entry.bundled_graph.empty()) {
+		// A model registered with its own .onnx, on a GPU: the plugin gets the whole graph, which carries its weights (read during
+		// create only, then released). Read through DuckDB's filesystem, as for the CPU.
+		const string precision = DecideGpuPrecision(context);
+		const string plugin_path = DecidePluginPath(DecidePluginDir(context), device.backend);
+		const string key = SessionKey(entry.graph_path, device, precision, plugin_path);
+		auto cache = LocalCache(context);
+		std::lock_guard<std::mutex> guard(cache->lock);
+		auto it = cache->sessions.find(key);
+		if (it != cache->sessions.end()) {
+			return it->second;
+		}
+		DecidePluginRequest request;
+		request.graph_bytes = make_shared_ptr<string>(DecideReadLocalFile(context, entry.graph_path, "graph"));
+		request.model = entry.id;
+		request.arch = device.arch;
+		request.precision = precision;
+		request.cache_dir = (std::filesystem::path(DecideCacheDir(context, function.c_str())) / "gpu-cache").string();
+		request.device_ordinal = device.ordinal;
+		auto handle = shared_ptr<DecideLocalSession>(new DecideLocalSession(entry.graph_path, "plugin:" + device.backend));
+		handle->impl = make_shared_ptr<Impl>();
+		handle->impl->plugin = DecideLoadPlugin(plugin_path, std::move(request), function);
+		cache->sessions[key] = handle;
+		return handle;
 	}
 	const string precision = DecideGpuPrecision(context);
 	const string base = "weights:" + entry.bundled_graph + "|" + entry.weights_path;
