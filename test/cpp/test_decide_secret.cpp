@@ -3,6 +3,8 @@
 // anofox_decide_api_key setting, typesafe only), one "no API key" message, and decide_services() as the one place
 // that lists them. The precedence matrix is driven by DecideServices(), so a new provider is covered on its own.
 #include "catch.hpp"
+
+#include <initializer_list>
 #include "anofox_decide_extension.hpp"
 #include "decide_errors.hpp"
 #include "decide_remote.hpp"
@@ -32,6 +34,9 @@ void SetEnv(const char *name, const char *value) {
 }
 
 struct EnvGuard {
+	// an initializer list too: a braced single pair, EnvGuard({{"K", "v"}}), is ambiguous on GCC 11/12 with the vector alone
+	EnvGuard(std::initializer_list<std::pair<string, const char *>> list) : EnvGuard(std::vector<std::pair<string, const char *>>(list)) {
+	}
 	explicit EnvGuard(std::vector<std::pair<string, const char *>> vars) : vars(std::move(vars)) {
 		for (auto &kv : this->vars) {
 			const char *old = std::getenv(kv.first.c_str());
