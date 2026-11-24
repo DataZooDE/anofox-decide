@@ -203,6 +203,26 @@ TEST_CASE("the ggml engine runs at most one thread per physical core", "[anofox_
 	REQUIRE(DecideLocalEngineThreads(*con.context) == 1); // fewer DuckDB threads than cores: DuckDB's count
 }
 
+TEST_CASE("SET threads takes effect on the next call: the ggml session is rebuilt with the new count", "[anofox_decide][local]") {
+	DuckDB db(nullptr);
+	db.LoadStaticExtension<AnofoxDecideExtension>();
+	Connection con(db);
+	REQUIRE_FALSE(con.Query("SET anofox_decide_local_engine = 'ggml'")->HasError());
+	REQUIRE_FALSE(con.Query("SELECT decide_register_model('tiny-local', 'local', 'test/fixtures/julia1_tiny.onnx', "
+	                        "'test/fixtures/tiny_tokenizer.json')")->HasError());
+	const string q = "SELECT decide_probability('ab ab', 'y?', model := 'tiny-local')";
+	REQUIRE_FALSE(con.Query("SET threads = 2")->HasError());
+	auto first = con.Query(q);
+	REQUIRE_FALSE(first->HasError());
+	REQUIRE_FALSE(con.Query("SET threads = 1")->HasError());
+	auto second = con.Query(q);
+	REQUIRE_FALSE(second->HasError());
+	REQUIRE(duckdb_compat::ResultValue(*first, 0, 0) == duckdb_compat::ResultValue(*second, 0, 0)); // the same answer
+	auto sessions = con.Query("SELECT count(*) FROM __anofox_decide_local_sessions() WHERE engine = 'ggml' AND runs > 0");
+	REQUIRE_FALSE(sessions->HasError());
+	REQUIRE(duckdb_compat::ResultValue(*sessions, 0, 0) == Value::BIGINT(2)); // one session per thread count
+}
+
 TEST_CASE("local end-to-end over the tiny fixture", "[anofox_decide][local]") {
 	DuckDB db(nullptr);
 	Connection con(db);

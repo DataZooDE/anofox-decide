@@ -167,6 +167,22 @@ vector<DecideDeviceInfo> DecideDiscoverDevices() {
 // Servability
 //===----------------------------------------------------------------------===//
 
+namespace {
+std::mutex refusal_lock;
+std::map<std::pair<string, string>, string> refusals; // (plugin path, graph) -> why create failed
+} // namespace
+
+void DecideRememberPluginRefusal(const string &plugin_path, const string &graph_key, const string &reason) {
+	std::lock_guard<std::mutex> guard(refusal_lock);
+	refusals[{plugin_path, graph_key}] = reason;
+}
+
+string DecidePluginRefusal(const string &plugin_path, const string &graph_key) {
+	std::lock_guard<std::mutex> guard(refusal_lock);
+	auto it = refusals.find({plugin_path, graph_key});
+	return it == refusals.end() ? string() : it->second;
+}
+
 DecideServability DecideEvaluateServability(const DecideServabilityInputs &in) {
 	DecideServability out;
 	if (in.precision != "fp32") {
@@ -190,6 +206,17 @@ DecideServability DecideEvaluateServability(const DecideServabilityInputs &in) {
 	if (!in.plugin_installed) {
 		out.reason = "this model can run on '" + in.backend + "', but its plugin is not installed in " + in.plugin_dir;
 		out.fix = "CALL decide_accelerate();";
+		return out;
+	}
+	if (!in.plugin_refused.empty()) {
+		out.reason = "the '" + in.backend + "' plugin cannot run this model's graph (" + in.plugin_refused + ")";
+		out.fix = "SET anofox_decide_device = 'cpu'; (or 'auto', which then uses the CPU for this model)";
+		return out;
+	}
+	if (!in.weights_present && !in.catalog_model) {
+		out.known = false;
+		out.reason = "the graph file of '" + in.model + "' cannot be found";
+		out.fix = "register it again with its graph: SELECT decide_register_model('" + in.model + "', 'local', '<model.onnx path>');";
 		return out;
 	}
 	if (!in.weights_present) {
@@ -385,6 +412,9 @@ DecideServabilityInputs ServabilityFor(ClientContext &context, const DecideModel
 		in.plugin_installed = state.exists && state.loadable;
 		if (state.exists && !state.loadable) {
 			in.plugin_problem = state.problem;
+		}
+		if (!in.catalog_model) {
+			in.plugin_refused = DecidePluginRefusal(DecidePluginPath(plugin_dir, in.backend), entry.graph_path);
 		}
 	}
 	return in;

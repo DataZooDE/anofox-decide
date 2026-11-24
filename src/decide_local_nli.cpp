@@ -233,8 +233,10 @@ const vector<string> kGraphInputs = {"input_ids", "attention_mask", "marker_pos"
 
 //! A CPU session belongs to the engine that built it: the engine is part of its cache key, so switching anofox_decide_local_engine never
 //! hands back a session of the other engine (tabfm's device-switch rule). GPU sessions run in a plugin whatever the setting.
-string EngineKey(const string &engine, const string &key) {
-	return engine + "|" + key;
+//! The ggml engine's thread count is fixed when its session is built, so it is part of the key: SET threads takes effect on
+//! the next call instead of being ignored until the database restarts.
+string EngineKey(ClientContext &context, const string &engine, const string &key) {
+	return (engine == "ggml" ? engine + "@" + std::to_string(EngineThreads(context)) : engine) + "|" + key;
 }
 
 // The session cache is keyed by what the session runs on: the CPU session of a graph is not the CUDA session
@@ -264,7 +266,7 @@ shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, 
 	const string engine = DecideLocalEngine(context, function);
 	auto cache = LocalCache(context);
 	std::lock_guard<std::mutex> guard(cache->lock);
-	const string key = EngineKey(engine, SessionKey(graph_path, DecideDeviceChoice(), "fp32"));
+	const string key = EngineKey(context, engine, SessionKey(graph_path, DecideDeviceChoice(), "fp32"));
 	auto it = cache->sessions.find(key);
 	if (it != cache->sessions.end()) {
 		return it->second;
@@ -330,7 +332,7 @@ shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, 
 		const string plugin_path = DecidePluginPath(DecidePluginDir(context), device.backend);
 		const string key = SessionKey(entry.graph_path, device, precision, plugin_path);
 		auto cache = LocalCache(context);
-		std::lock_guard<std::mutex> guard(cache->lock);
+		std::unique_lock<std::mutex> guard(cache->lock);
 		auto it = cache->sessions.find(key);
 		if (it != cache->sessions.end()) {
 			return it->second;
@@ -344,7 +346,19 @@ shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, 
 		request.device_ordinal = device.ordinal;
 		auto handle = shared_ptr<DecideLocalSession>(new DecideLocalSession(entry.graph_path, "plugin:" + device.backend));
 		handle->impl = make_shared_ptr<Impl>();
-		handle->impl->plugin = DecideLoadPlugin(plugin_path, std::move(request), function);
+		try {
+			handle->impl->plugin = DecideLoadPlugin(plugin_path, std::move(request), function);
+		} catch (const std::exception &e) {
+			// A user's graph the plugin cannot run (an op it lacks, weights in an external file, other inputs) is not servable there:
+			// remember why, so decide_models() and decide_backends() say so and 'auto' scores it on the CPU from now on. An explicit
+			// device keeps the error.
+			DecideRememberPluginRefusal(plugin_path, entry.graph_path, ErrorData(e).RawMessage());
+			if (DecideDeviceSetting(context) != "auto") {
+				throw;
+			}
+			guard.unlock();
+			return Open(context, entry.graph_path, function.c_str());
+		}
 		cache->sessions[key] = handle;
 		return handle;
 	}
@@ -353,7 +367,7 @@ shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, 
 	const string plugin_path =
 	    device.backend == "cpu" ? string() : DecidePluginPath(DecidePluginDir(context), device.backend);
 	const string engine = DecideLocalEngine(context, function);
-	const string key = device.backend == "cpu" ? EngineKey(engine, SessionKey(base, device, precision, plugin_path))
+	const string key = device.backend == "cpu" ? EngineKey(context, engine, SessionKey(base, device, precision, plugin_path))
 	                                           : SessionKey(base, device, precision, plugin_path);
 	auto cache = LocalCache(context);
 	std::lock_guard<std::mutex> guard(cache->lock);

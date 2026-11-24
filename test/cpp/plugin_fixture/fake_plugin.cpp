@@ -56,6 +56,10 @@ void *PluginCreate(const AnofoxGgmlCreateParams *params, char *err, size_t err_l
 		return nullptr;
 	}
 	const std::string model = params->model ? params->model : "";
+	if (model.rfind("refuse-", 0) == 0) { // a registered graph the backend cannot run (as an op it lacks would be)
+		SetError(err, err_len, "unsupported op 'FancyAttention' in the graph");
+		return nullptr;
+	}
 	const bool catalog = model == "julia-1" || model.rfind("laya-", 0) == 0 || model == "test-tiny";
 	if (catalog && (params->weight_count == 0 || !params->weights[0].data || params->weights[0].count <= 0)) {
 		SetError(err, err_len, "no weights were handed to create");

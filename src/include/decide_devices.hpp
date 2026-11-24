@@ -65,9 +65,8 @@ string DecideGfxArchFromTargetVersion(uint64_t version);
 struct DecideServabilityInputs {
 	string backend; // "cuda" | "rocm" | "mlx"
 	string model;
-	//! A catalog model (decide_download): embedded weight-free graph + tensor map + a safetensors file, the only
-	//! shape a plugin can be handed. A model registered with its own .onnx graph keeps its weights inside the
-	//! graph and can only run on the CPU.
+	//! A catalog model (decide_download): embedded weight-free graph + tensor map + a safetensors file. A model registered with
+	//! its own .onnx graph keeps its weights inside the graph; the plugin gets that whole graph.
 	bool catalog_model = false;
 	bool weights_present = false;
 	string precision = "fp32";
@@ -76,7 +75,14 @@ struct DecideServabilityInputs {
 	bool plugin_installed = false;
 	string plugin_dir;
 	string plugin_problem; // set when the plugin file exists but cannot be used (wrong ABI, missing runtime)
+	string plugin_refused; // set when this plugin already refused to create a session for this model (DecideRememberPluginRefusal)
 };
+
+//! Remember that the plugin at `plugin_path` refused to create a session for the graph `graph_key` (an op it lacks, external
+//! data, ...): from then on the model is not servable there, so 'auto' scores it on the CPU and every surface says why.
+void DecideRememberPluginRefusal(const string &plugin_path, const string &graph_key, const string &reason);
+//! The remembered refusal for (plugin, graph), or "".
+string DecidePluginRefusal(const string &plugin_path, const string &graph_key);
 
 struct DecideServability {
 	bool supported = false;

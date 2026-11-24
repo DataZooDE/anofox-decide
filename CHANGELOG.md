@@ -23,12 +23,18 @@ All notable changes to `anofox_decide` are documented here. The format follows
   names drop `lib` and end in `.dll`. They are fetched from the adapter's release
   ([v2026.11.24](https://github.com/DataZooDE/anofox-ggml-adapter/releases)) with their sha256 sidecars
   (`ggml-cuda_plugin.sha256`, `ggml-rocm_plugin.sha256`, `mlx_plugin.sha256`) and verified before they load.
+  **Upgrading:** run `CALL decide_accelerate();` once. The old plugin files (`libanofox_decide_*_plugin.*` and the ONNX
+  Runtime libraries next to them) are no longer used and can be deleted; until the new plugin is installed, `'auto'`
+  scores on the CPU and an explicit device names the fix. decide no longer publishes plugins on its own releases.
 - `decide_download_runtime('cuda')` and `decide_accelerate()` fetch the plugin alone: no ONNX Runtime wheel, and no
   CUDA toolkit or cuDNN to install.
 - ROCm no longer compiles per shape: no shape buckets, no `.mxr` cache and no bucket limit on text length.
   `decide_gpu_precompile` is still accepted on ROCm but does no work.
 - **A model registered with its own `.onnx` runs on a GPU too** (it used to be refused there): the plugin gets the
-  whole graph, which carries its weights.
+  whole graph, which carries its weights. A graph the plugin cannot run (an op it lacks, weights in an external file)
+  is remembered as not servable on that device: `'auto'` then scores it on the CPU and `decide_backends()` says why.
+- `SET threads` takes effect on the next call of a local model on the ggml engine (its session used to keep the thread
+  count it was built with).
 - `__anofox_decide_local_sessions()` reports the engine `plugin:cuda`, `plugin:rocm` or `plugin:mlx` for a GPU session.
 - Verified with the local end-to-end suite on the GPU (`test/sql/decide_local_e2e_gpu.test`: probabilities within
   1e-3 of the CPU reference, labels exact, every block served by the plugin) on AMD gfx1150 and gfx1201 (ROCm) and an

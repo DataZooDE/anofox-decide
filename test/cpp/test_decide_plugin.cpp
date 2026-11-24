@@ -510,6 +510,23 @@ TEST_CASE("one predicate says whether a model can run on a device, and why not",
 	v = DecideEvaluateServability(in);
 	REQUIRE_FALSE(v.supported);
 	REQUIRE_THAT(v.reason, Contains("this model can run on 'cuda', but its plugin is not installed"));
+	// a registered graph whose file is gone: re-register it (decide_download knows only catalog models)
+	in = Ready();
+	in.catalog_model = false;
+	in.model = "my-model";
+	in.weights_present = false;
+	v = DecideEvaluateServability(in);
+	REQUIRE_FALSE(v.supported);
+	REQUIRE_THAT(v.reason, Contains("the graph file of 'my-model' cannot be found"));
+	REQUIRE_THAT(v.fix, Contains("decide_register_model('my-model', 'local'"));
+	// a graph the plugin already refused at create is not servable there, with the plugin's reason
+	in = Ready();
+	in.catalog_model = false;
+	in.model = "my-model";
+	in.plugin_refused = "unsupported op 'X'";
+	v = DecideEvaluateServability(in);
+	REQUIRE_FALSE(v.supported);
+	REQUIRE_THAT(v.reason, Contains("the 'cuda' plugin cannot run this model's graph (unsupported op 'X')"));
 
 	in = Ready();
 	in.device_usable = false;
@@ -1271,6 +1288,26 @@ TEST_CASE("a GPU plugin serves a catalog model through SQL, and auto never names
 	auto listed = con.Query("SELECT model, device FROM decide_models() WHERE model = 'tiny-local'");
 	REQUIRE_NO_FAIL(*listed);
 	REQUIRE(duckdb_compat::ResultValue(*listed, 1, 0).ToString() == "cuda:1");
+	// A registered graph the plugin refuses at create: an explicit device keeps the error; 'auto' then scores it on the CPU
+	// (the CPU's answer), and decide_models()/decide_backends() say why instead of naming the GPU.
+	// its own copy of the graph: sessions are keyed by the graph file, and tiny-local's GPU session is already cached
+	const auto refuse_graph = catalog.cache + "/refuse_local.onnx";
+	std::filesystem::copy_file("test/fixtures/julia1_tiny.onnx", refuse_graph, std::filesystem::copy_options::overwrite_existing);
+	REQUIRE_NO_FAIL(con.Query("SELECT decide_register_model('refuse-local', 'local', '" + refuse_graph + "', "
+	                          "'test/fixtures/tiny_tokenizer.json')"));
+	auto refused = con.Query("SELECT decide_probability('x', 'y?', model := 'refuse-local')");
+	REQUIRE(refused->HasError());
+	REQUIRE_THAT(refused->GetError(), Contains("FancyAttention"));
+	REQUIRE_NO_FAIL(con.Query("SET anofox_decide_device = 'auto'"));
+	auto fallback = con.Query("SELECT decide_probability('x', 'y?', model := 'refuse-local')");
+	REQUIRE_NO_FAIL(*fallback);
+	REQUIRE(duckdb_compat::ResultValue(*fallback, 0, 0).GetValue<double>() == duckdb_compat::ResultValue(*own_cpu, 0, 0).GetValue<double>());
+	auto refused_row = con.Query("SELECT supported, reason FROM decide_backends() WHERE model = 'refuse-local' AND device = 'cuda:1'");
+	REQUIRE_NO_FAIL(*refused_row);
+	REQUIRE(duckdb_compat::ResultValue(*refused_row, 0, 0) == Value::BOOLEAN(false));
+	REQUIRE_THAT(duckdb_compat::ResultValue(*refused_row, 1, 0).ToString(), Contains("cannot run this model's graph"));
+	REQUIRE(duckdb_compat::ResultValue(*con.Query("SELECT device FROM decide_models() WHERE model = 'refuse-local'"), 0, 0).ToString() == "cpu");
+	REQUIRE_NO_FAIL(con.Query("SET anofox_decide_device = 'cuda'"));
 	auto doctor = con.Query("SELECT item, status FROM decide_doctor() WHERE item LIKE 'gpu%' ORDER BY item");
 	REQUIRE_NO_FAIL(*doctor);
 	std::map<string, string> doctor_rows;
