@@ -235,7 +235,7 @@ string EngineKey(const string &engine, const string &key) {
 // of the same graph, and a different precision is a different session.
 // A GPU session also names the plugin it was created from (path and file identity): a plugin replaced by
 // decide_accelerate(), or copied over by hand, must not be answered by a session built from the old one, and a
-// different anofox_decide_plugin_dir is a different plugin.
+// different anofox_decide_ep_path is a different plugin.
 string SessionKey(const string &base, const DecideDeviceChoice &device, const string &precision,
                   const string &plugin_path = "") {
 	if (device.backend == "cpu") {
@@ -346,23 +346,21 @@ shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, 
 		// not openable: DecideLoadWeights reports it with the right fix
 	}
 	if (device.backend != "cpu") {
-		// GPU: the plugin gets the staged weight-free graph, the tensor map and the PATH of the safetensors file,
-		// maps and uploads the weights itself. No host float32 arena exists for this session.
-		const auto staged = DecideStageGraph(context, entry, function.c_str());
-		const auto cache_dir = (std::filesystem::path(DecideCacheDir(context, function.c_str())) / "gpu-cache").string();
-		std::error_code ec;
-		std::filesystem::create_directories(cache_dir, ec);
-		DecidePluginCreateParams params {};
-		params.graph_path = staged.graph_path.c_str();
-		params.safetensors_path = entry.weights_path.c_str();
-		params.tensor_map_path = staged.tensor_map_path.c_str();
-		params.cache_dir = cache_dir.c_str();
-		params.arch = device.arch.c_str();
-		params.precision = precision.c_str();
-		params.device_ordinal = device.ordinal;
+		// GPU: the plugin (anofox-ggml-adapter, ABI v3) gets the embedded weight-free graph's bytes and the weights its initializers
+		// read, loaded here exactly as for the CPU (renamed and transposed per the tensor map); the session keeps them alive.
+		auto gpu_map = DecideParseTensorMap(map_resource.data, map_resource.size, entry.bundled_map);
+		DecidePluginRequest request;
+		request.graph_data = graph.data;
+		request.graph_size = graph.size;
+		request.weights = DecideLoadWeights(gpu_map, entry.weights_path, entry.id, function.c_str());
+		request.model = entry.id;
+		request.arch = device.arch;
+		request.precision = precision;
+		request.cache_dir = (std::filesystem::path(DecideCacheDir(context, function.c_str())) / "gpu-cache").string();
+		request.device_ordinal = device.ordinal;
 		auto handle = shared_ptr<DecideLocalSession>(new DecideLocalSession(base, "plugin:" + device.backend));
 		handle->impl = make_shared_ptr<Impl>();
-		handle->impl->plugin = DecideLoadPlugin(plugin_path, params, function);
+		handle->impl->plugin = DecideLoadPlugin(plugin_path, std::move(request), function);
 		cache->sessions[key] = handle;
 		return handle;
 	}

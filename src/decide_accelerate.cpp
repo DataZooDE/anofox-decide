@@ -141,7 +141,7 @@ void FetchFileImpl(const string &url0, const string &dest, int64_t expected_size
 			Fail(function,
 			     "not enough free disk space for " + what + ": " + DecideFormatBytes((idx_t)expected_size - have) +
 			         " are needed and " + DecideFormatBytes(space.available) + " are free",
-			     "free some space or SET anofox_decide_plugin_dir = '<directory on a larger disk>';");
+			     "free some space or SET anofox_decide_ep_path = '<directory on a larger disk>';");
 		}
 	}
 	string url = url0;
@@ -187,7 +187,7 @@ void FetchFileImpl(const string &url0, const string &dest, int64_t expected_size
 		out.close();
 		if (write_failed) {
 			Fail(function, "cannot write to '" + part.string() + "' (disk full or not writable)",
-			     "free some space or SET anofox_decide_plugin_dir = '<another directory>'; then " + retry);
+			     "free some space or SET anofox_decide_ep_path = '<another directory>'; then " + retry);
 		}
 		if (!res.transport_ok) {
 			if (res.error_kind == "refused" && offset > 0 && !restarted) {
@@ -250,7 +250,7 @@ void FetchFileImpl(const string &url0, const string &dest, int64_t expected_size
 	fs::rename(part, dest, ec);
 	if (ec) {
 		Fail(function, "cannot move '" + part.string() + "' to '" + dest + "' (" + ec.message() + ")",
-		     "check the permissions of the plugin directory (anofox_decide_plugin_dir)");
+		     "check the permissions of the plugin directory (anofox_decide_ep_path)");
 	}
 }
 
@@ -300,24 +300,8 @@ bool DecideResolveRuntimeArtifact(const string &backend, const string &os, const
 	const auto sidecar = DecidePluginSha256AssetName(out.backend);
 	out.sidecar_url = base.empty() ? DecidePluginReleaseAssetUrl(sidecar, DECIDE_PLUGIN_RELEASE_TAG)
 	                               : DecidePluginReleaseAssetUrl(sidecar, DECIDE_PLUGIN_RELEASE_TAG, base);
-	if (out.backend == "cuda") {
-		// The ORT core comes along, not just the providers: the CUDA plugin is a standalone library with its
-		// own shared runtime, because this extension's statically linked ORT cannot host provider libraries.
-		// Core and providers must come from one distribution (a CPU core with a GPU provider crashes).
-		out.wheel_url = kOrtCudaWheelUrl;
-		out.wheel_bytes = kOrtCudaWheelBytes;
-		out.wheel_sha256 = kOrtCudaWheelSha256;
-		// The digests are of the files as written (the core after its SONAME rename), which is deterministic for
-		// the pinned wheel: they are checked on every install call, not just at extraction.
-		out.wheel_entries = {{"onnxruntime/capi/libonnxruntime.so.1.29.0", DECIDE_ORT_RENAMED_SONAME, true,
-		                      "62463add533442416078f7d96223d0acb562bfbc1fa16b9d7a32e6dfe458e9ef"},
-		                     {"onnxruntime/capi/libonnxruntime_providers_cuda.so", "libonnxruntime_providers_cuda.so", false,
-		                      "a4d61cc78e6d8f78c0c7fca09de7af7cd2f5f97b0db8defe64f13e8164a9534c"},
-		                     {"onnxruntime/capi/libonnxruntime_providers_shared.so", "libonnxruntime_providers_shared.so", false,
-		                      "086ec1d5388f64153d9c63470d126693db9a182c8ce236d3a1119068471b8a0d"}};
-	}
-	// ROCm ships only its plugin (it drives libmigraphx_c from the user's ROCm install); MLX only its plugin
-	// (it links the Apple libmlx/libmlxc installed on the machine and needs no ORT).
+	// Every backend is its plugin alone (anofox-ggml-adapter's): CUDA links its runtime statically and needs only the NVIDIA driver,
+	// ROCm links the user's HIP install, MLX the Apple libmlx/libmlxc on the machine. No ONNX Runtime comes along.
 	return true;
 }
 
@@ -373,13 +357,13 @@ vector<string> DecideExtractWheelEntries(const string &wheel_path, const vector<
 			if (!streamed || out.fail()) {
 				fs::remove(tmp, ec);
 				Fail(function, "cannot extract '" + entry.zip_path + "' to '" + tmp + "' (disk full, not writable, or a damaged archive)",
-				     "free some space or SET anofox_decide_plugin_dir = '<another directory>'; and retry");
+				     "free some space or SET anofox_decide_ep_path = '<another directory>'; and retry");
 			}
 			fs::remove(target, ec);
 			fs::rename(tmp, target, ec); // atomic publish
 			if (ec) {
 				Fail(function, "cannot move '" + tmp + "' to '" + target + "' (" + ec.message() + ")",
-				     "check the permissions of the plugin directory (anofox_decide_plugin_dir)");
+				     "check the permissions of the plugin directory (anofox_decide_ep_path)");
 			}
 			written.push_back(target);
 			continue;
@@ -418,7 +402,7 @@ vector<string> DecideExtractWheelEntries(const string &wheel_path, const vector<
 				std::error_code ec;
 				fs::remove(tmp, ec);
 				Fail(function, "cannot write '" + tmp + "' (disk full or not writable)",
-				     "free some space or SET anofox_decide_plugin_dir = '<another directory>';");
+				     "free some space or SET anofox_decide_ep_path = '<another directory>';");
 			}
 		}
 		std::error_code ec;
@@ -426,7 +410,7 @@ vector<string> DecideExtractWheelEntries(const string &wheel_path, const vector<
 		fs::rename(tmp, target, ec); // atomic publish
 		if (ec) {
 			Fail(function, "cannot move '" + tmp + "' to '" + target + "' (" + ec.message() + ")",
-			     "check the permissions of the plugin directory (anofox_decide_plugin_dir)");
+			     "check the permissions of the plugin directory (anofox_decide_ep_path)");
 		}
 		written.push_back(target);
 	}
@@ -540,7 +524,7 @@ vector<DecideRuntimeFile> DecideInstallRuntime(ClientContext &context, const Dec
 	fs::create_directories(plugin_dir, ec);
 	if (ec) {
 		Fail(function, "cannot create the plugin directory '" + plugin_dir + "' (" + ec.message() + ")",
-		     "SET anofox_decide_plugin_dir = '<a writable directory>';");
+		     "SET anofox_decide_ep_path = '<a writable directory>';");
 	}
 #ifndef _WIN32
 	if (!dir_existed) {
@@ -553,7 +537,7 @@ vector<DecideRuntimeFile> DecideInstallRuntime(ClientContext &context, const Dec
 	struct stat dir_stat;
 	if (stat(plugin_dir.c_str(), &dir_stat) == 0 && (dir_stat.st_mode & (S_IWGRP | S_IWOTH))) {
 		Fail(function, "the plugin directory '" + plugin_dir + "' is writable by other users, who could replace the plugins in it",
-		     "chmod go-w '" + plugin_dir + "'; or SET anofox_decide_plugin_dir = '<a directory only you can write>';");
+		     "chmod go-w '" + plugin_dir + "'; or SET anofox_decide_ep_path = '<a directory only you can write>';");
 	}
 #else
 	(void)dir_existed;
@@ -641,7 +625,7 @@ vector<DecideRuntimeFile> DecideInstallRuntime(ClientContext &context, const Dec
 		if (ec) {
 			fs::remove(quarantine, ec);
 			Fail(function, "cannot move the verified plugin into '" + plugin_path + "' (" + ec.message() + ")",
-			     "check the permissions of the plugin directory (anofox_decide_plugin_dir)");
+			     "check the permissions of the plugin directory (anofox_decide_ep_path)");
 		}
 	}
 	DecideBumpPluginProbeGeneration(); // a plugin that has just arrived is visible to this session now
@@ -678,7 +662,7 @@ void RequireExternalAccess(ClientContext &context, const char *function) {
 	if (!Settings::Get<EnableExternalAccessSetting>(context)) {
 		throw PermissionException(DecideMsg(function, "fetching a GPU plugin is not allowed because enable_external_access is off",
 		                                    "SET enable_external_access = true; (or install the plugin into "
-		                                    "anofox_decide_plugin_dir yourself)"));
+		                                    "anofox_decide_ep_path yourself)"));
 	}
 }
 
@@ -743,7 +727,7 @@ void RuntimeScan(ClientContext &context, TableFunctionInput &data, DataChunk &ou
 // decide_accelerate(): one call from "installed" to "using the GPU"
 //
 // The manual path is: know that plugins exist, know which one this machine wants, download it, point
-// anofox_decide_plugin_dir at it. Verification stops at loading the plugin and checking its ABI; it does not
+// anofox_decide_ep_path at it. Verification stops at loading the plugin and checking its ABI; it does not
 // run a model (a MIGraphX compile takes minutes, so an onboarding command that proved itself by scoring would
 // look hung). Per-model servability is a query away in decide_backends().
 //===----------------------------------------------------------------------===//
@@ -892,7 +876,7 @@ void RegisterDecideAccelerate(ExtensionLoader &loader) {
 		                   DECIDE_GUARD(RuntimeBind), DECIDE_GUARD(RuntimeInit));
 		RegisterTableFunctionWithAlias(
 		    loader, std::move(func), "decide_download_runtime",
-		    DecideDocs("Download the GPU plugin for 'cuda', 'rocm' or 'mlx' into anofox_decide_plugin_dir (default "
+		    DecideDocs("Download the GPU plugin for 'cuda', 'rocm' or 'mlx' into anofox_decide_ep_path (default "
 		               "<cache dir>/plugins) and verify it against the sha256 published with the release before it is "
 		               "moved into place, and again on every later call of this function (a mismatch deletes it). CUDA "
 		               "also fetches the pinned ONNX Runtime GPU runtime. Refuses a "

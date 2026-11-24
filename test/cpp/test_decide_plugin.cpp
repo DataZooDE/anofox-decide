@@ -13,6 +13,7 @@
 #include "decide_local_weights.hpp"
 #include "decide_plugin_artifacts.hpp"
 #include "decide_plugin_loader.hpp"
+#include "anofox_ggml_adapter/plugin_abi.h"
 #include "decide_provider.hpp"
 #include "decide_soname_patch.hpp"
 
@@ -222,12 +223,14 @@ TEST_CASE("the SONAME patch renames exactly the NUL-terminated entry, in place",
 }
 
 TEST_CASE("plugin file names, sidecar parsing and the release URL", "[anofox_decide][plugin]") {
-	REQUIRE(DecidePluginFileNameFor("cuda", "linux") == "libanofox_decide_cuda_plugin.so");
-	REQUIRE(DecidePluginFileNameFor("rocm", "linux") == "libanofox_decide_migraphx_plugin.so");
-	REQUIRE(DecidePluginFileNameFor("mlx", "osx") == "libanofox_decide_mlx_plugin.dylib");
-	REQUIRE(DecidePluginFileNameFor("cuda", "windows") == "anofox_decide_cuda_plugin.dll");
-	REQUIRE(DecidePluginSha256AssetName("rocm") == "migraphx_plugin.sha256");
-	REQUIRE(DecidePluginSha256AssetName("cuda") == "cuda_plugin.sha256");
+	// the plugins are anofox-ggml-adapter's, shared with anofox-tabfm: the ggml plugin per vendor, and MLX
+	REQUIRE(DecidePluginFileNameFor("cuda", "linux") == "libanofox_ggml-cuda_plugin.so");
+	REQUIRE(DecidePluginFileNameFor("rocm", "linux") == "libanofox_ggml-rocm_plugin.so");
+	REQUIRE(DecidePluginFileNameFor("migraphx", "linux") == "libanofox_ggml-rocm_plugin.so"); // the removed MIGraphX plugin's name
+	REQUIRE(DecidePluginFileNameFor("mlx", "osx") == "libanofox_mlx_plugin.dylib");
+	REQUIRE(DecidePluginFileNameFor("cuda", "windows") == "anofox_ggml-cuda_plugin.dll");
+	REQUIRE(DecidePluginSha256AssetName("rocm") == "ggml-rocm_plugin.sha256");
+	REQUIRE(DecidePluginSha256AssetName("cuda") == "ggml-cuda_plugin.sha256");
 
 	const string a(64, 'a'), b(64, 'b');
 	const string upper = "ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789";
@@ -245,7 +248,7 @@ TEST_CASE("plugin file names, sidecar parsing and the release URL", "[anofox_dec
 	REQUIRE(DecideSha256FromSidecar(string(63, 'a') + "  x.so\n", "x.so").empty());
 	REQUIRE(DecideSha256FromSidecar(string(64, 'g') + "  x.so\n", "x.so").empty());
 
-	REQUIRE(DecidePluginReleaseAssetUrl("a.so", "v1.2.3") == "https://github.com/DataZooDE/anofox-decide/releases/download/v1.2.3/a.so");
+	REQUIRE(DecidePluginReleaseAssetUrl("a.so", "v1.2.3") == "https://github.com/DataZooDE/anofox-ggml-adapter/releases/download/v1.2.3/a.so");
 	REQUIRE(DecidePluginReleaseAssetUrl("a.so", "").empty());
 	REQUIRE(DecidePluginReleaseAssetUrl("a.so", "v1", "http://127.0.0.1:1/dl") == "http://127.0.0.1:1/dl/v1/a.so");
 }
@@ -295,17 +298,15 @@ TEST_CASE("platform refusals name what IS published and the fix", "[anofox_decid
 	REQUIRE_FALSE(DecideResolveRuntimeArtifact("cuda", "windows", "amd64", artifact, error));
 	REQUIRE_THAT(error, Contains("linux/amd64 only"));
 	REQUIRE(DecideResolveRuntimeArtifact("cuda", "linux", "amd64", artifact, error));
-	REQUIRE(artifact.wheel_entries.size() == 3);
-	REQUIRE(artifact.wheel_entries[0].patch_soname);
-	REQUIRE(artifact.wheel_entries[0].dest_name == DECIDE_ORT_RENAMED_SONAME);
-	REQUIRE(artifact.wheel_bytes == 475434900);
-	REQUIRE(artifact.wheel_sha256.size() == 64);
-	REQUIRE_THAT(artifact.plugin_url, Contains(string("/") + DECIDE_PLUGIN_RELEASE_TAG + "/libanofox_decide_cuda_plugin.so"));
-	REQUIRE_THAT(artifact.sidecar_url, Contains("/cuda_plugin.sha256"));
-	// ROCm and MLX ship only their plugin.
+	// Every backend is its plugin alone: the ggml CUDA plugin links its runtime statically (only the NVIDIA driver is needed), so no
+	// ONNX Runtime wheel comes along any more.
+	REQUIRE(artifact.wheel_entries.empty());
+	REQUIRE(artifact.wheel_url.empty());
+	REQUIRE_THAT(artifact.plugin_url, Contains(string("/") + DECIDE_PLUGIN_RELEASE_TAG + "/libanofox_ggml-cuda_plugin.so"));
+	REQUIRE_THAT(artifact.sidecar_url, Contains("/ggml-cuda_plugin.sha256"));
 	REQUIRE(DecideResolveRuntimeArtifact("rocm", "linux", "amd64", artifact, error));
 	REQUIRE(artifact.wheel_url.empty());
-	REQUIRE(artifact.plugin_name == "libanofox_decide_migraphx_plugin.so");
+	REQUIRE(artifact.plugin_name == "libanofox_ggml-rocm_plugin.so");
 	REQUIRE(DecideResolveRuntimeArtifact("mlx", "osx", "arm64", artifact, error));
 	REQUIRE(artifact.wheel_url.empty());
 }
@@ -343,31 +344,33 @@ TEST_CASE("plugin failures are mapped into the project's error shape", "[anofox_
 
 namespace {
 
+//! What a plugin session is built from (plugin ABI v3): the graph's bytes and the weights it reads, both supplied by the extension.
 struct PluginFiles {
 	string dir = TempDir("files");
-	string graph = dir + "/graph.onnx";
-	string weights = dir + "/model.safetensors";
-	string map = dir + "/map.json";
 	string cache = dir + "/cache";
-	PluginFiles() {
-		WriteFile(graph, "g");
-		WriteFile(weights, "w");
-		WriteFile(map, "{}");
-	}
+	string graph = "g"; // the fake plugin only checks that a graph was given
+	float weight[4] = {1.0f, 2.0f, 3.0f, 4.0f};
 	~PluginFiles() {
 		std::error_code ec;
 		fs::remove_all(dir, ec);
 	}
-	DecidePluginCreateParams Params(const char *arch = "sm_89", const char *precision = "fp32", int ordinal = 0) const {
-		DecidePluginCreateParams p {};
-		p.graph_path = graph.c_str();
-		p.safetensors_path = weights.c_str();
-		p.tensor_map_path = map.c_str();
-		p.cache_dir = cache.c_str();
-		p.arch = arch;
-		p.precision = precision;
-		p.device_ordinal = ordinal;
-		return p;
+	DecidePluginRequest Params(const char *arch = "sm_89", const char *precision = "fp32", int ordinal = 0, bool with_weights = true) const {
+		DecidePluginRequest r;
+		r.graph_data = graph.data();
+		r.graph_size = graph.size();
+		if (with_weights) {
+			r.weights = make_uniq<DecideLoadedWeights>();
+			r.weights->names = {"w"};
+			r.weights->shapes = {{4}};
+			r.weights->data = {weight};
+			r.weights->bytes = {sizeof(weight)};
+		}
+		r.model = "julia-1";
+		r.cache_dir = cache;
+		r.arch = arch;
+		r.precision = precision;
+		r.device_ordinal = ordinal;
+		return r;
 	}
 };
 
@@ -411,9 +414,7 @@ TEST_CASE("the loader round-trips every tensor and parameter through a real plug
 			REQUIRE(scores[b][m] == Expected(batch, b, m, 3));
 		}
 	}
-	session->Precompile(2, 128, 3, "decide_probability");
-	REQUIRE_THAT(Message([&] { session->Precompile(0, 128, 3, "decide_probability"); }),
-	             Contains("decide_probability: the 'fake' backend failed while scoring (non-positive shape)"));
+	session->Precompile(2, 128, 3, "decide_probability"); // a no-op: the ggml and MLX backends compile per shape on first use
 	REQUIRE(DecidePluginLoadable(kFakePlugin));
 }
 
@@ -421,10 +422,11 @@ TEST_CASE("the loader refuses a plugin built against another ABI before using it
 	PluginFiles files;
 	string error;
 	REQUIRE_FALSE(DecidePluginLoadable(kBadAbiPlugin, &error));
-	REQUIRE_THAT(error, Contains("built against plugin ABI version 1001, but this build speaks 1"));
+	const string plugin_abi = std::to_string(ANOFOX_GGML_PLUGIN_ABI_VERSION + 1000), ours = std::to_string(ANOFOX_GGML_PLUGIN_ABI_VERSION);
+	REQUIRE_THAT(error, Contains("built against plugin ABI version " + plugin_abi + ", this build speaks version " + ours));
 	const auto msg = Message([&] { DecideLoadPlugin(kBadAbiPlugin, files.Params(), "decide_probability"); });
 	REQUIRE_THAT(msg, Contains("decide_probability: the GPU plugin"));
-	REQUIRE_THAT(msg, Contains("was built against plugin ABI version 1001, but this build speaks version 1"));
+	REQUIRE_THAT(msg, Contains("was built against plugin ABI version " + plugin_abi + ", this build speaks version " + ours));
 	REQUIRE_THAT(msg, Contains("Fix: CALL decide_accelerate();"));
 }
 
@@ -437,7 +439,7 @@ TEST_CASE("the loader reports a missing file, a file that is not a plugin and a 
 	auto msg = Message([&] { DecideLoadPlugin(missing, files.Params(), "decide_probability"); });
 	REQUIRE_THAT(msg, Contains("decide_probability: cannot load the GPU plugin"));
 	REQUIRE_THAT(msg, Contains("Fix: CALL decide_accelerate();"));
-	REQUIRE_THAT(msg, Contains("anofox_decide_plugin_dir"));
+	REQUIRE_THAT(msg, Contains("anofox_decide_ep_path"));
 
 	// The right name, the wrong contents.
 	const string text = files.dir + "/lib_not_a_plugin" + DecidePluginLibrarySuffix(DecideHostPluginOs());
@@ -455,10 +457,9 @@ TEST_CASE("the loader reports a missing file, a file that is not a plugin and a 
 	// A precision the plugin does not implement is its error, not a silent fp32.
 	REQUIRE_THAT(Message([&] { DecideLoadPlugin(kFakePlugin, files.Params("sm_89", "bf16"), "decide_probability"); }),
 	             Contains("only fp32 is implemented"));
-	// The paths the extension hands over are real: a missing weights file is the plugin's to refuse.
-	fs::remove(files.weights);
-	REQUIRE_THAT(Message([&] { DecideLoadPlugin(kFakePlugin, files.Params(), "decide_probability"); }),
-	             Contains("a path handed to create does not exist"));
+	// The extension hands over the real weights: without them the plugin refuses.
+	REQUIRE_THAT(Message([&] { DecideLoadPlugin(kFakePlugin, files.Params("sm_89", "fp32", 0, false), "decide_probability"); }),
+	             Contains("no weights were handed to create"));
 }
 
 #endif // DECIDE_FAKE_PLUGIN_PATH
@@ -646,7 +647,7 @@ TEST_CASE("the probe of a plugin file is memoised per file identity", "[anofox_d
 	state = DecideProbePlugin(path);
 	REQUIRE(state.exists);
 	REQUIRE_FALSE(state.loadable);
-	REQUIRE_THAT(state.problem, Contains("ABI version 1001"));
+	REQUIRE_THAT(state.problem, Contains("ABI version " + std::to_string(ANOFOX_GGML_PLUGIN_ABI_VERSION + 1000)));
 	fs::remove(path);
 	fs::copy_file(kFakePlugin, path); // unlink, never truncate: a library mapped into this process would crash it
 	// The memo is keyed by the file's identity (path, size, mtime), so a plugin copied over by hand is probed
@@ -899,7 +900,7 @@ TEST_CASE("a plugin with a sidecar is checked against it once before it is loade
 		InstallPlugin(kFakePlugin, dir, "cuda");
 		WriteFile(path + ".sha256", Sha256(bytes) + "  some_other_file.so\n");
 		auto msg = Message([&] {
-			DecideLoadPlugin(path, DecidePluginCreateParams {}, "decide_probability");
+			DecideLoadPlugin(path, DecidePluginRequest {}, "decide_probability");
 		});
 		REQUIRE_THAT(msg, Contains("was not loaded: its checksum file does not name it"));
 		REQUIRE_THAT(msg, Contains("Fix: CALL decide_accelerate();"));
@@ -1309,12 +1310,13 @@ TEST_CASE("a plugin of another ABI is never used, and every surface says why", "
 	REQUIRE(duckdb_compat::ResultValue(*con.Query("SELECT device FROM decide_models() WHERE model = 'test-tiny'"), 0, 0).ToString() == "cpu");
 	auto b = con.Query("SELECT supported, reason FROM decide_backends() WHERE model = 'test-tiny' AND device = 'cuda:0'");
 	REQUIRE(duckdb_compat::ResultValue(*b, 0, 0) == Value::BOOLEAN(false));
-	REQUIRE_THAT(duckdb_compat::ResultValue(*b, 1, 0).ToString(), Contains("cannot be used (built against plugin ABI version 1001, but this build speaks 1)"));
+	REQUIRE_THAT(duckdb_compat::ResultValue(*b, 1, 0).ToString(), Contains("cannot be used (built against plugin ABI version " + std::to_string(ANOFOX_GGML_PLUGIN_ABI_VERSION + 1000) +
+	                                                                                 ", this build speaks version " + std::to_string(ANOFOX_GGML_PLUGIN_ABI_VERSION) + ")"));
 	auto doctor = con.Query("SELECT status, detail, fix FROM decide_doctor() WHERE item = 'gpu plugin ''cuda'''");
 	REQUIRE_NO_FAIL(*doctor);
 	REQUIRE(doctor->RowCount() == 1);
 	REQUIRE(duckdb_compat::ResultValue(*doctor, 0, 0).ToString() == "fail");
-	REQUIRE_THAT(duckdb_compat::ResultValue(*doctor, 1, 0).ToString(), Contains("ABI version 1001"));
+	REQUIRE_THAT(duckdb_compat::ResultValue(*doctor, 1, 0).ToString(), Contains("ABI version " + std::to_string(ANOFOX_GGML_PLUGIN_ABI_VERSION + 1000)));
 	REQUIRE(duckdb_compat::ResultValue(*doctor, 2, 0).ToString() == "CALL decide_accelerate();");
 	REQUIRE_NO_FAIL(con.Query("SET anofox_decide_device = 'cuda'"));
 	auto r = con.Query(kQuestion);

@@ -156,12 +156,56 @@ def num(x):
     return repr(float(x))
 
 
+
+def gpu_variant(cpu_test):
+    """The same suite on a GPU plugin: the same tickets and the same ONNX Runtime answers, served by the device named in
+    DECIDE_E2E_DEVICE (cuda, rocm or mlx; the plugin from DECIDE_E2E_EP_PATH), to the GPU bar: probabilities and scores within 1e-3,
+    labels exact where the reference is not a near tie. Each model block proves the plugin served it (engine 'plugin:<device>')."""
+    out = cpu_test
+
+    def sub(a, b):
+        nonlocal out
+        assert out.count(a) == 1, a[:70]
+        out = out.replace(a, b)
+
+    sub("# name: test/sql/decide_local_e2e.test", "# name: test/sql/decide_local_e2e_gpu.test")
+    sub("# description: End-to-end support-ticket triage on the three in-process catalog models",
+        "# description: decide_local_e2e.test on a GPU plugin (DECIDE_E2E_DEVICE = cuda | rocm | mlx, the plugin in\n"
+        "#              DECIDE_E2E_EP_PATH), to the GPU bar: probabilities and scores within 1e-3 of ONNX Runtime on the CPU, labels\n"
+        "#              exact where the reference is not a near tie, and every block served by the plugin. Below: the CPU suite's text.\n"
+        "#              End-to-end support-ticket triage on the three in-process catalog models")
+    sub("require-env ANOFOX_DECIDE_LOCAL_ENGINE\n", "require-env DECIDE_E2E_DEVICE\n\nrequire-env DECIDE_E2E_EP_PATH\n")
+    sub("SET anofox_decide_local_engine = '${ANOFOX_DECIDE_LOCAL_ENGINE}';\n",
+        "SET anofox_decide_device = '${DECIDE_E2E_DEVICE}';\n\nstatement ok\nSET anofox_decide_ep_path = '${DECIDE_E2E_EP_PATH}';\n")
+    sub("CREATE MACRO same_p(a, b) AS coalesce(abs(a - b) <= 1e-4 AND\n"
+        "    (a <= 0 OR a >= 1 OR b <= 0 OR b >= 1 OR abs(ln(a / (1 - a)) - ln(b / (1 - b))) <= 2e-3), false);",
+        "CREATE MACRO same_p(a, b) AS coalesce(abs(a - b) <= 1e-3, false);")
+    sub("CREATE MACRO same_x(a, b) AS coalesce(abs(a - b) <= 1e-4, false);",
+        "CREATE MACRO same_x(a, b) AS coalesce(abs(a - b) <= 1e-3, false);")
+    sub("# the same probability: 1e-4 absolute and 2e-3 in log-odds (both sides strictly inside (0, 1)); NULL is never the same",
+        "# the same probability on a GPU: 1e-3 absolute (the GPU bar); NULL is never the same")
+    old = ("SELECT count(*) FILTER (engine = '${ANOFOX_DECIDE_LOCAL_ENGINE}' AND runs > 0), count(*) FILTER (engine <> "
+           "'${ANOFOX_DECIDE_LOCAL_ENGINE}')")
+    new = ("SELECT count(*) FILTER (engine = 'plugin:${DECIDE_E2E_DEVICE}' AND runs > 0), count(*) FILTER (engine <> "
+           "'plugin:${DECIDE_E2E_DEVICE}')")
+    assert out.count(old) == 3, out.count(old)
+    out = out.replace(old, new).replace("# the engine under test answered, and only it", "# the GPU plugin answered, and only it")
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--duckdb", required=True)
-    ap.add_argument("--extension", required=True)
+    ap.add_argument("--duckdb")
+    ap.add_argument("--extension")
     ap.add_argument("--out", default="test/sql/decide_local_e2e.test")
+    ap.add_argument("--gpu-out", default="test/sql/decide_local_e2e_gpu.test")
+    ap.add_argument("--gpu-from", help="only derive --gpu-out from this existing CPU suite (no reference capture)")
     a = ap.parse_args()
+    if a.gpu_from:
+        with open(a.gpu_out, "w") as f:
+            f.write(gpu_variant(open(a.gpu_from).read()))
+        print(f"wrote {a.gpu_out}")
+        return
 
     blocks = []
     for model in MODELS:
@@ -317,6 +361,9 @@ CREATE MACRO same_x(a, b) AS coalesce(abs(a - b) <= 1e-4, false);
     with open(a.out, "w") as f:
         f.write(header + "".join(blocks))
     print(f"wrote {a.out}")
+    with open(a.gpu_out, "w") as f:
+        f.write(gpu_variant(header + "".join(blocks)))
+    print(f"wrote {a.gpu_out}")
 
 
 if __name__ == "__main__":

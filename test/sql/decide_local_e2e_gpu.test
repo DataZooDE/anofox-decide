@@ -1,0 +1,577 @@
+# name: test/sql/decide_local_e2e_gpu.test
+# description: decide_local_e2e.test on a GPU plugin (DECIDE_E2E_DEVICE = cuda | rocm | mlx, the plugin in
+#              DECIDE_E2E_EP_PATH), to the GPU bar: probabilities and scores within 1e-3 of ONNX Runtime on the CPU, labels
+#              exact where the reference is not a near tie, and every block served by the plugin. Below: the CPU suite's text.
+#              End-to-end support-ticket triage on the three in-process catalog models (julia-1, laya-multilingual,
+#              laya-typed-decisions) with their real weights, short tickets and long threads (past the 128-token
+#              local-attention window): refund probability, team routing, frustration score, a thresholded decision,
+#              several questions at once (decide_answers, decide_many) and cross-row batching. Every answer must match
+#              the reference engine (ONNX Runtime, captured by tools/e2e/make_local_e2e.py): probabilities to 1e-4 and
+#              2e-3 in log-odds, scores to 1e-4, labels exactly where the reference is not a near tie.
+#
+#              Runs on the engine named by ANOFOX_DECIDE_LOCAL_ENGINE (required: a run that does not say which
+#              engine it tests proves nothing), and checks that this engine, and only it, answered.
+#              Needs the weights in the default cache:
+#                CALL decide_download('julia-1'); CALL decide_download('laya-multilingual'); CALL decide_download('laya-typed-decisions');
+#                DECIDE_REAL_WEIGHTS=1 ANOFOX_DECIDE_LOCAL_ENGINE=ort|ggml ./build/release/test/unittest test/sql/decide_local_e2e.test
+#              Generated file: edit tools/e2e/make_local_e2e.py and regenerate, do not edit by hand.
+# group: [anofox_decide]
+
+require anofox_decide
+
+require-env DECIDE_REAL_WEIGHTS
+
+require-env DECIDE_E2E_DEVICE
+
+require-env DECIDE_E2E_EP_PATH
+
+require-env DECIDE_CACHE_DIR
+
+statement ok
+LOAD anofox_decide
+
+statement ok
+SET anofox_decide_device = '${DECIDE_E2E_DEVICE}';
+
+statement ok
+SET anofox_decide_ep_path = '${DECIDE_E2E_EP_PATH}';
+
+# DuckDB's unittest gives every test its own HOME, so the downloaded models are found through DECIDE_CACHE_DIR
+# (scripts/e2e_local.sh sets it to ~/.cache/anofox-decide)
+statement ok
+SET anofox_decide_cache_dir = '${DECIDE_CACHE_DIR}';
+
+# all three models are downloaded and verified (offline: a cached file is checked, not fetched)
+query I
+SELECT count(*) FROM (SELECT * FROM decide_download('julia-1') UNION ALL SELECT * FROM decide_download('laya-multilingual')
+                      UNION ALL SELECT * FROM decide_download('laya-typed-decisions')) WHERE status = 'cached'
+----
+8
+
+# the same probability on a GPU: 1e-3 absolute (the GPU bar); NULL is never the same
+statement ok
+CREATE MACRO same_p(a, b) AS coalesce(abs(a - b) <= 1e-3, false);
+
+statement ok
+CREATE MACRO same_x(a, b) AS coalesce(abs(a - b) <= 1e-3, false);
+
+# ---------------------------------------------------------------- julia-1 (45 tickets, the longest 1905 tokens)
+
+statement ok
+CREATE OR REPLACE TABLE tickets AS SELECT * FROM (VALUES
+  (1, 'I was charged twice for my March invoice, please refund the extra 49 EUR.', true, 'billing', 1, 'en'),
+  (2, 'The app crashes every time I open the export dialog on version 3.2.', false, 'defect', 1, 'en'),
+  (3, 'Thanks for the quick help yesterday, everything works now!', false, 'other', 0, 'en'),
+  (4, 'I want my money back, this product does not do what was advertised.', true, 'billing', 2, 'en'),
+  (5, 'Login button does nothing on Safari, error 500 in the console.', false, 'defect', 1, 'en'),
+  (6, 'Our invoice shows the wrong VAT rate; please issue a corrected one.', false, 'billing', 0, 'en'),
+  (7, 'Do you have an office in Munich? We would like to visit.', false, 'other', 0, 'en'),
+  (8, 'Cancel my subscription and reimburse the unused months.', true, 'billing', 1, 'en'),
+  (9, 'My parcel was supposed to arrive on Monday and the tracking has not moved for a week.', false, 'shipping', 1, 'en'),
+  (10, 'The package arrived crushed and the glass inside is broken. I need a replacement or my money back.', true, 'shipping', 2, 'en'),
+  (11, 'How do I add a second user to our team account?', false, 'account', 0, 'en'),
+  (12, 'I cannot reset my password, the reset email never arrives.', false, 'account', 1, 'en'),
+  (13, 'This is the third time I am writing. Nobody answers. Refund me now or I will dispute the charge.', true, 'billing', 2, 'en'),
+  (14, 'The dashboard shows yesterday''s numbers twice since the last update.', false, 'defect', 0, 'en'),
+  (15, 'Could you send me the invoice for order 88231 as a PDF?', false, 'billing', 0, 'en'),
+  (16, 'You billed me after I cancelled in January. Please return the two payments.', true, 'billing', 1, 'en'),
+  (17, 'The CSV import silently drops every row that contains a comma in a quoted field.', false, 'defect', 1, 'en'),
+  (18, 'Please change the delivery address of my open order to our new warehouse.', false, 'shipping', 0, 'en'),
+  (19, 'Absolutely unacceptable. The device died after two days and support hung up on me.', true, 'defect', 2, 'en'),
+  (20, 'Is there a discount for non-profit organisations?', false, 'other', 0, 'en'),
+  (21, 'My account was locked after three login attempts, please unlock it, I have a demo in an hour.', false, 'account', 1, 'en'),
+  (22, 'I ordered the blue jacket but received a red one. I would like to return it for a full refund.', true, 'shipping', 1, 'en'),
+  (23, 'Great product, just wanted to say the new search is much faster.', false, 'other', 0, 'en'),
+  (24, 'The mobile app logs me out every few minutes on Android 14.', false, 'defect', 1, 'en'),
+  (25, 'We were charged the enterprise price but we are on the team plan. Please credit the difference.', true, 'billing', 1, 'en'),
+  (26, 'Where can I download the data processing agreement?', false, 'account', 0, 'en'),
+  (27, 'The courier left the box in the rain, everything is soaked. I am furious.', false, 'shipping', 2, 'en'),
+  (28, 'Please delete my account and all my data.', false, 'account', 0, 'en'),
+  (29, 'I paid for express shipping and it took twelve days. I expect the shipping fee back.', true, 'shipping', 1, 'en'),
+  (30, 'After the update the report PDF has empty pages.', false, 'defect', 1, 'en'),
+  (31, 'Hello, I am interested in a partnership, who can I talk to?', false, 'other', 0, 'en'),
+  (32, 'You took the money but the order was never confirmed. I want it refunded today.', true, 'billing', 2, 'en'),
+  (33, 'Ich wurde zweimal belastet, bitte erstatten Sie mir den doppelten Betrag zurück.', true, 'billing', 1, 'de'),
+  (34, 'Die App stürzt beim Öffnen der Einstellungen jedes Mal ab.', false, 'defect', 1, 'de'),
+  (35, 'Mon colis n''est jamais arrivé et le suivi ne bouge plus depuis dix jours.', false, 'shipping', 1, 'fr'),
+  (36, 'Je veux être remboursé, le produit ne correspond pas à la description.', true, 'billing', 2, 'fr'),
+  (37, 'No puedo iniciar sesión en mi cuenta desde ayer.', false, 'account', 1, 'es'),
+  (38, 'Gracias por la ayuda, todo funciona perfectamente.', false, 'other', 0, 'es'),
+  (39, 'Il pacco è arrivato danneggiato, voglio il rimborso completo.', true, 'shipping', 2, 'it'),
+  (40, 'Kunnen jullie de factuur op onze nieuwe bedrijfsnaam zetten?', false, 'billing', 0, 'nl'),
+  (101, 'Hello support team, I am writing on behalf of our finance department about the subscription we took out in March. Since then we have received three invoices for the same period, each with a slightly different amount, and our accountant cannot reconcile them with the bank statements. The first invoice listed twelve seats at the team price, the second one fourteen seats at the enterprise price, and the third one again twelve seats but with an additional charge for premium support that we never ordered. We tried to change the billing contact in the portal last week, but the page shows an error and the old contact keeps receiving all the emails, including the payment reminders. Our procurement policy requires that every invoice matches the purchase order exactly, so at the moment none of these invoices can be approved and your system keeps sending reminders that payment is overdue.', false, 'billing', 1, 'en'),
+  (102, 'We tried to change the billing contact in the portal last week, but the page shows an error and the old contact keeps receiving all the emails, including the payment reminders. Our procurement policy requires that every invoice matches the purchase order exactly, so at the moment none of these invoices can be approved and your system keeps sending reminders that payment is overdue. In addition, two of our users report that the desktop application logs them out several times per hour since the latest update, which makes it very hard to finish the monthly reports on time. I have attached the purchase order and the three invoices to this message so that you can compare them yourself. Could you please check what went wrong, cancel the incorrect invoices, and send us one corrected invoice for the twelve seats at the team price that we actually ordered? If an amount was already collected by direct debit for the wrong invoices, we expect the difference to be credited back to our account before the end of the month. We have been happy customers for two years and would like to keep it that way, but this situation has cost our team several hours already and our CFO is asking whether we should look at other vendors. Please also let us know whether the logout problem is a known issue and when a fix can be expected, because the workaround suggested in your help center does not work for us. Thank you in advance for a quick reply; you can reach me by email or by phone during business hours.', true, 'billing', 1, 'en'),
+  (103, 'Since then we have received three invoices for the same period, each with a slightly different amount, and our accountant cannot reconcile them with the bank statements. The first invoice listed twelve seats at the team price, the second one fourteen seats at the enterprise price, and the third one again twelve seats but with an additional charge for premium support that we never ordered. We tried to change the billing contact in the portal last week, but the page shows an error and the old contact keeps receiving all the emails, including the payment reminders. Our procurement policy requires that every invoice matches the purchase order exactly, so at the moment none of these invoices can be approved and your system keeps sending reminders that payment is overdue. In addition, two of our users report that the desktop application logs them out several times per hour since the latest update, which makes it very hard to finish the monthly reports on time. I have attached the purchase order and the three invoices to this message so that you can compare them yourself. Could you please check what went wrong, cancel the incorrect invoices, and send us one corrected invoice for the twelve seats at the team price that we actually ordered? If an amount was already collected by direct debit for the wrong invoices, we expect the difference to be credited back to our account before the end of the month. We have been happy customers for two years and would like to keep it that way, but this situation has cost our team several hours already and our CFO is asking whether we should look at other vendors. Please also let us know whether the logout problem is a known issue and when a fix can be expected, because the workaround suggested in your help center does not work for us. Thank you in advance for a quick reply; you can reach me by email or by phone during business hours. Hello support team, I am writing on behalf of our finance department about the subscription we took out in March.', true, 'billing', 2, 'en'),
+  (104, 'Could you please check what went wrong, cancel the incorrect invoices, and send us one corrected invoice for the twelve seats at the team price that we actually ordered? If an amount was already collected by direct debit for the wrong invoices, we expect the difference to be credited back to our account before the end of the month. We have been happy customers for two years and would like to keep it that way, but this situation has cost our team several hours already and our CFO is asking whether we should look at other vendors. Please also let us know whether the logout problem is a known issue and when a fix can be expected, because the workaround suggested in your help center does not work for us. Thank you in advance for a quick reply; you can reach me by email or by phone during business hours. Hello support team, I am writing on behalf of our finance department about the subscription we took out in March. Since then we have received three invoices for the same period, each with a slightly different amount, and our accountant cannot reconcile them with the bank statements. The first invoice listed twelve seats at the team price, the second one fourteen seats at the enterprise price, and the third one again twelve seats but with an additional charge for premium support that we never ordered. We tried to change the billing contact in the portal last week, but the page shows an error and the old contact keeps receiving all the emails, including the payment reminders. Our procurement policy requires that every invoice matches the purchase order exactly, so at the moment none of these invoices can be approved and your system keeps sending reminders that payment is overdue. In addition, two of our users report that the desktop application logs them out several times per hour since the latest update, which makes it very hard to finish the monthly reports on time. I have attached the purchase order and the three invoices to this message so that you can compare them yourself. The first invoice listed twelve seats at the team price, the second one fourteen seats at the enterprise price, and the third one again twelve seats but with an additional charge for premium support that we never ordered. We tried to change the billing contact in the portal last week, but the page shows an error and the old contact keeps receiving all the emails, including the payment reminders. Our procurement policy requires that every invoice matches the purchase order exactly, so at the moment none of these invoices can be approved and your system keeps sending reminders that payment is overdue. In addition, two of our users report that the desktop application logs them out several times per hour since the latest update, which makes it very hard to finish the monthly reports on time. I have attached the purchase order and the three invoices to this message so that you can compare them yourself. Could you please check what went wrong, cancel the incorrect invoices, and send us one corrected invoice for the twelve seats at the team price that we actually ordered?', true, 'billing', 2, 'en'),
+  (201, 'Hello support team, I am writing on behalf of our finance department about the subscription we took out in March. Since then we have received three invoices for the same period, each with a slightly different amount, and our accountant cannot reconcile them with the bank statements. The first invoice listed twelve seats at the team price, the second one fourteen seats at the enterprise price, and the third one again twelve seats but with an additional charge for premium support that we never ordered. We tried to change the billing contact in the portal last week, but the page shows an error and the old contact keeps receiving all the emails, including the payment reminders. Our procurement policy requires that every invoice matches the purchase order exactly, so at the moment none of these invoices can be approved and your system keeps sending reminders that payment is overdue. In addition, two of our users report that the desktop application logs them out several times per hour since the latest update, which makes it very hard to finish the monthly reports on time. I have attached the purchase order and the three invoices to this message so that you can compare them yourself. Could you please check what went wrong, cancel the incorrect invoices, and send us one corrected invoice for the twelve seats at the team price that we actually ordered? If an amount was already collected by direct debit for the wrong invoices, we expect the difference to be credited back to our account before the end of the month. We have been happy customers for two years and would like to keep it that way, but this situation has cost our team several hours already and our CFO is asking whether we should look at other vendors. Please also let us know whether the logout problem is a known issue and when a fix can be expected, because the workaround suggested in your help center does not work for us. Thank you in advance for a quick reply; you can reach me by email or by phone during business hours. Since then we have received three invoices for the same period, each with a slightly different amount, and our accountant cannot reconcile them with the bank statements. The first invoice listed twelve seats at the team price, the second one fourteen seats at the enterprise price, and the third one again twelve seats but with an additional charge for premium support that we never ordered. We tried to change the billing contact in the portal last week, but the page shows an error and the old contact keeps receiving all the emails, including the payment reminders. Our procurement policy requires that every invoice matches the purchase order exactly, so at the moment none of these invoices can be approved and your system keeps sending reminders that payment is overdue. In addition, two of our users report that the desktop application logs them out several times per hour since the latest update, which makes it very hard to finish the monthly reports on time. I have attached the purchase order and the three invoices to this message so that you can compare them yourself. Could you please check what went wrong, cancel the incorrect invoices, and send us one corrected invoice for the twelve seats at the team price that we actually ordered? If an amount was already collected by direct debit for the wrong invoices, we expect the difference to be credited back to our account before the end of the month. We have been happy customers for two years and would like to keep it that way, but this situation has cost our team several hours already and our CFO is asking whether we should look at other vendors. Please also let us know whether the logout problem is a known issue and when a fix can be expected, because the workaround suggested in your help center does not work for us. Thank you in advance for a quick reply; you can reach me by email or by phone during business hours. Hello support team, I am writing on behalf of our finance department about the subscription we took out in March. The first invoice listed twelve seats at the team price, the second one fourteen seats at the enterprise price, and the third one again twelve seats but with an additional charge for premium support that we never ordered. We tried to change the billing contact in the portal last week, but the page shows an error and the old contact keeps receiving all the emails, including the payment reminders. Our procurement policy requires that every invoice matches the purchase order exactly, so at the moment none of these invoices can be approved and your system keeps sending reminders that payment is overdue. In addition, two of our users report that the desktop application logs them out several times per hour since the latest update, which makes it very hard to finish the monthly reports on time. I have attached the purchase order and the three invoices to this message so that you can compare them yourself. Could you please check what went wrong, cancel the incorrect invoices, and send us one corrected invoice for the twelve seats at the team price that we actually ordered? If an amount was already collected by direct debit for the wrong invoices, we expect the difference to be credited back to our account before the end of the month. We have been happy customers for two years and would like to keep it that way, but this situation has cost our team several hours already and our CFO is asking whether we should look at other vendors. Please also let us know whether the logout problem is a known issue and when a fix can be expected, because the workaround suggested in your help center does not work for us. Thank you in advance for a quick reply; you can reach me by email or by phone during business hours. Hello support team, I am writing on behalf of our finance department about the subscription we took out in March. Since then we have received three invoices for the same period, each with a slightly different amount, and our accountant cannot reconcile them with the bank statements. We tried to change the billing contact in the portal last week, but the page shows an error and the old contact keeps receiving all the emails, including the payment reminders. Our procurement policy requires that every invoice matches the purchase order exactly, so at the moment none of these invoices can be approved and your system keeps sending reminders that payment is overdue. In addition, two of our users report that the desktop application logs them out several times per hour since the latest update, which makes it very hard to finish the monthly reports on time. I have attached the purchase order and the three invoices to this message so that you can compare them yourself. Could you please check what went wrong, cancel the incorrect invoices, and send us one corrected invoice for the twelve seats at the team price that we actually ordered? If an amount was already collected by direct debit for the wrong invoices, we expect the difference to be credited back to our account before the end of the month. We have been happy customers for two years and would like to keep it that way, but this situation has cost our team several hours already and our CFO is asking whether we should look at other vendors. Please also let us know whether the logout problem is a known issue and when a fix can be expected, because the workaround suggested in your help center does not work for us. Thank you in advance for a quick reply; you can reach me by email or by phone during business hours. Hello support team, I am writing on behalf of our finance department about the subscription we took out in March. Since then we have received three invoices for the same period, each with a slightly different amount, and our accountant cannot reconcile them with the bank statements. The first invoice listed twelve seats at the team price, the second one fourteen seats at the enterprise price, and the third one again twelve seats but with an additional charge for premium support that we never ordered. Our procurement policy requires that every invoice matches the purchase order exactly, so at the moment none of these invoices can be approved and your system keeps sending reminders that payment is overdue. In addition, two of our users report that the desktop application logs them out several times per hour since the latest update, which makes it very hard to finish the monthly reports on time. I have attached the purchase order and the three invoices to this message so that you can compare them yourself. Could you please check what went wrong, cancel the incorrect invoices, and send us one corrected invoice for the twelve seats at the team price that we actually ordered? If an amount was already collected by direct debit for the wrong invoices, we expect the difference to be credited back to our account before the end of the month. We have been happy customers for two years and would like to keep it that way, but this situation has cost our team several hours already and our CFO is asking whether we should look at other vendors. Please also let us know whether the logout problem is a known issue and when a fix can be expected, because the workaround suggested in your help center does not work for us. Thank you in advance for a quick reply; you can reach me by email or by phone during business hours. Hello support team, I am writing on behalf of our finance department about the subscription we took out in March. Since then we have received three invoices for the same period, each with a slightly different amount, and our accountant cannot reconcile them with the bank statements. The first invoice listed twelve seats at the team price, the second one fourteen seats at the enterprise price, and the third one again twelve seats but with an additional charge for premium support that we never ordered. We tried to change the billing contact in the portal last week, but the page shows an error and the old contact keeps receiving all the emails, including the payment reminders.', true, 'billing', 2, 'en')
+) t(id, text, refund, team, mood, lang);
+
+statement ok
+CREATE OR REPLACE TABLE got_julia_1 AS SELECT id,
+  decide_probability(text, 'A refund is requested.', model := 'julia-1') AS p_refund,
+  decide_choice(text, 'Which team owns this?', ['billing', 'defect', 'account', 'shipping', 'other'], model := 'julia-1') AS team,
+  decide_choice_distribution(text, 'Which team owns this?', ['billing', 'defect', 'account', 'shipping', 'other'], model := 'julia-1') AS team_dist,
+  decide_score(text, 'How frustrated is the writer?', ['calm', 'frustrated', 'angry'], model := 'julia-1') AS mood,
+  decide_probability(text, 'The writer is angry.', model := 'julia-1') AS p_angry,
+  decide_decision(text, 'The writer is angry.', 0.5, model := 'julia-1') AS angry
+FROM tickets;
+
+statement ok
+CREATE OR REPLACE TABLE exp_julia_1 AS SELECT * FROM (VALUES
+  (1, 0.8538910996584782, 'other', true, [0.07422133586668124, 0.028438449247082585, 0.09414391252365131, 0.05867925925983796, 0.7445170431027469], 1.404939490726004, 0.12563518656805517, false, true),
+  (2, 0.9094222220593283, 'defect', true, [0.0004954489310763303, 0.9800532187699806, 0.0035497720462824888, 0.0006153936299097475, 0.01528616662275068], 0.9886583337984493, 0.6280615545738613, true, true),
+  (3, 0.8635231612428361, 'defect', true, [0.03893707426001655, 0.6227546943282473, 0.28192020301779913, 0.006484915525665519, 0.04990311286827155], 0.9950867656278958, 0.2664234412240822, false, true),
+  (4, 0.9991942392837577, 'defect', true, [0.001227848243010483, 0.9614640574609276, 0.006460394183068282, 0.001431707444200809, 0.029415992668792718], 1.0023082135239665, 0.5018475567652709, true, true),
+  (5, 0.1232424032846196, 'defect', true, [0.000401717629198329, 0.9891628504760819, 0.0021777624495175453, 0.0005357044665779632, 0.007721964978624136], 1.1263590902226555, 0.6223451508043758, true, true),
+  (6, 0.9097448592705317, 'other', true, [0.037577931910741144, 0.21254100866530135, 0.055318958714124795, 0.01180278955073355, 0.6827593111590992], 0.9945809013141848, 0.5903266902710116, true, true),
+  (7, 0.9973242041794088, 'account', true, [0.0016187837927456382, 0.006418517039097782, 0.9704558096691095, 0.0008773043051347226, 0.020629585193912274], 1.021483332757836, 0.30275538985154893, false, true),
+  (8, 0.7960544430718136, 'other', true, [0.012545973634646976, 0.027129790190609845, 0.33867557422191896, 0.006455422869299154, 0.6151932390835251], 1.0088559762703615, 0.9765827084416339, true, true),
+  (9, 0.9963873652995535, 'shipping', true, [1.6274798019244057e-05, 0.00013424961702780826, 1.405454075091745e-05, 0.9963313584523649, 0.0035040625918371427], 1.0459027461552566, 0.7482279960576935, true, true),
+  (10, 0.9884851716310831, 'defect', true, [1.2276590711476736e-06, 0.9999453994750206, 2.072837817623035e-06, 1.9185074353938686e-05, 3.2114953736701354e-05], 1.1026107319802079, 0.3765696985391581, false, true),
+  (11, 0.6746693364708319, 'account', true, [3.703239379982113e-05, 0.00016588713002540476, 0.9993543421192927, 5.901382037684852e-05, 0.0003837245365051484], 1.000101405225061, 0.8239997542321896, true, true),
+  (12, 0.9996564543269322, 'defect', true, [0.012166704399680952, 0.3972378769880649, 0.28067356948252625, 0.011095239533419362, 0.29882660959630863], 0.8971297378496914, 0.8645106925272047, true, true),
+  (13, 0.9997848951313859, 'defect', true, [0.023137765095581953, 0.5276542262959275, 0.3342778764784189, 0.013460597657890155, 0.10146953447218145], 1.0030710128049143, 0.8990789030984814, true, true),
+  (14, 0.9998135413410566, 'account', true, [0.026318632679320466, 0.2231421277445521, 0.5971786635301526, 0.016178295457268125, 0.13718228058870666], 1.0223294569526216, 0.7377752870833566, true, true),
+  (15, 0.9876544638943184, 'other', true, [0.02316110952670328, 0.029103823106590963, 0.09538904650566117, 0.02167314703927913, 0.8306728738217654], 0.9760323823625484, 0.9927205904477662, true, true),
+  (16, 0.9374772421908254, 'billing', true, [0.7568301877934956, 0.005589069172134547, 0.08084669597853003, 0.007248854838996223, 0.1494851922168434], 1.2381250441874918, 0.018587628086668136, false, true),
+  (17, 0.9996316496675504, 'other', true, [0.009355243912631428, 0.13171398496799516, 0.1386410881536516, 0.026336453546985234, 0.6939532294187366], 1.0208203691721318, 0.953146221939503, true, true),
+  (18, 0.9999975360675325, 'shipping', true, [0.00027394049382764145, 0.0008172840094585441, 0.010477759454673033, 0.9614203066213076, 0.027010709420733237], 0.4206273888998502, 0.9987562218878807, true, true),
+  (19, 0.0056618310403865136, 'defect', true, [5.0533636929616e-06, 0.9998801288674076, 2.2076206422265613e-05, 4.6744889171668666e-06, 8.806707356013956e-05], 1.0532020147257524, 0.11284222644943208, false, true),
+  (20, 0.9999809647779618, 'account', true, [0.0009981915661924792, 0.010407457578307381, 0.8770933917687281, 0.001075580720274406, 0.11042537836649771], 1.009656320315971, 0.9878070644681894, true, true),
+  (21, 0.10852884085437882, 'account', true, [0.003240042324089997, 0.0072668699137809645, 0.9467911538933751, 0.0027806978166077185, 0.039921236052146404], 0.9989139168585269, 0.1687138891158498, false, true),
+  (22, 0.9933351686946382, 'defect', true, [0.0035838105899726577, 0.9705045132612478, 0.0092226716125008, 0.007915970634968853, 0.008773033901309804], 0.8805709674188906, 0.04188045679587881, false, true),
+  (23, 0.9934921465160171, 'other', true, [0.0032818046207214262, 0.13745155442155185, 0.026409315138764256, 0.010364904206190892, 0.8224924216127716], 0.6706588442583913, 0.3147324005718076, false, true),
+  (24, 0.4821512279708862, 'defect', true, [0.010185056882410053, 0.49979062769486815, 0.15044889390558708, 0.007297782240525692, 0.332277639276609], 0.9993087686276002, 0.16366017144830525, false, true),
+  (25, 0.9365987175741517, 'other', true, [0.0031443423554874256, 0.006196855545426885, 0.047639302401055336, 0.00627084096074724, 0.9367486587372831], 0.9967369367472415, 0.513322090339277, true, true),
+  (26, 0.9972326953781125, 'other', true, [0.006961905652256786, 0.030232777150226636, 0.09518588055531219, 0.012463910980561122, 0.8551555256616432], 1.0154029625237198, 0.9397642968121036, true, true),
+  (27, 0.9888442334699089, 'defect', true, [0.0011473555243308293, 0.879744365592524, 0.004021557513386558, 0.0037056521834450042, 0.11138106918631352], 1.9968344630255082, 0.9854651412752261, true, true),
+  (28, 0.9997006451705638, 'account', true, [0.004316799259808355, 0.2327753931965666, 0.7113667204239885, 0.0027791830213825574, 0.04876190409825407], 1.0011472937015327, 0.9224174088378656, true, true),
+  (29, 0.9971504508662115, 'shipping', true, [6.989724221743891e-05, 0.00013555439991136663, 0.0017314679821364338, 0.9945270857889549, 0.0035359945867797925], 1.1778222003771182, 0.9550986009510616, true, true),
+  (30, 0.9999401487547313, 'defect', true, [1.6931206921972416e-05, 0.9975493336509531, 5.757375991853916e-05, 7.968660415688088e-06, 0.0023681927217907486], 1.0830996872622545, 0.998722653988171, true, true),
+  (31, 0.9969129318701417, 'other', true, [0.007318249081349186, 0.04298438686752956, 0.42251096949838307, 0.007841293216876273, 0.5193451013358619], 0.9266849517754818, 0.17070764349527978, false, true),
+  (32, 0.9924303119256321, 'account', true, [0.06662235899169563, 0.08470232149679548, 0.5128739572399867, 0.0748981027432706, 0.26090325952825155], 1.065933242876419, 0.680460046678928, true, true),
+  (33, 0.9999318999603141, 'other', true, [0.04421404027856892, 0.022642833546150393, 0.2751748638841023, 0.02248626026530597, 0.6354820020258725], 1.0942958736219914, 0.9924309758324683, true, true),
+  (34, 0.6673746584405755, 'defect', true, [2.7570237243317875e-05, 0.9961204538536854, 0.002737390148003214, 4.253834567808618e-05, 0.0010720474153901145], 1.0057686372096466, 0.9915455065903979, true, true),
+  (35, 0.5815182454075707, 'shipping', true, [4.959745807463135e-06, 0.0007296068473451704, 1.2652122649845255e-05, 0.9978402014166782, 0.0014125798675191806], 1.239741568133538, 0.9675677237392395, true, true),
+  (36, 0.5245620038991115, 'defect', true, [9.73060739031864e-07, 0.9999240674265031, 1.8969530520418563e-06, 5.17561527806724e-07, 7.25449981781441e-05], 1.0201579053703151, 0.8158639395658991, true, true),
+  (37, 0.06112339610219413, 'account', true, [0.0001536121144739664, 0.03300334810636578, 0.9663399113917573, 1.177749517798846e-05, 0.0004913508922248237], 1.014617285124902, 0.6708961614905288, true, true),
+  (38, 0.9901295298682772, 'defect', true, [0.007215625069291339, 0.9037094536165665, 0.08210697437181642, 0.0013454534276786888, 0.005622493514646795], 0.999495281855547, 0.3099341444071917, false, true),
+  (39, 0.9966780371743398, 'defect', true, [5.053189593630169e-06, 0.9996559469323599, 1.5414599144725588e-05, 2.516801017151512e-05, 0.0002984172687301595], 1.4620115168679404, 0.7997324944340728, true, true),
+  (40, 0.9999231695490982, 'account', true, [8.640103346027965e-05, 0.0004114147481215867, 0.9355436394364798, 0.00014456140152828125, 0.06381398338041007], 0.9978737785713309, 0.9207848662550197, true, true),
+  (101, 0.00778596925776726, 'other', true, [0.34724183966938404, 0.048846022275533474, 0.07478036027478102, 0.010007648134422545, 0.5191241296458788], 1.5239737344314932, 0.1060466797558174, false, true),
+  (102, 0.9705076558946236, 'defect', true, [0.06289295359614704, 0.9248647219911268, 0.005010584898933944, 0.0011846206132970646, 0.006047118900495015], 1.073478060090278, 0.8808771584572369, true, true),
+  (103, 0.9848363182423714, 'defect', true, [0.08496844665737709, 0.8343585856314554, 0.0671707814704801, 0.002132770096628736, 0.011369416144058848], 0.9984402462983588, 0.994021868207911, true, true),
+  (104, 0.9625544167823494, 'defect', true, [0.05191016479247149, 0.9344237736899237, 0.005433421328093897, 0.0005949216886527104, 0.0076377185008581995], 0.44137155351167684, 0.9999083914628756, true, true),
+  (201, 0.6942663366344932, 'defect', true, [0.18897565336663177, 0.7103242415319493, 0.04568771078675959, 0.0051656243682768705, 0.04984676994638259], 1.0035216940350544, 0.9021856747739445, true, true)
+) v(id, p_refund, team, team_clear, team_dist, mood, p_angry, angry, angry_clear);
+
+# every answer matches the reference engine (NULL counts as a mismatch); labels where the reference has a clear margin
+query IIIIII
+SELECT count(*),
+       count(*) FILTER (NOT same_p(g.p_refund, x.p_refund)),
+       count(*) FILTER (NOT coalesce(g.team = x.team, false) AND x.team_clear),
+       count(*) FILTER (NOT (same_p(g.team_dist['billing'], x.team_dist[1]) AND same_p(g.team_dist['defect'], x.team_dist[2])
+                             AND same_p(g.team_dist['account'], x.team_dist[3]) AND same_p(g.team_dist['shipping'], x.team_dist[4])
+                             AND same_p(g.team_dist['other'], x.team_dist[5]))),
+       count(*) FILTER (NOT (same_x(g.mood, x.mood) AND same_p(g.p_angry, x.p_angry))),
+       count(*) FILTER (NOT coalesce(g.angry = x.angry, false) AND x.angry_clear)
+FROM got_julia_1 g FULL JOIN exp_julia_1 x USING (id)
+----
+45	0	0	0	0	0
+
+# what a user reads off it: refund accuracy at the default 0.5 threshold, routing accuracy, against the known labels
+query II
+SELECT round(decide_accuracy(g.p_refund, k.refund), 4), round(avg((g.team = k.team)::INTEGER), 4) FROM got_julia_1 g JOIN tickets k USING (id)
+----
+0.4889	0.3778
+
+# several questions at once (decide_answers, one padded batch per text) give the scalar answers
+query IIIIII
+-- one row per question per ticket: a renamed question_id would make the filters below vacuous
+SELECT count(*) FILTER (a.question_id = 'refund'), count(*) FILTER (a.question_id = 'team'), count(*) FILTER (a.question_id = 'mood'),
+       count(*) FILTER (a.question_id = 'refund' AND NOT same_p(a.probability, g.p_refund)),
+       count(*) FILTER (a.question_id = 'team' AND NOT coalesce(a.choice = g.team, false)),
+       count(*) FILTER (a.question_id = 'mood' AND NOT same_x(a.score, g.mood))
+FROM (SELECT id, unnest(decide_answers(text, '[{"id": "refund", "kind": "binary", "instruction": "A refund is requested."}, {"id": "team", "kind": "choice", "instruction": "Which team owns this?", "options": ["billing", "defect", "account", "shipping", "other"]}, {"id": "mood", "kind": "score", "instruction": "How frustrated is the writer?", "levels": ["calm", "frustrated", "angry"]}]', model := 'julia-1'), recursive := true) FROM tickets) a
+JOIN got_julia_1 g USING (id)
+----
+45	45	45	0	0	0
+
+# decide_many returns one JSON document per text with all three answers
+query I
+SELECT count(*) FROM (SELECT decide_many(text, '[{"id": "refund", "kind": "binary", "instruction": "A refund is requested."}, {"id": "team", "kind": "choice", "instruction": "Which team owns this?", "options": ["billing", "defect", "account", "shipping", "other"]}, {"id": "mood", "kind": "score", "instruction": "How frustrated is the writer?", "levels": ["calm", "frustrated", "angry"]}]', model := 'julia-1') AS m FROM tickets)
+WHERE (length(m) - length(replace(m, '"kind"', ''))) // 6 = 3
+----
+45
+
+# cross-row batching (texts padded to the length ladder, several per forward pass) answers the same, every kind
+statement ok
+SET anofox_decide_batch_tokens = 16384;
+
+query IIII
+SELECT count(*),
+       count(*) FILTER (NOT same_p(b.p, g.p_refund)),
+       count(*) FILTER (NOT coalesce(b.team = g.team, false)),
+       count(*) FILTER (NOT same_x(b.mood, g.mood))
+FROM (SELECT id, decide_probability(text, 'A refund is requested.', model := 'julia-1') AS p,
+             decide_choice(text, 'Which team owns this?', ['billing', 'defect', 'account', 'shipping', 'other'], model := 'julia-1') AS team,
+             decide_score(text, 'How frustrated is the writer?', ['calm', 'frustrated', 'angry'], model := 'julia-1') AS mood FROM tickets) b
+JOIN got_julia_1 g USING (id)
+----
+45	0	0	0
+
+statement ok
+RESET anofox_decide_batch_tokens;
+
+# the GPU plugin answered, and only it
+query II
+SELECT count(*) FILTER (engine = 'plugin:${DECIDE_E2E_DEVICE}' AND runs > 0), count(*) FILTER (engine <> 'plugin:${DECIDE_E2E_DEVICE}')
+FROM __anofox_decide_local_sessions() WHERE model LIKE 'weights:graph_julia-1|%'
+----
+1	0
+
+# ---------------------------------------------------------------- laya-multilingual (44 tickets, the longest 581 tokens)
+
+statement ok
+CREATE OR REPLACE TABLE tickets AS SELECT * FROM (VALUES
+  (1, 'I was charged twice for my March invoice, please refund the extra 49 EUR.', true, 'billing', 1, 'en'),
+  (2, 'The app crashes every time I open the export dialog on version 3.2.', false, 'defect', 1, 'en'),
+  (3, 'Thanks for the quick help yesterday, everything works now!', false, 'other', 0, 'en'),
+  (4, 'I want my money back, this product does not do what was advertised.', true, 'billing', 2, 'en'),
+  (5, 'Login button does nothing on Safari, error 500 in the console.', false, 'defect', 1, 'en'),
+  (6, 'Our invoice shows the wrong VAT rate; please issue a corrected one.', false, 'billing', 0, 'en'),
+  (7, 'Do you have an office in Munich? We would like to visit.', false, 'other', 0, 'en'),
+  (8, 'Cancel my subscription and reimburse the unused months.', true, 'billing', 1, 'en'),
+  (9, 'My parcel was supposed to arrive on Monday and the tracking has not moved for a week.', false, 'shipping', 1, 'en'),
+  (10, 'The package arrived crushed and the glass inside is broken. I need a replacement or my money back.', true, 'shipping', 2, 'en'),
+  (11, 'How do I add a second user to our team account?', false, 'account', 0, 'en'),
+  (12, 'I cannot reset my password, the reset email never arrives.', false, 'account', 1, 'en'),
+  (13, 'This is the third time I am writing. Nobody answers. Refund me now or I will dispute the charge.', true, 'billing', 2, 'en'),
+  (14, 'The dashboard shows yesterday''s numbers twice since the last update.', false, 'defect', 0, 'en'),
+  (15, 'Could you send me the invoice for order 88231 as a PDF?', false, 'billing', 0, 'en'),
+  (16, 'You billed me after I cancelled in January. Please return the two payments.', true, 'billing', 1, 'en'),
+  (17, 'The CSV import silently drops every row that contains a comma in a quoted field.', false, 'defect', 1, 'en'),
+  (18, 'Please change the delivery address of my open order to our new warehouse.', false, 'shipping', 0, 'en'),
+  (19, 'Absolutely unacceptable. The device died after two days and support hung up on me.', true, 'defect', 2, 'en'),
+  (20, 'Is there a discount for non-profit organisations?', false, 'other', 0, 'en'),
+  (21, 'My account was locked after three login attempts, please unlock it, I have a demo in an hour.', false, 'account', 1, 'en'),
+  (22, 'I ordered the blue jacket but received a red one. I would like to return it for a full refund.', true, 'shipping', 1, 'en'),
+  (23, 'Great product, just wanted to say the new search is much faster.', false, 'other', 0, 'en'),
+  (24, 'The mobile app logs me out every few minutes on Android 14.', false, 'defect', 1, 'en'),
+  (25, 'We were charged the enterprise price but we are on the team plan. Please credit the difference.', true, 'billing', 1, 'en'),
+  (26, 'Where can I download the data processing agreement?', false, 'account', 0, 'en'),
+  (27, 'The courier left the box in the rain, everything is soaked. I am furious.', false, 'shipping', 2, 'en'),
+  (28, 'Please delete my account and all my data.', false, 'account', 0, 'en'),
+  (29, 'I paid for express shipping and it took twelve days. I expect the shipping fee back.', true, 'shipping', 1, 'en'),
+  (30, 'After the update the report PDF has empty pages.', false, 'defect', 1, 'en'),
+  (31, 'Hello, I am interested in a partnership, who can I talk to?', false, 'other', 0, 'en'),
+  (32, 'You took the money but the order was never confirmed. I want it refunded today.', true, 'billing', 2, 'en'),
+  (33, 'Ich wurde zweimal belastet, bitte erstatten Sie mir den doppelten Betrag zurück.', true, 'billing', 1, 'de'),
+  (34, 'Die App stürzt beim Öffnen der Einstellungen jedes Mal ab.', false, 'defect', 1, 'de'),
+  (35, 'Mon colis n''est jamais arrivé et le suivi ne bouge plus depuis dix jours.', false, 'shipping', 1, 'fr'),
+  (36, 'Je veux être remboursé, le produit ne correspond pas à la description.', true, 'billing', 2, 'fr'),
+  (37, 'No puedo iniciar sesión en mi cuenta desde ayer.', false, 'account', 1, 'es'),
+  (38, 'Gracias por la ayuda, todo funciona perfectamente.', false, 'other', 0, 'es'),
+  (39, 'Il pacco è arrivato danneggiato, voglio il rimborso completo.', true, 'shipping', 2, 'it'),
+  (40, 'Kunnen jullie de factuur op onze nieuwe bedrijfsnaam zetten?', false, 'billing', 0, 'nl'),
+  (101, 'Hello support team, I am writing on behalf of our finance department about the subscription we took out in March. Since then we have received three invoices for the same period, each with a slightly different amount, and our accountant cannot reconcile them with the bank statements. The first invoice listed twelve seats at the team price, the second one fourteen seats at the enterprise price, and the third one again twelve seats but with an additional charge for premium support that we never ordered. We tried to change the billing contact in the portal last week, but the page shows an error and the old contact keeps receiving all the emails, including the payment reminders. Our procurement policy requires that every invoice matches the purchase order exactly, so at the moment none of these invoices can be approved and your system keeps sending reminders that payment is overdue.', false, 'billing', 1, 'en'),
+  (102, 'We tried to change the billing contact in the portal last week, but the page shows an error and the old contact keeps receiving all the emails, including the payment reminders. Our procurement policy requires that every invoice matches the purchase order exactly, so at the moment none of these invoices can be approved and your system keeps sending reminders that payment is overdue. In addition, two of our users report that the desktop application logs them out several times per hour since the latest update, which makes it very hard to finish the monthly reports on time. I have attached the purchase order and the three invoices to this message so that you can compare them yourself. Could you please check what went wrong, cancel the incorrect invoices, and send us one corrected invoice for the twelve seats at the team price that we actually ordered? If an amount was already collected by direct debit for the wrong invoices, we expect the difference to be credited back to our account before the end of the month. We have been happy customers for two years and would like to keep it that way, but this situation has cost our team several hours already and our CFO is asking whether we should look at other vendors. Please also let us know whether the logout problem is a known issue and when a fix can be expected, because the workaround suggested in your help center does not work for us. Thank you in advance for a quick reply; you can reach me by email or by phone during business hours.', true, 'billing', 1, 'en'),
+  (103, 'Since then we have received three invoices for the same period, each with a slightly different amount, and our accountant cannot reconcile them with the bank statements. The first invoice listed twelve seats at the team price, the second one fourteen seats at the enterprise price, and the third one again twelve seats but with an additional charge for premium support that we never ordered. We tried to change the billing contact in the portal last week, but the page shows an error and the old contact keeps receiving all the emails, including the payment reminders. Our procurement policy requires that every invoice matches the purchase order exactly, so at the moment none of these invoices can be approved and your system keeps sending reminders that payment is overdue. In addition, two of our users report that the desktop application logs them out several times per hour since the latest update, which makes it very hard to finish the monthly reports on time. I have attached the purchase order and the three invoices to this message so that you can compare them yourself. Could you please check what went wrong, cancel the incorrect invoices, and send us one corrected invoice for the twelve seats at the team price that we actually ordered? If an amount was already collected by direct debit for the wrong invoices, we expect the difference to be credited back to our account before the end of the month. We have been happy customers for two years and would like to keep it that way, but this situation has cost our team several hours already and our CFO is asking whether we should look at other vendors. Please also let us know whether the logout problem is a known issue and when a fix can be expected, because the workaround suggested in your help center does not work for us. Thank you in advance for a quick reply; you can reach me by email or by phone during business hours. Hello support team, I am writing on behalf of our finance department about the subscription we took out in March.', true, 'billing', 2, 'en'),
+  (104, 'Could you please check what went wrong, cancel the incorrect invoices, and send us one corrected invoice for the twelve seats at the team price that we actually ordered? If an amount was already collected by direct debit for the wrong invoices, we expect the difference to be credited back to our account before the end of the month. We have been happy customers for two years and would like to keep it that way, but this situation has cost our team several hours already and our CFO is asking whether we should look at other vendors. Please also let us know whether the logout problem is a known issue and when a fix can be expected, because the workaround suggested in your help center does not work for us. Thank you in advance for a quick reply; you can reach me by email or by phone during business hours. Hello support team, I am writing on behalf of our finance department about the subscription we took out in March. Since then we have received three invoices for the same period, each with a slightly different amount, and our accountant cannot reconcile them with the bank statements. The first invoice listed twelve seats at the team price, the second one fourteen seats at the enterprise price, and the third one again twelve seats but with an additional charge for premium support that we never ordered. We tried to change the billing contact in the portal last week, but the page shows an error and the old contact keeps receiving all the emails, including the payment reminders. Our procurement policy requires that every invoice matches the purchase order exactly, so at the moment none of these invoices can be approved and your system keeps sending reminders that payment is overdue. In addition, two of our users report that the desktop application logs them out several times per hour since the latest update, which makes it very hard to finish the monthly reports on time. I have attached the purchase order and the three invoices to this message so that you can compare them yourself. The first invoice listed twelve seats at the team price, the second one fourteen seats at the enterprise price, and the third one again twelve seats but with an additional charge for premium support that we never ordered. We tried to change the billing contact in the portal last week, but the page shows an error and the old contact keeps receiving all the emails, including the payment reminders. Our procurement policy requires that every invoice matches the purchase order exactly, so at the moment none of these invoices can be approved and your system keeps sending reminders that payment is overdue. In addition, two of our users report that the desktop application logs them out several times per hour since the latest update, which makes it very hard to finish the monthly reports on time. I have attached the purchase order and the three invoices to this message so that you can compare them yourself. Could you please check what went wrong, cancel the incorrect invoices, and send us one corrected invoice for the twelve seats at the team price that we actually ordered?', true, 'billing', 2, 'en')
+) t(id, text, refund, team, mood, lang);
+
+statement ok
+CREATE OR REPLACE TABLE got_laya_multilingual AS SELECT id,
+  decide_probability(text, 'A refund is requested.', model := 'laya-multilingual') AS p_refund,
+  decide_choice(text, 'Which team owns this?', ['billing', 'defect', 'account', 'shipping', 'other'], model := 'laya-multilingual') AS team,
+  decide_choice_distribution(text, 'Which team owns this?', ['billing', 'defect', 'account', 'shipping', 'other'], model := 'laya-multilingual') AS team_dist,
+  decide_score(text, 'How frustrated is the writer?', ['calm', 'frustrated', 'angry'], model := 'laya-multilingual') AS mood,
+  decide_probability(text, 'The writer is angry.', model := 'laya-multilingual') AS p_angry,
+  decide_decision(text, 'The writer is angry.', 0.5, model := 'laya-multilingual') AS angry
+FROM tickets;
+
+statement ok
+CREATE OR REPLACE TABLE exp_laya_multilingual AS SELECT * FROM (VALUES
+  (1, 0.9947820921640931, 'billing', true, [0.9998980663616668, 4.183110849983026e-05, 2.6006771866175848e-05, 1.3854855707940263e-06, 3.271027239637785e-05], 1.0738156450812841, 0.006780331244462253, false, true),
+  (2, 1.0102047622700297e-06, 'defect', true, [0.0011201522000936072, 0.895314367943572, 0.09308208071527396, 0.0009910795154025559, 0.009492319625658035], 0.9256288632526389, 0.009147056537351659, false, true),
+  (3, 2.129740421708036e-06, 'other', true, [0.08852931416523457, 0.01408859352912631, 0.15173084900652029, 0.13587807412388975, 0.6097731691752291], 0.4838177299865457, 0.0005135270928134409, false, true),
+  (4, 0.9902665019814939, 'defect', true, [0.005438026577023082, 0.9884006962864548, 0.0013060952709667154, 0.0038832061376926426, 0.0009719757278626354], 0.923272962494397, 0.3439002423025371, false, true),
+  (5, 0.21994401750578432, 'defect', true, [5.538229954194016e-05, 0.9647651140357139, 0.03407517336161503, 3.817921637749115e-05, 0.0010661510867514745], 0.9072661711857333, 0.010582388905623866, false, true),
+  (6, 0.21091973022396263, 'billing', true, [0.890379037829337, 0.1088740346766231, 0.0003099650959956494, 6.731574636783357e-05, 0.0003696466516763957], 0.839872333654067, 0.002089719015169259, false, true),
+  (7, 0.002082739110153605, 'shipping', true, [0.1418485348959544, 0.0076941686885292, 0.3043991933779383, 0.30774316865241996, 0.23831493438515816], 0.7129439367640935, 0.0009153451762673009, false, true),
+  (8, 0.9810699608358456, 'billing', true, [0.6858164669000667, 0.17023697566545365, 0.10597081728766915, 0.004018809177077873, 0.03395693096973269], 1.0495531168641101, 0.006506544884907052, false, true),
+  (9, 0.00040044879218734727, 'shipping', true, [5.327858914702273e-05, 0.4241336229438001, 6.1829830399991e-05, 0.5752439594771755, 0.000507309159477459], 0.9307141448331451, 0.1211772090796437, false, true),
+  (10, 0.959918003741494, 'defect', true, [0.000978463214145682, 0.9077109762038766, 0.00016740589507294567, 0.09056594890473571, 0.000577205782168915], 1.0478381986786833, 0.03293516838455547, false, true),
+  (11, 5.1797405226184875e-05, 'account', true, [0.0015906335069426725, 0.000885999745742363, 0.7575417217708125, 0.0020122008271787994, 0.23796944414932378], 0.9238766197641699, 0.0017487667114772661, false, true),
+  (12, 0.07492839176782436, 'shipping', true, [0.001166592613657859, 0.010214448160691373, 0.005291820202691658, 0.9822126553950277, 0.0011144836279313836], 0.9805473595136951, 0.005326805724329482, false, true),
+  (13, 0.9880675625989281, 'defect', true, [0.12927306451783482, 0.6376853664687152, 0.12423394930133608, 0.017363743687431467, 0.09144387602468246], 1.1338718002662715, 0.06863338443946104, false, true),
+  (14, 1.42554549338903e-05, 'defect', true, [0.06290797674661604, 0.6478883666950634, 0.05411809598486955, 0.010055119104280868, 0.22503044146917014], 1.0811892095344868, 0.0031983330105076714, false, true),
+  (15, 9.345171790229592e-06, 'billing', true, [0.9999987728060978, 4.8759909409552204e-08, 2.8543695416273775e-07, 1.8467580041743538e-07, 7.083212381113556e-07], 0.9033607567074332, 0.00017975845117202644, false, true),
+  (16, 0.9721951853005997, 'billing', true, [0.9999981902824359, 1.0675680603572162e-06, 3.518295516977723e-07, 6.841202094876433e-08, 3.219079309699619e-07], 1.6068818042801738, 0.05717665199630378, false, true),
+  (17, 6.159102021228893e-07, 'defect', true, [0.003952053426978937, 0.8083825219596416, 0.13240824489287764, 0.004728324412637269, 0.05052885530786473], 0.7966112216673196, 0.008873576017851478, false, true),
+  (18, 0.002571054054970439, 'shipping', true, [3.6795568993846117e-06, 5.23405317883083e-06, 3.6812908026484424e-06, 0.9999422842441161, 4.512085500306101e-05], 0.8854777057504195, 0.0009367013491114899, false, true),
+  (19, 0.3178425763651447, 'defect', true, [0.00022596574308115779, 0.9976283148317172, 0.0001784075504294119, 0.00032604578117309075, 0.0016412660935990638], 0.9358612302318519, 0.06809992371386624, false, true),
+  (20, 0.040855006154534586, 'billing', true, [0.786084253929819, 0.0011020342005578698, 0.14318813543059486, 0.0018107648285423602, 0.06781481161048596], 0.6121187555696697, 0.0011108011937505761, false, true),
+  (21, 0.07856462148528034, 'account', true, [0.0005033486187006763, 0.06820727654101595, 0.9295308420047844, 8.066708335472501e-05, 0.0016778657521444242], 0.9061593594912789, 0.007577429072925058, false, true),
+  (22, 0.8890919419520519, 'defect', true, [0.14890305819779112, 0.6125535283175532, 0.05161578346168288, 0.1643580371969635, 0.02256959282600916], 1.1116019879256753, 0.09621332253432607, false, true),
+  (23, 0.19059730156078855, 'other', true, [0.06459348329588072, 0.06738282400980956, 0.03894443541609697, 0.3859422548933405, 0.4431370023848722], 0.8628591443981808, 0.00032933054986197287, false, true),
+  (24, 0.0002073980015618943, 'defect', true, [0.006990231051705489, 0.5722828642310428, 0.3604657849440978, 0.005389299380401736, 0.05487182039275222], 0.7917929150658254, 0.000620761197884345, false, true),
+  (25, 0.23448068547463868, 'billing', true, [0.9871130224951213, 0.0007319325322150105, 0.008224934863435424, 0.00045878590678313243, 0.0034713242024451123], 0.9177895030681679, 0.002018731565913969, false, true),
+  (26, 2.9849904531162518e-05, 'other', true, [0.1540118113074904, 0.008461635044770942, 0.07537586611872574, 0.1329724856880547, 0.6291782018409582], 0.8184417142698486, 0.00036571905064828036, false, true),
+  (27, 0.0036758786398140967, 'shipping', true, [0.0007142698606767342, 0.05530578959679108, 0.000525023190649249, 0.938227750583682, 0.005227166768200895], 1.7363052294493901, 0.9610404962980079, true, true),
+  (28, 2.602791026878219e-06, 'defect', true, [0.00031030558812237787, 0.9853637684842815, 0.012280421441554813, 0.0009618080280150891, 0.0010836964580261369], 1.1707554225235182, 0.3630084711763911, false, true),
+  (29, 0.10287186072187361, 'shipping', true, [0.0004171539931265476, 0.0007836521965465684, 0.00042674168544746123, 0.9979130611713185, 0.0004593909535607372], 0.9319382907607638, 0.002283558478830877, false, true),
+  (30, 2.1634739593092363e-05, 'defect', true, [0.028486059567604104, 0.8594616248552855, 0.020602903136304758, 0.008051878650131569, 0.08339753379067402], 0.9273245060624329, 0.0024616760821973794, false, true),
+  (31, 0.038944957875932704, 'other', true, [0.22581759163476017, 0.010957098699643071, 0.10016595142914239, 0.09432201848245547, 0.5687373397539989], 0.76036039338977, 0.0005008398352837459, false, true),
+  (32, 0.9935713056957074, 'defect', true, [0.025150191203842064, 0.9241082623048164, 0.015046061419226712, 0.031596263634421695, 0.004099221437693139], 1.01913864114885, 0.20806536210051732, false, true),
+  (33, 0.9967800258388778, 'billing', true, [0.943253198334748, 0.021226918325834253, 0.029127511896191224, 0.0007050646246412278, 0.005687306818585335], 1.0442990332389908, 0.03018639010601585, false, true),
+  (34, 5.7926386135307256e-08, 'defect', true, [0.006655836284007978, 0.6618341713914081, 0.11160078607480461, 0.005284782805950172, 0.21462442344382915], 0.9118245207283554, 0.019950560897635253, false, true),
+  (35, 0.04458031218110265, 'shipping', true, [4.210881099874656e-05, 0.4711425691715217, 4.85330864618776e-05, 0.5285670014302842, 0.00019978750073352075], 0.8989371550585399, 0.025711279427618507, false, true),
+  (36, 0.9972897135930163, 'defect', true, [0.001929169783290558, 0.9965866905406043, 0.00032097931092990817, 0.0009617963424156928, 0.00020136402275960772], 0.9236137831892385, 0.012977101623930658, false, true),
+  (37, 0.0005946379374653335, 'account', true, [5.009208032932484e-05, 0.08786713616093048, 0.911595921319301, 2.351067806674831e-05, 0.00046333976137236636], 0.8645916865617338, 0.007388686845256472, false, true),
+  (38, 0.043753852037027335, 'other', true, [0.1354278886880712, 0.13161820909561164, 0.2855260496341543, 0.15232211154947065, 0.2951057410326922], 0.668970385693904, 0.00048548853338578184, false, true),
+  (39, 0.9959759421347255, 'shipping', true, [0.0015540645784555384, 0.05111348518179348, 0.002429455709403926, 0.943953230977255, 0.0009497635530919287], 1.0757093316430737, 0.20976952354546613, false, true),
+  (40, 0.008320248233199858, 'billing', true, [0.9867770480346432, 0.0025896198850837316, 0.007877477799947285, 0.0001410188862087229, 0.0026148353941169863], 0.860129038621313, 0.003050592231076253, false, true),
+  (101, 0.18735598874347142, 'billing', true, [0.9999989457475426, 1.0352210572672617e-06, 5.100451445918536e-09, 1.3335299013370423e-09, 1.259741883212768e-08], 1.344251228416121, 0.00892769722280175, false, true),
+  (102, 0.8714017400063842, 'defect', true, [0.14431218384485875, 0.8459024142333937, 0.008619872140427587, 0.00025355043819748585, 0.0009119793431224029], 1.2872395160313133, 0.04136656461122714, false, true),
+  (103, 0.9255472233095755, 'billing', true, [0.9749127361469051, 0.024848811998959202, 0.0001132116214176807, 9.708025111023861e-05, 2.8159981607930094e-05], 1.2994998087291267, 0.013558125392997136, false, true),
+  (104, 0.9948131294290566, 'billing', true, [0.9999846936659675, 1.5293839974389944e-05, 2.4000792894680714e-09, 2.0699795480491096e-09, 8.02399912329405e-09], 1.085180221499227, 0.06560563399522597, false, true)
+) v(id, p_refund, team, team_clear, team_dist, mood, p_angry, angry, angry_clear);
+
+# every answer matches the reference engine (NULL counts as a mismatch); labels where the reference has a clear margin
+query IIIIII
+SELECT count(*),
+       count(*) FILTER (NOT same_p(g.p_refund, x.p_refund)),
+       count(*) FILTER (NOT coalesce(g.team = x.team, false) AND x.team_clear),
+       count(*) FILTER (NOT (same_p(g.team_dist['billing'], x.team_dist[1]) AND same_p(g.team_dist['defect'], x.team_dist[2])
+                             AND same_p(g.team_dist['account'], x.team_dist[3]) AND same_p(g.team_dist['shipping'], x.team_dist[4])
+                             AND same_p(g.team_dist['other'], x.team_dist[5]))),
+       count(*) FILTER (NOT (same_x(g.mood, x.mood) AND same_p(g.p_angry, x.p_angry))),
+       count(*) FILTER (NOT coalesce(g.angry = x.angry, false) AND x.angry_clear)
+FROM got_laya_multilingual g FULL JOIN exp_laya_multilingual x USING (id)
+----
+44	0	0	0	0	0
+
+# what a user reads off it: refund accuracy at the default 0.5 threshold, routing accuracy, against the known labels
+query II
+SELECT round(decide_accuracy(g.p_refund, k.refund), 4), round(avg((g.team = k.team)::INTEGER), 4) FROM got_laya_multilingual g JOIN tickets k USING (id)
+----
+0.9318	0.7273
+
+# several questions at once (decide_answers, one padded batch per text) give the scalar answers
+query IIIIII
+-- one row per question per ticket: a renamed question_id would make the filters below vacuous
+SELECT count(*) FILTER (a.question_id = 'refund'), count(*) FILTER (a.question_id = 'team'), count(*) FILTER (a.question_id = 'mood'),
+       count(*) FILTER (a.question_id = 'refund' AND NOT same_p(a.probability, g.p_refund)),
+       count(*) FILTER (a.question_id = 'team' AND NOT coalesce(a.choice = g.team, false)),
+       count(*) FILTER (a.question_id = 'mood' AND NOT same_x(a.score, g.mood))
+FROM (SELECT id, unnest(decide_answers(text, '[{"id": "refund", "kind": "binary", "instruction": "A refund is requested."}, {"id": "team", "kind": "choice", "instruction": "Which team owns this?", "options": ["billing", "defect", "account", "shipping", "other"]}, {"id": "mood", "kind": "score", "instruction": "How frustrated is the writer?", "levels": ["calm", "frustrated", "angry"]}]', model := 'laya-multilingual'), recursive := true) FROM tickets) a
+JOIN got_laya_multilingual g USING (id)
+----
+44	44	44	0	0	0
+
+# decide_many returns one JSON document per text with all three answers
+query I
+SELECT count(*) FROM (SELECT decide_many(text, '[{"id": "refund", "kind": "binary", "instruction": "A refund is requested."}, {"id": "team", "kind": "choice", "instruction": "Which team owns this?", "options": ["billing", "defect", "account", "shipping", "other"]}, {"id": "mood", "kind": "score", "instruction": "How frustrated is the writer?", "levels": ["calm", "frustrated", "angry"]}]', model := 'laya-multilingual') AS m FROM tickets)
+WHERE (length(m) - length(replace(m, '"kind"', ''))) // 6 = 3
+----
+44
+
+# cross-row batching (texts padded to the length ladder, several per forward pass) answers the same, every kind
+statement ok
+SET anofox_decide_batch_tokens = 16384;
+
+query IIII
+SELECT count(*),
+       count(*) FILTER (NOT same_p(b.p, g.p_refund)),
+       count(*) FILTER (NOT coalesce(b.team = g.team, false)),
+       count(*) FILTER (NOT same_x(b.mood, g.mood))
+FROM (SELECT id, decide_probability(text, 'A refund is requested.', model := 'laya-multilingual') AS p,
+             decide_choice(text, 'Which team owns this?', ['billing', 'defect', 'account', 'shipping', 'other'], model := 'laya-multilingual') AS team,
+             decide_score(text, 'How frustrated is the writer?', ['calm', 'frustrated', 'angry'], model := 'laya-multilingual') AS mood FROM tickets) b
+JOIN got_laya_multilingual g USING (id)
+----
+44	0	0	0
+
+statement ok
+RESET anofox_decide_batch_tokens;
+
+# the GPU plugin answered, and only it
+query II
+SELECT count(*) FILTER (engine = 'plugin:${DECIDE_E2E_DEVICE}' AND runs > 0), count(*) FILTER (engine <> 'plugin:${DECIDE_E2E_DEVICE}')
+FROM __anofox_decide_local_sessions() WHERE model LIKE 'weights:graph_laya-multilingual|%'
+----
+1	0
+
+# ---------------------------------------------------------------- laya-typed-decisions (44 tickets, the longest 597 tokens)
+
+statement ok
+CREATE OR REPLACE TABLE tickets AS SELECT * FROM (VALUES
+  (1, 'I was charged twice for my March invoice, please refund the extra 49 EUR.', true, 'billing', 1, 'en'),
+  (2, 'The app crashes every time I open the export dialog on version 3.2.', false, 'defect', 1, 'en'),
+  (3, 'Thanks for the quick help yesterday, everything works now!', false, 'other', 0, 'en'),
+  (4, 'I want my money back, this product does not do what was advertised.', true, 'billing', 2, 'en'),
+  (5, 'Login button does nothing on Safari, error 500 in the console.', false, 'defect', 1, 'en'),
+  (6, 'Our invoice shows the wrong VAT rate; please issue a corrected one.', false, 'billing', 0, 'en'),
+  (7, 'Do you have an office in Munich? We would like to visit.', false, 'other', 0, 'en'),
+  (8, 'Cancel my subscription and reimburse the unused months.', true, 'billing', 1, 'en'),
+  (9, 'My parcel was supposed to arrive on Monday and the tracking has not moved for a week.', false, 'shipping', 1, 'en'),
+  (10, 'The package arrived crushed and the glass inside is broken. I need a replacement or my money back.', true, 'shipping', 2, 'en'),
+  (11, 'How do I add a second user to our team account?', false, 'account', 0, 'en'),
+  (12, 'I cannot reset my password, the reset email never arrives.', false, 'account', 1, 'en'),
+  (13, 'This is the third time I am writing. Nobody answers. Refund me now or I will dispute the charge.', true, 'billing', 2, 'en'),
+  (14, 'The dashboard shows yesterday''s numbers twice since the last update.', false, 'defect', 0, 'en'),
+  (15, 'Could you send me the invoice for order 88231 as a PDF?', false, 'billing', 0, 'en'),
+  (16, 'You billed me after I cancelled in January. Please return the two payments.', true, 'billing', 1, 'en'),
+  (17, 'The CSV import silently drops every row that contains a comma in a quoted field.', false, 'defect', 1, 'en'),
+  (18, 'Please change the delivery address of my open order to our new warehouse.', false, 'shipping', 0, 'en'),
+  (19, 'Absolutely unacceptable. The device died after two days and support hung up on me.', true, 'defect', 2, 'en'),
+  (20, 'Is there a discount for non-profit organisations?', false, 'other', 0, 'en'),
+  (21, 'My account was locked after three login attempts, please unlock it, I have a demo in an hour.', false, 'account', 1, 'en'),
+  (22, 'I ordered the blue jacket but received a red one. I would like to return it for a full refund.', true, 'shipping', 1, 'en'),
+  (23, 'Great product, just wanted to say the new search is much faster.', false, 'other', 0, 'en'),
+  (24, 'The mobile app logs me out every few minutes on Android 14.', false, 'defect', 1, 'en'),
+  (25, 'We were charged the enterprise price but we are on the team plan. Please credit the difference.', true, 'billing', 1, 'en'),
+  (26, 'Where can I download the data processing agreement?', false, 'account', 0, 'en'),
+  (27, 'The courier left the box in the rain, everything is soaked. I am furious.', false, 'shipping', 2, 'en'),
+  (28, 'Please delete my account and all my data.', false, 'account', 0, 'en'),
+  (29, 'I paid for express shipping and it took twelve days. I expect the shipping fee back.', true, 'shipping', 1, 'en'),
+  (30, 'After the update the report PDF has empty pages.', false, 'defect', 1, 'en'),
+  (31, 'Hello, I am interested in a partnership, who can I talk to?', false, 'other', 0, 'en'),
+  (32, 'You took the money but the order was never confirmed. I want it refunded today.', true, 'billing', 2, 'en'),
+  (33, 'Ich wurde zweimal belastet, bitte erstatten Sie mir den doppelten Betrag zurück.', true, 'billing', 1, 'de'),
+  (34, 'Die App stürzt beim Öffnen der Einstellungen jedes Mal ab.', false, 'defect', 1, 'de'),
+  (35, 'Mon colis n''est jamais arrivé et le suivi ne bouge plus depuis dix jours.', false, 'shipping', 1, 'fr'),
+  (36, 'Je veux être remboursé, le produit ne correspond pas à la description.', true, 'billing', 2, 'fr'),
+  (37, 'No puedo iniciar sesión en mi cuenta desde ayer.', false, 'account', 1, 'es'),
+  (38, 'Gracias por la ayuda, todo funciona perfectamente.', false, 'other', 0, 'es'),
+  (39, 'Il pacco è arrivato danneggiato, voglio il rimborso completo.', true, 'shipping', 2, 'it'),
+  (40, 'Kunnen jullie de factuur op onze nieuwe bedrijfsnaam zetten?', false, 'billing', 0, 'nl'),
+  (101, 'Hello support team, I am writing on behalf of our finance department about the subscription we took out in March. Since then we have received three invoices for the same period, each with a slightly different amount, and our accountant cannot reconcile them with the bank statements. The first invoice listed twelve seats at the team price, the second one fourteen seats at the enterprise price, and the third one again twelve seats but with an additional charge for premium support that we never ordered. We tried to change the billing contact in the portal last week, but the page shows an error and the old contact keeps receiving all the emails, including the payment reminders. Our procurement policy requires that every invoice matches the purchase order exactly, so at the moment none of these invoices can be approved and your system keeps sending reminders that payment is overdue.', false, 'billing', 1, 'en'),
+  (102, 'We tried to change the billing contact in the portal last week, but the page shows an error and the old contact keeps receiving all the emails, including the payment reminders. Our procurement policy requires that every invoice matches the purchase order exactly, so at the moment none of these invoices can be approved and your system keeps sending reminders that payment is overdue. In addition, two of our users report that the desktop application logs them out several times per hour since the latest update, which makes it very hard to finish the monthly reports on time. I have attached the purchase order and the three invoices to this message so that you can compare them yourself. Could you please check what went wrong, cancel the incorrect invoices, and send us one corrected invoice for the twelve seats at the team price that we actually ordered? If an amount was already collected by direct debit for the wrong invoices, we expect the difference to be credited back to our account before the end of the month. We have been happy customers for two years and would like to keep it that way, but this situation has cost our team several hours already and our CFO is asking whether we should look at other vendors. Please also let us know whether the logout problem is a known issue and when a fix can be expected, because the workaround suggested in your help center does not work for us. Thank you in advance for a quick reply; you can reach me by email or by phone during business hours.', true, 'billing', 1, 'en'),
+  (103, 'Since then we have received three invoices for the same period, each with a slightly different amount, and our accountant cannot reconcile them with the bank statements. The first invoice listed twelve seats at the team price, the second one fourteen seats at the enterprise price, and the third one again twelve seats but with an additional charge for premium support that we never ordered. We tried to change the billing contact in the portal last week, but the page shows an error and the old contact keeps receiving all the emails, including the payment reminders. Our procurement policy requires that every invoice matches the purchase order exactly, so at the moment none of these invoices can be approved and your system keeps sending reminders that payment is overdue. In addition, two of our users report that the desktop application logs them out several times per hour since the latest update, which makes it very hard to finish the monthly reports on time. I have attached the purchase order and the three invoices to this message so that you can compare them yourself. Could you please check what went wrong, cancel the incorrect invoices, and send us one corrected invoice for the twelve seats at the team price that we actually ordered? If an amount was already collected by direct debit for the wrong invoices, we expect the difference to be credited back to our account before the end of the month. We have been happy customers for two years and would like to keep it that way, but this situation has cost our team several hours already and our CFO is asking whether we should look at other vendors. Please also let us know whether the logout problem is a known issue and when a fix can be expected, because the workaround suggested in your help center does not work for us. Thank you in advance for a quick reply; you can reach me by email or by phone during business hours. Hello support team, I am writing on behalf of our finance department about the subscription we took out in March.', true, 'billing', 2, 'en'),
+  (104, 'Could you please check what went wrong, cancel the incorrect invoices, and send us one corrected invoice for the twelve seats at the team price that we actually ordered? If an amount was already collected by direct debit for the wrong invoices, we expect the difference to be credited back to our account before the end of the month. We have been happy customers for two years and would like to keep it that way, but this situation has cost our team several hours already and our CFO is asking whether we should look at other vendors. Please also let us know whether the logout problem is a known issue and when a fix can be expected, because the workaround suggested in your help center does not work for us. Thank you in advance for a quick reply; you can reach me by email or by phone during business hours. Hello support team, I am writing on behalf of our finance department about the subscription we took out in March. Since then we have received three invoices for the same period, each with a slightly different amount, and our accountant cannot reconcile them with the bank statements. The first invoice listed twelve seats at the team price, the second one fourteen seats at the enterprise price, and the third one again twelve seats but with an additional charge for premium support that we never ordered. We tried to change the billing contact in the portal last week, but the page shows an error and the old contact keeps receiving all the emails, including the payment reminders. Our procurement policy requires that every invoice matches the purchase order exactly, so at the moment none of these invoices can be approved and your system keeps sending reminders that payment is overdue. In addition, two of our users report that the desktop application logs them out several times per hour since the latest update, which makes it very hard to finish the monthly reports on time. I have attached the purchase order and the three invoices to this message so that you can compare them yourself. The first invoice listed twelve seats at the team price, the second one fourteen seats at the enterprise price, and the third one again twelve seats but with an additional charge for premium support that we never ordered. We tried to change the billing contact in the portal last week, but the page shows an error and the old contact keeps receiving all the emails, including the payment reminders. Our procurement policy requires that every invoice matches the purchase order exactly, so at the moment none of these invoices can be approved and your system keeps sending reminders that payment is overdue. In addition, two of our users report that the desktop application logs them out several times per hour since the latest update, which makes it very hard to finish the monthly reports on time. I have attached the purchase order and the three invoices to this message so that you can compare them yourself. Could you please check what went wrong, cancel the incorrect invoices, and send us one corrected invoice for the twelve seats at the team price that we actually ordered?', true, 'billing', 2, 'en')
+) t(id, text, refund, team, mood, lang);
+
+statement ok
+CREATE OR REPLACE TABLE got_laya_typed_decisions AS SELECT id,
+  decide_probability(text, 'A refund is requested.', model := 'laya-typed-decisions') AS p_refund,
+  decide_choice(text, 'Which team owns this?', ['billing', 'defect', 'account', 'shipping', 'other'], model := 'laya-typed-decisions') AS team,
+  decide_choice_distribution(text, 'Which team owns this?', ['billing', 'defect', 'account', 'shipping', 'other'], model := 'laya-typed-decisions') AS team_dist,
+  decide_score(text, 'How frustrated is the writer?', ['calm', 'frustrated', 'angry'], model := 'laya-typed-decisions') AS mood,
+  decide_probability(text, 'The writer is angry.', model := 'laya-typed-decisions') AS p_angry,
+  decide_decision(text, 'The writer is angry.', 0.5, model := 'laya-typed-decisions') AS angry
+FROM tickets;
+
+statement ok
+CREATE OR REPLACE TABLE exp_laya_typed_decisions AS SELECT * FROM (VALUES
+  (1, 0.7312244933632988, 'billing', true, [0.6241155362351517, 0.15377782101991552, 0.10633485268933966, 0.04483846716879919, 0.07093332288679394], 1.4392098692303468, 0.5676263615660817, true, true),
+  (2, 0.14552176020720312, 'defect', true, [0.039020105966536954, 0.6110866921717629, 0.09740067781654461, 0.129720889443147, 0.1227716346020084], 1.2797256623951556, 0.37023140841263735, false, true),
+  (3, 0.02754318903856841, 'account', true, [0.18493599629034957, 0.12515436901045898, 0.2434802837016107, 0.2086015248594654, 0.2378278261381153], 0.2615278290442617, 0.006308541802756717, false, true),
+  (4, 0.6939035529540893, 'defect', true, [0.11131619099835387, 0.4577794745197542, 0.08775297851278799, 0.14470492405812885, 0.19844643191097514], 1.4568419235133283, 0.7211082072217238, true, true),
+  (5, 0.10120876370806509, 'account', true, [0.06606665830741573, 0.270880871617348, 0.3933781819052166, 0.07496490177352355, 0.1947093863964962], 1.114086952813485, 0.1169574846423056, false, true),
+  (6, 0.3537333450091326, 'billing', true, [0.4358883745646946, 0.21968138135044923, 0.145209110182797, 0.05832162901783774, 0.14089950488422137], 1.1382587717296775, 0.24967572968129914, false, true),
+  (7, 0.1038217802878756, 'other', true, [0.1086152679804142, 0.05714075634898536, 0.1489768520309322, 0.1910187174687043, 0.4942484061709641], 0.643178424152282, 0.007237239827509331, false, true),
+  (8, 0.345353728164198, 'account', true, [0.34640733419061126, 0.09227359341108947, 0.3528974287892501, 0.04850165733974935, 0.15991998626929982], 1.2716868029037143, 0.4786269980002622, false, true),
+  (9, 0.1635646388993913, 'shipping', true, [0.02602926661806851, 0.1488983002304729, 0.03808048921908049, 0.7005278375661931, 0.08646410636618491], 1.2497574673287983, 0.2974068641533049, false, true),
+  (10, 0.6604867256135171, 'defect', true, [0.05857731871091183, 0.48597908518016686, 0.051856358445979175, 0.25034599850539313, 0.1532412391575491], 1.4283116387563108, 0.6467565599361255, true, true),
+  (11, 0.00012602658530790086, 'account', true, [0.11665406681193277, 0.05257524983411349, 0.40665098135174976, 0.07305650885445845, 0.3510631931477455], 0.2802814282599868, 0.00018363865753964087, false, true),
+  (12, 0.12332820978276778, 'account', true, [0.1198851082008132, 0.20359619613294835, 0.38330426047185584, 0.04892355596007946, 0.2442908792343031], 1.3194108331758176, 0.2612536606343777, false, true),
+  (13, 0.7642329546885964, 'billing', true, [0.3852179393978844, 0.3074339449577302, 0.09278544989481328, 0.053533306200254274, 0.16102935954931785], 1.4342760879400145, 0.7237467941136632, true, true),
+  (14, 0.1423267644196959, 'other', true, [0.16071593128741696, 0.23011372968696364, 0.21843621743945127, 0.13479880516237147, 0.25593531642379663], 1.0750226094200805, 0.13121065574377347, false, true),
+  (15, 0.090754445231504, 'billing', true, [0.6231653928954346, 0.03264265913953772, 0.09022783707769721, 0.14217296372676394, 0.11179114716056658], 0.563954135669761, 0.0013037840508959523, false, true),
+  (16, 0.6642173023289135, 'billing', true, [0.443334746759801, 0.13343445550005872, 0.16895468538364897, 0.058811464019846486, 0.1954646483366449], 1.3606106694131488, 0.49408062466535646, false, true),
+  (17, 0.04556746757145537, 'other', true, [0.11002522867718129, 0.1778190171421934, 0.21959924447065568, 0.1568494930563102, 0.33570701665365943], 0.41919354431044076, 0.08637771460154353, false, true),
+  (18, 0.22294859384916568, 'shipping', true, [0.11495870146954358, 0.09147556076859677, 0.17076282903692686, 0.43585525061222335, 0.18694765811270941], 0.9421472976523515, 0.12521102869698547, false, true),
+  (19, 0.17196581710666037, 'defect', true, [0.04770935258679877, 0.5191292042262146, 0.09640954677300093, 0.1511156157459361, 0.18563628066804952], 1.389739226877242, 0.5123588939137672, true, true),
+  (20, 0.09280337694648923, 'other', true, [0.14668125463024848, 0.06601481747300383, 0.2349224108570088, 0.15646728787234457, 0.3959142291673943], 0.29723155977112425, 0.00026423554794710157, false, true),
+  (21, 0.16400027989999924, 'account', true, [0.039731405777918394, 0.2702111228751622, 0.5137378996962798, 0.037210365926809784, 0.13910920572382998], 1.4202117753511905, 0.6061140741319428, true, true),
+  (22, 0.8301094941073541, 'defect', true, [0.11378723518997508, 0.5678037152843723, 0.07024617076524264, 0.1312830982356221, 0.11687978052478787], 1.4021305868178118, 0.6686264960198449, true, true),
+  (23, 0.10582645293067873, 'other', true, [0.11517671295482194, 0.09749537662986775, 0.2672462161217981, 0.21025989586703467, 0.3098217984264776], 0.1783247519579127, 0.04996254793832065, false, true),
+  (24, 0.06817784432691597, 'other', true, [0.1270442658567914, 0.215038994088635, 0.17837410992057798, 0.2378453391937821, 0.24169729094021355], 1.1989574337713518, 0.05723661678840018, false, true),
+  (25, 0.20327964125421738, 'billing', true, [0.3647342133802412, 0.10213958928629321, 0.26329920196959855, 0.10466747860200107, 0.16515951676186597], 0.8798707658103675, 0.11839961689651786, false, true),
+  (26, 0.11448227958416718, 'account', true, [0.28074858867724944, 0.04977480542026513, 0.3093956073601681, 0.10804178421987673, 0.2520392143224406], 0.5500522231646315, 0.05811980030964921, false, true),
+  (27, 0.16962818695956564, 'shipping', true, [0.03942000471405754, 0.2070492714144406, 0.0454946151065776, 0.586424011080723, 0.12161209768420128], 1.5840896667302593, 0.783190210937324, true, true),
+  (28, 0.08707519550314878, 'account', true, [0.13856203220023044, 0.1589197305028455, 0.4681547146433636, 0.070071273117347, 0.1642922495362134], 1.463570471514636, 0.6762864397328817, true, true),
+  (29, 0.43379732929763004, 'shipping', true, [0.13518026381921264, 0.11796983850963146, 0.11364036446403893, 0.4779073271293289, 0.15530220607778802], 1.2979853375869732, 0.3518767606308079, false, true),
+  (30, 0.12757662783528428, 'defect', true, [0.08062779902268072, 0.34834695289997397, 0.15783847655745664, 0.09231362301195366, 0.32087314850793514], 1.155885614459279, 0.1369128329901429, false, true),
+  (31, 0.03450788322087365, 'other', true, [0.10353952532425542, 0.048643936379059054, 0.21772117842423705, 0.08508129418178773, 0.5450140656906607], 0.30062568560021363, 0.023080364894216304, false, true),
+  (32, 0.755969652333924, 'defect', true, [0.2116049799834905, 0.3766659271848257, 0.09391500413925093, 0.19801096900777243, 0.11980311968466038], 1.4817258000610027, 0.7432420320660524, true, true),
+  (33, 0.5581334533663436, 'defect', true, [0.2518558887334452, 0.3139147195619794, 0.10374696242544962, 0.12107689247686589, 0.20940553680225973], 1.1318270435043163, 0.38121702996748824, false, true),
+  (34, 0.07236453974369532, 'defect', true, [0.11799450809420392, 0.32076356197147016, 0.19384048194493458, 0.11704087550662731, 0.25036057248276405], 1.1304855482940708, 0.207146935143725, false, true),
+  (35, 0.3166885435518999, 'defect', true, [0.049724807889263624, 0.43709218866904936, 0.058954705432877674, 0.2784550540284491, 0.1757732439803603], 1.24402586820076, 0.2127160129121094, false, true),
+  (36, 0.6209979289943299, 'defect', true, [0.15497132036561795, 0.4138886564223401, 0.07946410428350928, 0.18276025415723648, 0.1689156647712963], 1.176040121352119, 0.18476889000734348, false, true),
+  (37, 0.15010845473302936, 'account', true, [0.12351594068869164, 0.28357639424233944, 0.3201616874720959, 0.04523095069017627, 0.22751502690669687], 1.244276351141964, 0.28570603334678196, false, true),
+  (38, 0.04547481125203237, 'other', true, [0.2359235935799947, 0.07910966098129428, 0.2333184923212942, 0.20997329807174275, 0.2416749550456741], 0.09654923517781289, 0.02150363647898397, false, true),
+  (39, 0.15729614400860162, 'shipping', true, [0.04520815899422307, 0.3313187671017597, 0.04893862666810702, 0.4311752476842867, 0.14335919955162346], 1.4099683992707341, 0.4468247860165911, false, true),
+  (40, 0.12658386609179925, 'defect', true, [0.17940780494911335, 0.2920901860108828, 0.16520131524313697, 0.14099870898114414, 0.2223019848157228], 0.7858678824316925, 0.10283392838577358, false, true),
+  (101, 0.19870242840589655, 'billing', true, [0.43425652952200844, 0.2884959349040702, 0.1744784382819808, 0.038319569704470466, 0.06444952758746998], 1.2577269880332627, 0.358175761432632, false, true),
+  (102, 0.2966291397925605, 'billing', true, [0.5397512404504111, 0.2747077051972859, 0.082384476480397, 0.026965027728378856, 0.07619155014352715], 1.197759728099536, 0.21847038459347348, false, true),
+  (103, 0.5029771249985564, 'billing', true, [0.4850703261180658, 0.28682752053617216, 0.12239306998438174, 0.0344308854665218, 0.07127819789485855], 1.1833733631827803, 0.3462009361636515, false, true),
+  (104, 0.287098507317557, 'billing', true, [0.4024037910252514, 0.26782446180623903, 0.13163290812225784, 0.05857563362302377, 0.13956320542322787], 1.2015916958190729, 0.3172230870656322, false, true)
+) v(id, p_refund, team, team_clear, team_dist, mood, p_angry, angry, angry_clear);
+
+# every answer matches the reference engine (NULL counts as a mismatch); labels where the reference has a clear margin
+query IIIIII
+SELECT count(*),
+       count(*) FILTER (NOT same_p(g.p_refund, x.p_refund)),
+       count(*) FILTER (NOT coalesce(g.team = x.team, false) AND x.team_clear),
+       count(*) FILTER (NOT (same_p(g.team_dist['billing'], x.team_dist[1]) AND same_p(g.team_dist['defect'], x.team_dist[2])
+                             AND same_p(g.team_dist['account'], x.team_dist[3]) AND same_p(g.team_dist['shipping'], x.team_dist[4])
+                             AND same_p(g.team_dist['other'], x.team_dist[5]))),
+       count(*) FILTER (NOT (same_x(g.mood, x.mood) AND same_p(g.p_angry, x.p_angry))),
+       count(*) FILTER (NOT coalesce(g.angry = x.angry, false) AND x.angry_clear)
+FROM got_laya_typed_decisions g FULL JOIN exp_laya_typed_decisions x USING (id)
+----
+44	0	0	0	0	0
+
+# what a user reads off it: refund accuracy at the default 0.5 threshold, routing accuracy, against the known labels
+query II
+SELECT round(decide_accuracy(g.p_refund, k.refund), 4), round(avg((g.team = k.team)::INTEGER), 4) FROM got_laya_typed_decisions g JOIN tickets k USING (id)
+----
+0.8409	0.6818
+
+# several questions at once (decide_answers, one padded batch per text) give the scalar answers
+query IIIIII
+-- one row per question per ticket: a renamed question_id would make the filters below vacuous
+SELECT count(*) FILTER (a.question_id = 'refund'), count(*) FILTER (a.question_id = 'team'), count(*) FILTER (a.question_id = 'mood'),
+       count(*) FILTER (a.question_id = 'refund' AND NOT same_p(a.probability, g.p_refund)),
+       count(*) FILTER (a.question_id = 'team' AND NOT coalesce(a.choice = g.team, false)),
+       count(*) FILTER (a.question_id = 'mood' AND NOT same_x(a.score, g.mood))
+FROM (SELECT id, unnest(decide_answers(text, '[{"id": "refund", "kind": "binary", "instruction": "A refund is requested."}, {"id": "team", "kind": "choice", "instruction": "Which team owns this?", "options": ["billing", "defect", "account", "shipping", "other"]}, {"id": "mood", "kind": "score", "instruction": "How frustrated is the writer?", "levels": ["calm", "frustrated", "angry"]}]', model := 'laya-typed-decisions'), recursive := true) FROM tickets) a
+JOIN got_laya_typed_decisions g USING (id)
+----
+44	44	44	0	0	0
+
+# decide_many returns one JSON document per text with all three answers
+query I
+SELECT count(*) FROM (SELECT decide_many(text, '[{"id": "refund", "kind": "binary", "instruction": "A refund is requested."}, {"id": "team", "kind": "choice", "instruction": "Which team owns this?", "options": ["billing", "defect", "account", "shipping", "other"]}, {"id": "mood", "kind": "score", "instruction": "How frustrated is the writer?", "levels": ["calm", "frustrated", "angry"]}]', model := 'laya-typed-decisions') AS m FROM tickets)
+WHERE (length(m) - length(replace(m, '"kind"', ''))) // 6 = 3
+----
+44
+
+# cross-row batching (texts padded to the length ladder, several per forward pass) answers the same, every kind
+statement ok
+SET anofox_decide_batch_tokens = 16384;
+
+query IIII
+SELECT count(*),
+       count(*) FILTER (NOT same_p(b.p, g.p_refund)),
+       count(*) FILTER (NOT coalesce(b.team = g.team, false)),
+       count(*) FILTER (NOT same_x(b.mood, g.mood))
+FROM (SELECT id, decide_probability(text, 'A refund is requested.', model := 'laya-typed-decisions') AS p,
+             decide_choice(text, 'Which team owns this?', ['billing', 'defect', 'account', 'shipping', 'other'], model := 'laya-typed-decisions') AS team,
+             decide_score(text, 'How frustrated is the writer?', ['calm', 'frustrated', 'angry'], model := 'laya-typed-decisions') AS mood FROM tickets) b
+JOIN got_laya_typed_decisions g USING (id)
+----
+44	0	0	0
+
+statement ok
+RESET anofox_decide_batch_tokens;
+
+# the GPU plugin answered, and only it
+query II
+SELECT count(*) FILTER (engine = 'plugin:${DECIDE_E2E_DEVICE}' AND runs > 0), count(*) FILTER (engine <> 'plugin:${DECIDE_E2E_DEVICE}')
+FROM __anofox_decide_local_sessions() WHERE model LIKE 'weights:graph_laya-typed-decisions|%'
+----
+1	0

@@ -151,12 +151,12 @@ if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.
     # trust boundary: a wrong ABI is undefined behaviour, not a wrong answer) and everything behind it untested.
     # These stand in for them: real shared libraries, one correct and one built with a deliberately wrong ABI.
     add_library(anofox_decide_fake_plugin SHARED test/cpp/plugin_fixture/fake_plugin.cpp)
-    target_include_directories(anofox_decide_fake_plugin PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/include)
+    target_include_directories(anofox_decide_fake_plugin PRIVATE "${ANOFOX_GGML_ADAPTER_INCLUDE_DIR}")
     target_compile_features(anofox_decide_fake_plugin PRIVATE cxx_std_17)
     set_target_properties(anofox_decide_fake_plugin PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
     add_library(anofox_decide_fake_plugin_bad_abi SHARED test/cpp/plugin_fixture/fake_plugin.cpp)
-    target_include_directories(anofox_decide_fake_plugin_bad_abi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/include)
+    target_include_directories(anofox_decide_fake_plugin_bad_abi PRIVATE "${ANOFOX_GGML_ADAPTER_INCLUDE_DIR}")
     target_compile_features(anofox_decide_fake_plugin_bad_abi PRIVATE cxx_std_17)
     target_compile_definitions(anofox_decide_fake_plugin_bad_abi PRIVATE DECIDE_FAKE_PLUGIN_BAD_ABI=1)
     set_target_properties(anofox_decide_fake_plugin_bad_abi PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -174,6 +174,7 @@ if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.
     target_compile_features(anofox_decide_unittest_tests PRIVATE cxx_std_17)
     target_include_directories(anofox_decide_unittest_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/include
+        "${ANOFOX_GGML_ADAPTER_INCLUDE_DIR}"
         ${CMAKE_SOURCE_DIR}/third_party/catch
         ${CMAKE_SOURCE_DIR}/third_party/miniz
         ${CMAKE_SOURCE_DIR}/third_party/yyjson/include

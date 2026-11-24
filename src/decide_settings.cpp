@@ -267,9 +267,13 @@ void RegisterDecideSettings(ExtensionLoader &loader) {
 	                          "Numeric precision of the GPU backends. Only 'fp32' in this release; other values are "
 	                          "rejected rather than silently run in fp32",
 	                          LogicalType::VARCHAR, Value("fp32"), ValidateGpuPrecision);
-	config.AddExtensionOption("anofox_decide_plugin_dir",
+	config.AddExtensionOption("anofox_decide_ep_path",
 	                          "Where the GPU plugins are installed and loaded from (empty: the 'plugins' folder of "
 	                          "anofox_decide_cache_dir). CALL decide_accelerate() fills it",
+	                          LogicalType::VARCHAR, Value(""));
+	config.AddExtensionOption("anofox_decide_plugin_dir",
+	                          "Deprecated: the old name of anofox_decide_ep_path (read when anofox_decide_ep_path is empty); removed in "
+	                          "the next release",
 	                          LogicalType::VARCHAR, Value(""));
 	config.AddExtensionOption("anofox_decide_local_engine",
 	                          "Development switch while the in-process models move from ONNX Runtime to ggml: 'ort' "

@@ -53,8 +53,8 @@ vector<DecideDeviceInfo> DecideDiscoverDevices();
 void DecideSetTestDevices(vector<DecideDeviceInfo> devices);
 void DecideClearTestDevices();
 
-//! MIGraphX coverage by gfx arch (kept explicit: an unsupported arch is reported unusable with the arch named).
-bool DecideMIGraphXClaimsArch(const string &gfx);
+//! The gfx architectures the released ggml ROCm plugin carries code objects for (an unsupported arch is reported unusable, named).
+bool DecideRocmArchUsable(const string &gfx);
 //! "gfx%d%x%x" from the KFD gfx_target_version (major*10000 + minor*100 + step).
 string DecideGfxArchFromTargetVersion(uint64_t version);
 
@@ -123,7 +123,7 @@ DecideDeviceChoice DecideResolveDevice(ClientContext &context, const DecideModel
 //! The device the setting names ('auto' when unset) and the validated precision ("fp32").
 string DecideDeviceSetting(ClientContext &context);
 string DecideGpuPrecision(ClientContext &context);
-//! anofox_decide_plugin_dir, else <cache dir>/plugins. "" when neither can be determined (no HOME).
+//! anofox_decide_ep_path, else <cache dir>/plugins. "" when neither can be determined (no HOME).
 string DecidePluginDir(ClientContext &context);
 //! Full path of a backend's plugin inside `plugin_dir`.
 string DecidePluginPath(const string &plugin_dir, const string &backend);
