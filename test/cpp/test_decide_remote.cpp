@@ -398,7 +398,7 @@ TEST_CASE("liquid requests hit the D1 path with a bearer key and the wire model"
 	DuckDB db(nullptr);
 	db.LoadStaticExtension<AnofoxDecideExtension>();
 	Connection con(db);
-	EnvGuard g({{"LIQUID_API_KEY", "env-liquid"}});
+	EnvGuard g(std::vector<std::pair<const char *, const char *>> {{"LIQUID_API_KEY", "env-liquid"}}); // a braced pair is ambiguous on GCC 11
 	auto target = Target("liquid");
 	target.wire_model = "d1";
 	auto cfg = DecideResolveConfig(*con.context, target);

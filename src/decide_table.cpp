@@ -120,7 +120,7 @@ unique_ptr<GlobalTableFunctionState> DecideModelsInitGlobal(ClientContext &conte
 		const auto source = DecideRemoteKeySource(context, row);
 		gstate->key_source.push_back(source.empty() ? Value(LogicalType::VARCHAR) : Value(source));
 	}
-	return gstate;
+	return std::move(gstate);
 }
 
 void DecideModelsScan(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
@@ -488,7 +488,7 @@ unique_ptr<GlobalTableFunctionState> DecideDoctorInitGlobal(ClientContext &conte
 	rows.push_back({"telemetry", "ok",
 	                string("anonymous usage telemetry is ") + (tel ? "on (function names only; see TELEMETRY.md)" : "off"),
 	                tel ? "SET anofox_telemetry_enabled = false;  (or export DATAZOO_DISABLE_TELEMETRY=1)" : ""});
-	return gstate;
+	return std::move(gstate);
 }
 
 void DecideDoctorScan(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
@@ -618,32 +618,32 @@ unique_ptr<FunctionData> DecideTableBind(ClientContext &context, TableFunctionBi
 			                      "(e.g. decide_table(t.s, t.q, t.m) or model := 'stub')");
 		}
 		data->has_model_arg = input.input_table_types.size() > 2;
-		return data;
+		return std::move(data);
 	}
 	auto state_v = input.inputs[0];
 	auto questions_v = input.inputs[1];
 	if (state_v.IsNull() || questions_v.IsNull()) {
 		data->empty = true;
-		return data;
+		return std::move(data);
 	}
 	data->state = state_v.ToString();
 	// Fail fast at bind: bad question JSON is a binder-time error, same as
 	// decide_many raising before any provider I/O.
 	data->questions = DecideParseManyQuestions(questions_v.ToString(), DecideMaxQuestions(context), "decide_table");
 	data->model = TableBindModel(context, input, data->model_from_setting);
-	return data;
+	return std::move(data);
 }
 
 unique_ptr<GlobalTableFunctionState> DecideTableInitGlobal(ClientContext &context, TableFunctionInitInput &input) {
 	auto &bind = input.bind_data->Cast<DecideTableData>();
 	auto gstate = make_uniq<DecideTableGlobalState>();
 	if (bind.empty || bind.per_row) {
-		return gstate;
+		return std::move(gstate);
 	}
 	auto entry = DecideResolveModel(context, "decide_table", bind.model, bind.model_from_setting);
 	gstate->model = entry.id;
 	gstate->answers = DecideEvaluate(context, entry, bind.state, bind.questions, "decide_table");
-	return gstate;
+	return std::move(gstate);
 }
 
 unique_ptr<LocalTableFunctionState> DecideTableInitLocal(ExecutionContext &context, TableFunctionInitInput &input,
