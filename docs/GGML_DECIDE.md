@@ -145,3 +145,20 @@ cost about 7 ms each (72 compiles for the 200 tickets, under 1 s of 26 s).
 par: attention is quadratic in the text length on both engines, and the ggml engine has no fused attention yet. These
 cells were measured on a machine with other load (one-minute load 10-12) and are indicative only; the evaluation table
 above is the measured target.
+
+### On a GPU (RTX 4090, RunPod, 2026-11-24)
+
+The same 200-ticket evaluation through the adapter's CUDA plugin (`anofox_decide_device = 'cuda'`, every model served by
+`plugin:cuda`) against the ggml CPU engine on the same pod (a shared host: its CPU numbers are not comparable with the
+table above):
+
+| Model | CUDA wall | CPU (pod) wall | CUDA peak host RSS |
+|---|---|---|---|
+| julia-1 | 66 s | 149 s | 4.43 GB |
+| laya-multilingual | 122 s | 218 s | 8.00 GB |
+| laya-typed-decisions | 54 s | 456 s | 4.15 GB |
+
+The GPU is faster than the CPU for every model (no regression). laya-typed-decisions: 0 label flips against the CPU run,
+largest probability difference 2.6e-5, metrics identical. Every text length compiles its own graph on first use, which
+dominates the smaller models' GPU time on 200 short tickets; the host RSS includes the weights' host copy that the plugin
+keeps next to its device copy.
