@@ -139,3 +139,9 @@ C++ build on the same machine laya-typed-decisions took 78-186 s at 24 threads, 
 
 Not needed for the target, so not done: F16 weights on the CPU, fused attention, shape bucketing. Per-length compiles
 cost about 7 ms each (72 compiles for the 200 tickets, under 1 s of 26 s).
+
+**Long texts.** `tools/bench/local_bench.py`, julia-1, 16 distinct rows per cell, both engines at their defaults: 471 tokens
+5.8 s (ggml) vs 5.2 s (ONNX Runtime), 1,865 tokens 45.7 s vs 46.7 s, at 0.58/2.19 GB vs 1.50/2.53 GB peak RSS. Roughly at
+par: attention is quadratic in the text length on both engines, and the ggml engine has no fused attention yet. These
+cells were measured on a machine with other load (one-minute load 10-12) and are indicative only; the evaluation table
+above is the measured target.
