@@ -6,6 +6,34 @@ All notable changes to `anofox_decide` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `anofox_decide_ep_path`: the directory the GPU plugins are installed in and loaded from (default: `plugins` inside
+  the cache directory), the same name as in anofox-tabfm.
+
+### Changed
+- **GPU plugins come from anofox-ggml-adapter.** The local models (julia-1, laya-multilingual, laya-typed-decisions)
+  run on the GPU through the adapter's plugins (plugin ABI v3), shared with anofox-tabfm, instead of decide's own
+  ONNX Runtime CUDA, MIGraphX and MLX plugins: `libanofox_ggml-cuda_plugin.so` (CUDA runtime and cuBLAS linked
+  statically, needs only the NVIDIA driver's `libcuda.so.1`; sm_75 and newer), `libanofox_ggml-rocm_plugin.so`
+  (links the system's HIP, hipBLAS and rocBLAS; gfx90a, gfx942, gfx1030, gfx1100, gfx1101, gfx1102, gfx1150, gfx1151,
+  gfx1200, gfx1201) and `libanofox_mlx_plugin.dylib` (Apple silicon, Homebrew `mlx` and `mlx-c`). On Windows the
+  names drop `lib` and end in `.dll`. They are fetched from the adapter's release
+  ([v2026.11.24](https://github.com/DataZooDE/anofox-ggml-adapter/releases)) with their sha256 sidecars
+  (`ggml-cuda_plugin.sha256`, `ggml-rocm_plugin.sha256`, `mlx_plugin.sha256`) and verified before they load.
+- `decide_download_runtime('cuda')` and `decide_accelerate()` fetch the plugin alone: no ONNX Runtime wheel, and no
+  CUDA toolkit or cuDNN to install.
+- ROCm no longer compiles per shape: no shape buckets, no `.mxr` cache and no bucket limit on text length.
+  `decide_gpu_precompile` is still accepted on ROCm but does no work.
+- `__anofox_decide_local_sessions()` reports the engine `plugin:cuda`, `plugin:rocm` or `plugin:mlx` for a GPU session.
+- Verified with the local end-to-end suite on the GPU (`test/sql/decide_local_e2e_gpu.test`: probabilities within
+  1e-3 of the CPU reference, labels exact, every block served by the plugin) on AMD gfx1150 and gfx1201 (ROCm) and an
+  Apple M3 (MLX).
+
+### Deprecated
+- `anofox_decide_plugin_dir`, the old name of `anofox_decide_ep_path`: read when `anofox_decide_ep_path` is empty,
+  removed in the next release. The plugin sources in `plugins/cuda`, `plugins/migraphx` and `plugins/mlx` are
+  superseded and are removed in a later release.
+
 ## [2026.11.24] - 2026-11-23
 
 ### Fixed

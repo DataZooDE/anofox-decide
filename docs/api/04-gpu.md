@@ -1,7 +1,9 @@
 # GPU acceleration
 
-The extension stays one CPU-only file. A GPU backend (NVIDIA CUDA, AMD ROCm/MIGraphX, Apple MLX) is a separate
-plugin the extension loads when asked, fetched from the release and verified before it is used. Nothing changes
+The extension stays one CPU-only file. A GPU backend (NVIDIA CUDA, AMD ROCm, Apple MLX) is a separate
+plugin the extension loads when asked, fetched from the release and verified before it is used. The plugins are
+[anofox-ggml-adapter](https://github.com/DataZooDE/anofox-ggml-adapter)'s, shared with anofox-tabfm: the ggml
+CUDA and ROCm plugins run the same engine as the CPU, the MLX plugin runs the same ONNX graphs on Apple's MLX. Nothing changes
 until you ask: without a plugin every [local model](03-local-models.md) scores on the CPU exactly as before.
 
 The full reference (all measurements, requirements, limits and troubleshooting) is
@@ -18,9 +20,12 @@ SELECT model, device FROM decide_models();   -- where each local model is scored
 SET anofox_decide_batch_tokens = 8192;       -- advisable on a GPU: score the rows of a chunk together
 ```
 
-`decide_download_runtime('cuda')` (or `'rocm'`, `'mlx'`) fetches one backend's plugin explicitly. Requirements, all
-fp32: CUDA 12.8 or newer with cuDNN 9 on Linux x86-64; ROCm 7.x with MIGraphX on Linux x86-64 for a supported
-architecture; macOS on Apple silicon with `brew install mlx mlx-c`.
+`decide_download_runtime('cuda')` (or `'rocm'`, `'mlx'`) fetches one backend's plugin explicitly: the plugin alone,
+no ONNX Runtime, CUDA toolkit or cuDNN. Requirements, all fp32: on Linux x86-64 an NVIDIA GPU of compute
+capability sm_75 or newer and its driver (the CUDA plugin links the CUDA runtime and cuBLAS statically and needs
+only the driver's `libcuda.so.1`); on Linux x86-64 a ROCm install (HIP, hipBLAS, rocBLAS) and an AMD GPU of
+architecture gfx90a, gfx942, gfx1030, gfx1100, gfx1101, gfx1102, gfx1150, gfx1151, gfx1200 or gfx1201; macOS on
+Apple silicon with `brew install mlx mlx-c`.
 
 ## Choosing the device
 
@@ -30,7 +35,8 @@ table calls unsupported. `cpu` always scores on the CPU. `cuda`, `rocm` or `mlx`
 `CALL decide_accelerate()` when that device is missing, unusable or cannot serve the model: never a silent CPU run.
 Only the models from `decide_download` can run on a GPU (the plugin loads their safetensors file itself); a model
 registered with its own `.onnx` graph stays on the CPU. `anofox_decide_gpu_precision` accepts only `fp32`;
-`anofox_decide_plugin_dir` is where plugins are installed and loaded from.
+`anofox_decide_ep_path` is where plugins are installed and loaded from (`anofox_decide_plugin_dir`, its old name,
+is still read when `anofox_decide_ep_path` is empty, and is removed in the next release).
 
 ## What is verified
 
@@ -41,27 +47,26 @@ mismatch, a missing or unreadable checksum file) deletes the plugin. `decide_acc
 checks a plugin against the `.sha256` file beside it once per process (by path, size and modification time) before
 it first loads it, which scoring and `decide_backends()` do not repeat. The checksum comes from the same release as
 the plugin, so this catches damage and a swapped asset, not a compromised release. **A plugin you copy into
-`anofox_decide_plugin_dir` yourself, with no `.sha256` file beside it, is trusted and loaded as it is.** Treat the
+`anofox_decide_ep_path` yourself, with no `.sha256` file beside it, is trusted and loaded as it is.** Treat the
 directory like any directory you load code from: the extension refuses to install into one that other users can
-write to. A plugin built against another interface version is refused with the fix.
+write to. A plugin built against another interface version (plugin ABI v3) or struct layout is refused with the fix.
 
-## ROCm needs a compile
+## No ahead-of-time compile
 
-MIGraphX compiles one program per tensor shape: 2 to 5 minutes once per shape, and
-0.6 to 1.75 GB of cache each, under `<cache dir>/gpu-cache/migraphx/`. Run `CALL decide_gpu_precompile('laya-multilingual');`
-once before a batch job: it compiles every shape up front with progress (on CUDA and MLX it is refused, there is
-nothing to compile); otherwise the first query that meets a shape pays for it, minutes at a time. Details:
-[docs/GPU_ROCM.md](../GPU_ROCM.md).
+The ggml and MLX plugins build their compute graph for a shape on its first use, as part of that call: no
+minutes-long compile and no compiled programs on disk, so there is nothing to compile ahead. `decide_gpu_precompile` is still accepted on ROCm (and refused on CUDA, MLX
+and the CPU), but with the ggml ROCm plugin it does no work. Details: [docs/GPU_ROCM.md](../GPU_ROCM.md).
 
-## Measured
+## Verified
 
-On the 200-ticket evaluation Laya multilingual ran several times faster on an RTX 4090 (CUDA), an RX 9070 XT
-(ROCm) and an Apple M3 (MLX) than on the CPU of the same machine, with probabilities within 4e-5 of the CPU
-and no decision changed. The gains depend on the model and the machine; every number, and why the ratios are
-upper bounds: [docs/GPU_BACKENDS.md](../GPU_BACKENDS.md).
+The local end-to-end suite (40 tickets, all three catalog models) passes on AMD gfx1150 and gfx1201 (ROCm) and on
+an Apple M3 (MLX): every probability within 1e-3 of the CPU reference, the labels exact (where the reference is not a
+near tie), and every block served by the plugin. The speed measurements in [docs/GPU_BACKENDS.md](../GPU_BACKENDS.md) were taken with the previous
+plugins (ONNX Runtime CUDA, MIGraphX, decide's own MLX plugin) and have not been repeated on these.
 
-**Not yet:** half precision, CUDA on Windows, CUDA 13.
-Source: [`plugins/cuda`](../../plugins/cuda/README.md), `plugins/migraphx`, `plugins/mlx`.
+**Not yet:** half precision, CUDA on Windows.
+Source: [anofox-ggml-adapter](https://github.com/DataZooDE/anofox-ggml-adapter) (`src/plugin_ggml.cpp`,
+`src/plugin_mlx.cpp`); the plugins are released there.
 
 GPU errors and their fixes are in [Troubleshooting](06-troubleshooting.md#gpu) and
 [docs/GPU_BACKENDS.md](../GPU_BACKENDS.md#troubleshooting).

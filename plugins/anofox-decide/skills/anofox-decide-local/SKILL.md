@@ -8,11 +8,11 @@ description: >
   graph, tokenizer[, profile[, options]]), long text and decide_token_count, and the window settings
   anofox_decide_max_length, anofox_decide_head_length and anofox_decide_on_truncate. Covers batching
   with anofox_decide_batch_tokens, anofox_decide_cache_dir, and GPU acceleration through verified
-  CUDA / ROCm (MIGraphX) / Apple MLX plugins: decide_devices, decide_backends, decide_accelerate,
-  decide_download_runtime, decide_gpu_precompile, anofox_decide_device, anofox_decide_plugin_dir and
-  anofox_decide_gpu_precision. Use when the user wants no API key, no data leaving the machine, an
-  offline or air-gapped setup, a Julia-1 / Laya model, a GPU, or hits "not downloaded", "tokens but
-  the local model reads at most" or GPU plugin errors.
+  CUDA / ROCm / Apple MLX plugins (anofox-ggml-adapter's): decide_devices, decide_backends,
+  decide_accelerate, decide_download_runtime, anofox_decide_device, anofox_decide_ep_path (old name
+  anofox_decide_plugin_dir, deprecated) and anofox_decide_gpu_precision. Use when the user wants no
+  API key, no data leaving the machine, an offline or air-gapped setup, a Julia-1 / Laya model, a
+  GPU, or hits "not downloaded", "tokens but the local model reads at most" or GPU plugin errors.
 version: 2026.11.24
 user-invocable: false
 ---
@@ -45,8 +45,8 @@ hosted models (see `anofox-decide-questions`).
    `.onnx` graph always stays on the CPU.
 6. **GPU plugins are native code.** They are verified against the release's `.sha256` file. A plugin copied
    by hand without a `.sha256` file beside it is trusted as-is.
-7. **ROCm compiles per shape** (2 to 5 minutes each, once). Run `decide_gpu_precompile` before a batch job.
-   CUDA and MLX need no compile, and the call is refused there.
+7. **No GPU needs a compile step.** The plugins build a shape's graph on first use. `decide_gpu_precompile`
+   is still accepted on ROCm but does no work, and is refused on CUDA and MLX.
 
 ## The catalog
 
@@ -128,22 +128,20 @@ SELECT model, device FROM decide_models();    -- where each local model is score
 CALL decide_download_runtime('cuda');         -- or 'rocm', 'mlx'
 ```
 
-```sql
--- needs: an AMD GPU with ROCm and MIGraphX (refused on CUDA, MLX and the CPU: they compile nothing)
-SET anofox_decide_device = 'rocm';
-CALL decide_gpu_precompile('laya-multilingual');               -- compile every shape bucket up front, minutes each, once
-CALL decide_gpu_precompile('laya-multilingual', seq := 1024);  -- or only the buckets that hold texts of up to 1024 tokens
-```
+No GPU needs a compile step: the plugins build a shape's graph on first use. `decide_gpu_precompile` is still
+accepted on ROCm but does no work (refused on CUDA, MLX and the CPU).
 
 | Setting | Default | Meaning |
 |---|---|---|
 | `anofox_decide_device` | `auto` | `auto`, `cpu`, `cuda`, `rocm`, `mlx` |
 | `anofox_decide_gpu_precision` | `fp32` | only `fp32`. Other values are rejected |
-| `anofox_decide_plugin_dir` | `<cache dir>/plugins` | where plugins are installed and loaded from. Must not be writable by other users |
+| `anofox_decide_ep_path` | `<cache dir>/plugins` | where plugins are installed and loaded from. Must not be writable by other users. `anofox_decide_plugin_dir` is its deprecated old name, read when it is empty |
 
-Requirements: CUDA 12.8+ with cuDNN 9 (Linux x86-64), ROCm 7.x with MIGraphX (Linux x86-64), or macOS on
-Apple silicon with `brew install mlx mlx-c`. Not supported yet: half precision, CUDA on Windows, CUDA 13.
-GPU probabilities match the CPU to within 4e-5 on the evaluation set.
+Requirements (the plugin is the only download; no ONNX Runtime, CUDA toolkit or cuDNN): Linux x86-64 with an
+NVIDIA GPU of sm_75 or newer and its driver; Linux x86-64 with ROCm (HIP, hipBLAS, rocBLAS) and an AMD GPU of
+gfx90a, gfx942, gfx1030, gfx1100-gfx1102, gfx1150, gfx1151, gfx1200 or gfx1201; or macOS on Apple silicon with
+`brew install mlx mlx-c`. Not supported yet: half precision, CUDA on Windows. GPU probabilities match the CPU to
+within 1e-3 on the local end-to-end suite, labels exact.
 
 | Error contains | Fix |
 |---|---|
@@ -151,7 +149,7 @@ GPU probabilities match the CPU to within 4e-5 on the evaluation set.
 | `... cannot run on cuda:0: ... its plugin is not installed` | `CALL decide_accelerate();`. `decide_backends()` shows the reason |
 | `... enable_external_access is off` | `SET enable_external_access = true;` or `SET anofox_decide_device = 'cpu';` |
 | `does not match its published checksum` | the plugin was deleted. Retry `CALL decide_download_runtime('<backend>');` |
-| `a runtime library it needs is missing` / `ran out of device memory` | install CUDA/cuDNN, MIGraphX or MLX. For memory, `SET anofox_decide_batch_tokens = 4096;` |
+| `a runtime library it needs is missing` / `ran out of device memory` | install the NVIDIA driver, ROCm (HIP, hipBLAS, rocBLAS) or MLX. For memory, `SET anofox_decide_batch_tokens = 4096;` |
 | `the text is N tokens but the local model reads at most M` | the window cannot grow (8192 tokens is the maximum). Shorten the text (strip quoted replies and signatures, or split it into parts and combine the scores), lower `anofox_decide_head_length` when the question is short (julia-1), or accept the cut: `SET anofox_decide_on_truncate = 'ignore';` |
 
 Reference pages: [Local models](https://github.com/DataZooDE/anofox-decide/blob/main/docs/api/03-local-models.md),

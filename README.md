@@ -165,7 +165,7 @@ Which one to pick, and how they did on a 200-ticket evaluation: [Choosing a mode
 | [Functions](docs/api/01-functions.md) | Every function, question kinds, `decide_table` columns, NULLs, scoring many rows |
 | [Providers](docs/api/02-providers.md) | Registering models, per-model options, each hosted provider, API keys and secrets, local servers |
 | [Local models](docs/api/03-local-models.md) | Julia-1 and Laya in-process, your own exported ONNX model, long text, batching |
-| [GPU acceleration](docs/api/04-gpu.md) | CUDA, ROCm and MLX plugins, devices, verification, measurements |
+| [GPU acceleration](docs/api/04-gpu.md) | CUDA, ROCm and MLX plugins (from anofox-ggml-adapter), devices, verification |
 | [Settings](docs/api/05-settings.md) | Every setting with its default |
 | [Troubleshooting](docs/api/06-troubleshooting.md) | Every error message, what it means, what to run |
 
@@ -174,7 +174,7 @@ Which one to pick, and how they did on a 200-ticket evaluation: [Choosing a mode
 | Document | What it is |
 |---|---|
 | [docs/EVALUATION.md](docs/EVALUATION.md) | Reference: the 200-ticket evaluation, method and how to reproduce it |
-| [docs/GPU_BACKENDS.md](docs/GPU_BACKENDS.md), [docs/GPU_ROCM.md](docs/GPU_ROCM.md) | Reference: GPU requirements, measurements, limits; the ROCm shape buckets |
+| [docs/GPU_BACKENDS.md](docs/GPU_BACKENDS.md), [docs/GPU_ROCM.md](docs/GPU_ROCM.md) | Reference: GPU requirements, measurements, limits; the ROCm plugin |
 | [docs/BUILDING.md](docs/BUILDING.md) | Reference: building and testing from source |
 | [docs/CALIBRATION_PERF.md](docs/CALIBRATION_PERF.md) | Report: calibration and local performance measurements |
 | [docs/SPIKE_RESULTS.md](docs/SPIKE_RESULTS.md) | History: provider contract spikes |
