@@ -137,23 +137,27 @@ adapter's `PhysicalCpuCores()`, which honours a taskset/cpuset).
 C++ build on the same machine laya-typed-decisions took 78-186 s at 24 threads, against ONNX Runtime's 31 s. The earlier
 "643 s" figure for it was measured that way. Leaving the SMT siblings free also leaves headroom for such load.
 
-Not needed for the target, so not done: F16 weights on the CPU, fused attention, shape bucketing. Per-length compiles
-cost about 7 ms each (72 compiles for the 200 tickets, under 1 s of 26 s).
+Not done: F16 weights on the CPU, shape bucketing. Per-length compiles cost about 7 ms each (72 compiles for the 200
+tickets, under 1 s of 26 s).
 
-**Long texts** (re-measured 2026-11-24 on the idle machine, one-minute load 0.2 at the start; `tools/bench/local_bench.py
---rows 16`, both engines at their defaults, three rounds with the engine order alternated; wall time min–max, peak RSS):
+**Long texts and fused attention.** Measured on the idle machine (one-minute load 0.2 at the start) with
+`tools/bench/local_bench.py --rows 16`, both engines at their defaults, engine order alternated, wall time min–max:
 
-| Model | Tokens | ggml wall | ORT wall | ggml RSS | ORT RSS |
-|---|---|---|---|---|---|
-| julia-1 | 489 | 5.6–6.2 s | 5.4–7.2 s | 0.59 GB | 1.48 GB |
-| julia-1 | 1,951 | 47.1–50.3 s | 40.9–48.9 s | 2.34 GB | 2.60 GB |
-| laya-multilingual | 489 | 12.9–13.0 s | 12.2–13.2 s | 1.92 GB | 3.27 GB |
-| laya-typed-decisions | 470 | 25.8–28.6 s | 30.9–32.9 s | 2.43 GB | 4.87 GB |
+| Model | Tokens | ggml, unfused | ggml, fused attention | ORT | ggml RSS | ORT RSS |
+|---|---|---|---|---|---|---|
+| julia-1 | 489 | 5.6–6.2 s | **4.4–4.7 s** | 5.3–7.2 s | 0.60 GB | 1.48 GB |
+| julia-1 | 1,951 | 47.1–50.3 s | **22.3–25.7 s** | 39.5–48.9 s | 2.36 GB | 2.61 GB |
+| laya-multilingual | 489 | 12.9–13.0 s | **9.5–9.8 s** | 12.2–14.0 s | 1.93 GB | 3.27 GB |
+| laya-typed-decisions | 470 | 25.8–28.6 s | **21.7–23.1 s** | 30.4–32.9 s | 2.44 GB | 4.88 GB |
 
-Peak RSS is lower everywhere. At about 500 tokens julia-1 and laya-multilingual are at par and laya-typed-decisions is
-faster. julia-1 at about 2,000 tokens is about 12% slower than ONNX Runtime: attention is quadratic in the text length and
-the ggml engine has no fused attention yet (`ggml_flash_attn_ext`, not done). The Laya models read at most 1,024 tokens,
-so only julia-1 reaches that length. The Phase 4 target is the evaluation table above.
+Without fusion julia-1 at about 2,000 tokens was about 12% slower than ONNX Runtime: two thirds of the compute was the
+`[heads, S, S]` attention scores (QKᵀ, scale, mask, softmax, PV; `ANOFOX_GGML_PROFILE=2`). The adapter now lowers the
+exported attention pattern to one `ggml_flash_attn_ext` on the CPU (every encoder layer of the three models; the GPU
+plugins keep the unfused lowering): compute per 2k-token row 1.52 s -> 0.66 s. With it ggml is faster than ONNX Runtime in
+every cell and lower in peak RSS. The Laya models read at most 1,024 tokens, so only julia-1 reaches 2,000.
+Parity with fused attention: the C++ real-weight goldens, `decide_local_e2e.test` and `decide_local_e2e_registered.test` pass, and
+the 200-ticket evaluation gives 0 flips against ONNX Runtime on all three models (max |dp| 2.1e-5, metrics identical) at
+4.4 / 10.1 / 25.0 s.
 
 ### On a GPU (RTX 4090, RunPod, 2026-11-24)
 

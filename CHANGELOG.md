@@ -11,6 +11,9 @@ All notable changes to `anofox_decide` are documented here. The format follows
   the cache directory), the same name as in anofox-tabfm.
 
 ### Changed
+- Long texts: the ggml CPU engine fuses each encoder layer's attention into one flash-attention op (the adapter's
+  `ggml_flash_attn_ext` lowering). julia-1 at about 2,000 tokens is about 40% faster than ONNX Runtime (it was 12% slower),
+  and every model is faster at about 500 tokens; answers unchanged (0 flips on the evaluation).
 - The ggml CPU engine (`anofox_decide_local_engine = 'ggml'`) runs at most one thread per physical core instead of one
   per DuckDB thread: 12-17% faster than ONNX Runtime on the 200-ticket evaluation for every local model, at half the
   memory and less than half the CPU time (`docs/GGML_DECIDE.md`).
