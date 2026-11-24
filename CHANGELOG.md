@@ -11,6 +11,9 @@ All notable changes to `anofox_decide` are documented here. The format follows
   the cache directory), the same name as in anofox-tabfm.
 
 ### Changed
+- The ggml CPU engine (`anofox_decide_local_engine = 'ggml'`) runs at most one thread per physical core instead of one
+  per DuckDB thread: 12-17% faster than ONNX Runtime on the 200-ticket evaluation for every local model, at half the
+  memory and less than half the CPU time (`docs/GGML_DECIDE.md`).
 - **GPU plugins come from anofox-ggml-adapter.** The local models (julia-1, laya-multilingual, laya-typed-decisions)
   run on the GPU through the adapter's plugins (plugin ABI v3), shared with anofox-tabfm, instead of decide's own
   ONNX Runtime CUDA, MIGraphX and MLX plugins: `libanofox_ggml-cuda_plugin.so` (CUDA runtime and cuBLAS linked

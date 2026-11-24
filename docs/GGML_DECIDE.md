@@ -109,3 +109,33 @@ Environment for the real-weight tests: `DECIDE_REAL_WEIGHTS=1`, `DECIDE_EXPORTS_
 `LAYA_MULTILINGUAL_DIR` / `LAYA_ML_DIR=<dir>/weights/laya/multilingual`, `LAYA_ONNX=<dir>/out/laya-multilingual/julia1.onnx`,
 `LAYA_TYPED_DIR` / `LAYA_TD_DIR=<dir>/weights/laya/typed-decisions`, `LAYA_TYPED_ONNX=<dir>/out/laya-typed-decisions/julia1.onnx`.
 On ONNX Runtime all of them pass with nothing skipped (103 C++ cases, 2,937 assertions).
+
+## Performance: ggml against ONNX Runtime (2026-11-24)
+
+Same machine as the baseline (AMD Ryzen AI 9 HX 370: 12 cores, 24 threads, 46 GB), the same 200 Bitext tickets with two
+questions each, the extension built from `feat/ggml-gpu`. Protocol: three rounds, engines alternating, a round starts only
+when the machine's one-minute load is below 4, the best run counts.
+
+| Model | ggml wall | ONNX Runtime wall | ggml peak RSS | ONNX Runtime peak RSS | ggml CPU | ONNX Runtime CPU |
+|---|---|---|---|---|---|---|
+| julia-1 | **4.7 s** | 5.4 s | **0.49 GB** | 1.45 GB | 44 s | 103 s |
+| laya-multilingual | **10.7 s** | 13.0 s | **1.94 GB** | 3.13 GB | 112 s | 266 s |
+| laya-typed-decisions | **25.9 s** | 30.8 s | **2.44 GB** | 4.89 GB | 296 s | 657 s |
+
+Every ggml run was faster than every ONNX Runtime run, at about half the memory and less than half the CPU time. The
+answers: 0 label flips against the ONNX Runtime oracle on all 400 answers per model, metrics identical, largest
+probability difference 2.4e-5 (`tools/eval/compare_runs.py`).
+
+**What made the difference: one engine thread per physical core.** The engine used to run with DuckDB's thread count,
+here 24 (12 cores with SMT). A second thread per core adds no arithmetic, and every op ends on a barrier that waits for
+the slowest thread. Measured with the evaluation's own query (`SET threads = N`, laya-typed-decisions): 34.6 s at 24
+threads, 26.0 s at 16, **25.4 s at 12**, 27.6 s at 8; julia-1 5.8 s at 24, 4.7 s at 12; laya-multilingual 12.0 s at 24,
+10.1 s at 12. The engine now runs `min(DuckDB threads, physical cores)` threads (`DecideLocalEngineThreads`, using the
+adapter's `PhysicalCpuCores()`, which honours a taskset/cpuset).
+
+**Contention.** A barrier-per-op engine degrades sharply when other processes compete for the cores: with a parallel
+C++ build on the same machine laya-typed-decisions took 78-186 s at 24 threads, against ONNX Runtime's 31 s. The earlier
+"643 s" figure for it was measured that way. Leaving the SMT siblings free also leaves headroom for such load.
+
+Not needed for the target, so not done: F16 weights on the CPU, fused attention, shape bucketing. Per-length compiles
+cost about 7 ms each (72 compiles for the 200 tickets, under 1 s of 26 s).

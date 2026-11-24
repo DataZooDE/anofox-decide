@@ -1,4 +1,5 @@
 #include "catch.hpp"
+#include "anofox_ggml_adapter/devices.hpp"
 #include "anofox_decide_extension.hpp"
 #include "decide_local_nli.hpp"
 #include "decide_local_validate.hpp"
@@ -190,6 +191,16 @@ TEST_CASE("local collation mirrors data.sequence", "[anofox_decide][local]") {
 		REQUIRE_THROWS_WITH(DecideCollateRow(tok, "s", long_q, {"a", "b"}, 0, 20, 1024, false, "decide_choice", "dept"),
 		                    Contains("decide_choice: the question and options use"));
 	}
+}
+
+TEST_CASE("the ggml engine runs at most one thread per physical core", "[anofox_decide][local]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	const int cores = ::anofox::ggml_adapter::PhysicalCpuCores();
+	REQUIRE_FALSE(con.Query("SET threads = " + std::to_string(cores * 2))->HasError());
+	REQUIRE(DecideLocalEngineThreads(*con.context) == cores);
+	REQUIRE_FALSE(con.Query("SET threads = 1")->HasError());
+	REQUIRE(DecideLocalEngineThreads(*con.context) == 1); // fewer DuckDB threads than cores: DuckDB's count
 }
 
 TEST_CASE("local end-to-end over the tiny fixture", "[anofox_decide][local]") {

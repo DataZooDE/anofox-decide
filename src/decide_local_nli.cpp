@@ -1,6 +1,7 @@
 // DecideLocalNli — Julia-1 local scoring. ONLY TU including onnxruntime.
 
 #include "decide_local_nli.hpp"
+#include "anofox_ggml_adapter/devices.hpp"
 #include "duckdb_compat.hpp"
 #include "decide_bundled_resources.hpp"
 #include "decide_catalog.hpp"
@@ -216,11 +217,16 @@ string DecideLocalEngine(ClientContext &context, const string &function) {
 	return engine;
 }
 
+int DecideLocalEngineThreads(ClientContext &context) {
+	const int duckdb_threads = static_cast<int>(TaskScheduler::GetScheduler(context).NumberOfThreads());
+	return std::max(1, std::min(duckdb_threads, ::anofox::ggml_adapter::PhysicalCpuCores()));
+}
+
 namespace {
 
-//! The ggml engine's threads: DuckDB's own thread count (anofox_decide runs one forward pass at a time per model).
+//! The ggml engine's threads (anofox_decide runs one forward pass at a time per model).
 int EngineThreads(ClientContext &context) {
-	return static_cast<int>(TaskScheduler::GetScheduler(context).NumberOfThreads());
+	return DecideLocalEngineThreads(context);
 }
 
 const vector<string> kGraphInputs = {"input_ids", "attention_mask", "marker_pos", "marker_mask", "qtype"};

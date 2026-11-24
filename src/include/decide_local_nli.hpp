@@ -109,6 +109,10 @@ void DecideEnsureLayaConfig(ClientContext &context, const string &path, const st
 //! mistyped ANOFOX_DECIDE_LOCAL_ENGINE.
 string DecideLocalEngine(ClientContext &context, const string &function);
 
+//! The threads the ggml CPU engine runs a local model with: DuckDB's thread count, at most one per physical core (SMT siblings add
+//! no arithmetic and slow every op's barrier; measured 25-30% faster on the evaluation). Read when a session is created.
+int DecideLocalEngineThreads(ClientContext &context);
+
 class DecideLocalSession {
 public:
 	//! `function` is the user-facing function named in errors (ONNX Runtime failures go through DecideMapOrtError).
