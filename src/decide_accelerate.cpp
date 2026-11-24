@@ -878,8 +878,7 @@ void RegisterDecideAccelerate(ExtensionLoader &loader) {
 		    loader, std::move(func), "decide_download_runtime",
 		    DecideDocs("Download the GPU plugin for 'cuda', 'rocm' or 'mlx' into anofox_decide_ep_path (default "
 		               "<cache dir>/plugins) and verify it against the sha256 published with the release before it is "
-		               "moved into place, and again on every later call of this function (a mismatch deletes it). CUDA "
-		               "also fetches the pinned ONNX Runtime GPU runtime. Refuses a "
+		               "moved into place, and again on every later call of this function (a mismatch deletes it). Refuses a "
 		               "platform nothing is published for before downloading. Columns: file, bytes, status (cached / "
 		               "downloaded).",
 		               "devices", {{{"backend"}, {LogicalType::VARCHAR}, "CALL decide_download_runtime('cuda');"}}));
