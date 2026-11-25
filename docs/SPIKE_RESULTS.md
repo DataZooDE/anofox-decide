@@ -4,6 +4,8 @@
 > the provider contracts. Status lines below describe the project *at the time*: the local ONNX provider,
 > live tests against TypeSafe and Liquid D1, and the evaluation have since been built (see the
 > [README](../README.md), [EVALUATION.md](EVALUATION.md) and [REVIEW_FOLLOWUP.md](REVIEW_FOLLOWUP.md)).
+> The in-process models ran on ONNX Runtime at the time; since 2026-11-25 they run on the ggml engine of anofox-ggml-adapter and
+> ONNX Runtime is removed ([GGML_DECIDE.md](GGML_DECIDE.md)).
 
 ## Remote provider: TypeSafe System One API
 

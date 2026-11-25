@@ -21,7 +21,7 @@ SET anofox_decide_batch_tokens = 8192;       -- advisable on a GPU: score the ro
 ```
 
 `decide_download_runtime('cuda')` (or `'rocm'`, `'mlx'`) fetches one backend's plugin explicitly: the plugin alone,
-no ONNX Runtime, CUDA toolkit or cuDNN. Requirements, all fp32: on Linux x86-64 an NVIDIA GPU of compute
+no CUDA toolkit or cuDNN. Requirements, all fp32: on Linux x86-64 an NVIDIA GPU of compute
 capability sm_75 or newer and its driver (the CUDA plugin links the CUDA runtime and cuBLAS statically and needs
 only the driver's `libcuda.so.1`); on Linux x86-64 a ROCm install (HIP, hipBLAS, rocBLAS) and an AMD GPU of
 architecture gfx90a, gfx942, gfx1030, gfx1100, gfx1101, gfx1102, gfx1150, gfx1151, gfx1200 or gfx1201; macOS on
@@ -63,8 +63,8 @@ and the CPU), but with the ggml ROCm plugin it does no work. Details: [docs/GPU_
 
 The local end-to-end suite (40 tickets, all three catalog models) passes on AMD gfx1150 and gfx1201 (ROCm) and on
 an Apple M3 (MLX): every probability within 1e-3 of the CPU reference, the labels exact (where the reference is not a
-near tie), and every block served by the plugin. The speed measurements in [docs/GPU_BACKENDS.md](../GPU_BACKENDS.md) were taken with the previous
-plugins (ONNX Runtime CUDA, MIGraphX, decide's own MLX plugin) and have not been repeated on these.
+near tie), and every block served by the plugin. Against the previous plugins on the same machines, the 200-ticket evaluation
+is 1.2x to 3.9x faster and needs up to 4.7x less host memory, with no answer changed ([docs/GPU_BACKENDS.md](../GPU_BACKENDS.md#measured)).
 
 **Not yet:** half precision, CUDA on Windows.
 Source: [anofox-ggml-adapter](https://github.com/DataZooDE/anofox-ggml-adapter) (`src/plugin_ggml.cpp`,

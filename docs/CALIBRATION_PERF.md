@@ -1,7 +1,10 @@
 # AnoFox Decide — calibration and performance report
 
+> **Status (2026-11-25):** measured with the former engine (ONNX Runtime, removed since). The calibration results hold; for the
+> current engine's speed and memory see [GGML_DECIDE.md](GGML_DECIDE.md) and [GPU_BACKENDS.md](GPU_BACKENDS.md#measured).
+
 Date: 29 Sept 2026. Machine: 32× AMD Ryzen 9 3950X, 125 GB RAM.
-Build: release, DuckDB v1.5.5, `CMAKE_PREFIX_PATH` at a prebuilt ONNX Runtime tree.
+Build: release, DuckDB v1.5.5, linked against a prebuilt ONNX Runtime tree (the former engine).
 Method: single-user `EXPLAIN ANALYZE`, median of 5 runs unless noted.
 Telemetry disabled (`DATAZOO_DISABLE_TELEMETRY=1`).
 

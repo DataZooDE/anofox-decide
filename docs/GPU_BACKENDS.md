@@ -89,40 +89,39 @@ about 1.2 to 1.3 GB for the smaller shapes and Julia-1 at 8192 tokens peaked at 
 
 ## Measured
 
-**These measurements were taken with the previous plugins** (decide's own ONNX Runtime CUDA, MIGraphX and MLX
-plugins), before the switch to anofox-ggml-adapter's; they have not been repeated on the current plugins, whose
-verification is the end-to-end suite above. All numbers are fp32 and come from the 200-ticket evaluation of [EVALUATION.md](EVALUATION.md): two questions per
-ticket (400 answers), the wall time includes session start and model load, and it is produced by
-`tools/eval/run_eval.py --device <device>`, which refuses to report a model that the requested device did not
-serve. **CPU numbers come from each box's own CPU and are not comparable across boxes**: the CUDA pod had a slow
-shared CPU, the ROCm machine was heavily loaded. Read each row as "the same machine, CPU against GPU", not as a
-ranking of GPUs, and read every ratio as an upper bound: the CPU baselines came from slow or loaded machines, so a
-quiet, fast CPU narrows the gap.
+The current plugins against the previous ones (decide v2026.11.24: ONNX Runtime CUDA, MIGraphX, decide's own MLX plugin), each
+pair on the same machine, engines alternating, warm. All numbers are fp32 and come from the 200-ticket evaluation of
+[EVALUATION.md](EVALUATION.md): two questions per ticket (400 answers), the wall time includes session start and model load,
+produced by `tools/eval/run_eval.py --device <device>`, which refuses to report a model that the requested device did not serve.
+The full gate, the CPU rows included, is in [GGML_DECIDE.md](GGML_DECIDE.md).
 
-**Wall time, 200 tickets**
+**Wall time, 200 tickets** (previous plugin in parentheses)
 
-| Model | CUDA, RTX 4090 | ROCm, RX 9070 XT | MLX, Apple M3 16 GB |
+| Model | CUDA, RTX 4090 | ROCm, RX 9070 (gfx1201) | MLX, Apple M3 |
 |---|---|---|---|
-| Laya multilingual | CPU 97.0 s, GPU 11.8 s | CPU 51-81 s; 18 s one text at a time, 9 s with `batch_tokens = 8192` | CPU 80.8 s; 17.4 s (9.5 s at `batch_tokens = 16384`) |
-| Laya typed-decisions | not measured | CPU 186 s, GPU 29 s | CPU 167.5 s; 20.0 s, 22.0 s with batching (batching does not help it) |
-| Julia-1 | not measured | CPU 21 s, GPU 10 s | CPU 24.1 s; 14.2 s, 5.1 s with batching |
+| Julia-1 | 4 s (11 s) | 6 s (16 s) | 6 s (8 s) |
+| Laya multilingual | 6 s (15 s) | 7 s (26 s) | 8 s (11 s) |
+| Laya typed-decisions | 7 s (18 s) | 11 s (43 s) | 14 s (17 s) |
 
-**Agreement with the CPU** (largest absolute probability difference over the 400 answers; no routing or refund
-decision changed on any device, and accuracy is identical: refund 92.0%, routing 62.0% for Laya multilingual)
+**Peak host memory (RSS)**
 
 | Model | CUDA | ROCm | MLX |
 |---|---|---|---|
-| Laya multilingual | 3.0e-6 | 9.9e-6 | 6.6e-6 |
-| Laya typed-decisions | not measured | 3.9e-5 | 1.4e-5 |
-| Julia-1 | not measured | 1.7e-5 | 2.8e-5 |
+| Julia-1 | 1.04 GB (1.78 GB) | 0.98 GB (2.59 GB) | 1.29 GB (1.30 GB) |
+| Laya multilingual | 1.21 GB (4.02 GB) | 1.09 GB (4.61 GB) | 1.27 GB (1.27 GB) |
+| Laya typed-decisions | 1.35 GB (6.05 GB) | 1.21 GB (5.74 GB) | 1.27 GB (1.28 GB) |
 
-The recorded values of Laya multilingual (`I want my money back.` 0.98209638, `Thanks, everything works now!`
-0.0012388999) are reproduced within 1e-7 on CUDA and within 6e-8 between the CPU and MLX; the ROCm values and
-their differences from the reference are in [GPU_ROCM.md](GPU_ROCM.md). The accuracy figures equal EVALUATION.md
-on every device; Julia-1's 29.5% refund and 37.5% routing accuracy is its documented weakness, not a GPU effect.
+**Agreement:** no answer changed on any device (0 label flips over the 400 answers of every model, metrics identical), and no
+probability moved by more than 4e-5 (MLX: bit-identical to the previous MLX plugin). The ggml plugins use more host CPU time than the
+previous ones (on the RTX 4090 16 / 23 / 37 s against 12 / 16 / 20 s): the per-op launch work runs on the host.
 
-Test conditions: CUDA on an RTX 4090 (RunPod) with the ONNX Runtime 1.29 GPU core and TF32 switched off
-(`use_tf32=0`), so `fp32` means strict fp32. ROCm on gfx1201 with ROCm 7.2.4 and MIGraphX 2.15. MLX 0.32.3.
+The MLX row is measured with the plugin of the next anofox-ggml-adapter release (its pull request #5: shape arithmetic on MLX's CPU
+stream, 16-bit weights widened on the GPU, the buffer cache released); with the plugin of v2026.11.25 the same run takes 13 / 15 /
+23 s at 1.3 / 2.4 / 2.6 GB.
+
+Test conditions: CUDA on an RTX 4090 (RunPod), the ggml-CUDA plugin of anofox-ggml-adapter v2026.11.25 against the previous ONNX Runtime 1.29
+CUDA plugin of decide v2026.11.13 (the last release that shipped one). ROCm on gfx1201 with ROCm 7.2, against the previous MIGraphX 2.15 plugin. MLX 0.32
+on an M3 with 16 GB.
 
 ## Limits
 

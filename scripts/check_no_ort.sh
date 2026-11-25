@@ -16,7 +16,7 @@ report() { # <title> <hits>
 	echo "$2" | cut -c1-180 | head -60
 	fail=1
 }
-allowed='deprecated|removed|no-op|no effect|ignored|formerly'
+allowed='deprecated|removed|no-op|no effect|ignored|former|previous'
 
 code_paths=(src CMakeLists.txt cmake Makefile extension_config.cmake vcpkg.json test .github/workflows scripts tools/eval tools/bench tools/e2e)
 # -I: skip binary files (the committed graphs). Self-excluded: this script names every pattern.

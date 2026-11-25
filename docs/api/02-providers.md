@@ -32,8 +32,7 @@ unlike refund and routing it has not been scored for accuracy on labelled data.
 
 **Not yet:** images (Cloudflare Clef accepts them, our functions take text only); half-precision GPU
 execution (the GPU backends are fp32; see [GPU acceleration](04-gpu.md)); the Von model (it needs
-order-invariant attention in the export); on macOS only Apple silicon is built (ONNX Runtime ships no Intel
-macOS archive after v1.23.2), and WebAssembly, musl and MinGW are not built.
+order-invariant attention in the export); on macOS only Apple silicon is built, and WebAssembly, musl and MinGW are not built.
 
 ## Registering a model
 

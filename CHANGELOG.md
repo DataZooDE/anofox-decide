@@ -11,6 +11,16 @@ All notable changes to `anofox_decide` are documented here. The format follows
   the cache directory), the same name as in anofox-tabfm.
 
 ### Changed
+- **The in-process models run on the ggml engine** (vendor/anofox-ggml-adapter, shared with anofox-tabfm) instead of ONNX Runtime.
+  Same answers (0 label flips on the 200-ticket evaluation against ONNX Runtime, on every platform and GPU path), faster and with
+  less memory: on a Linux x64 CPU 4.7 / 10.7 / 25.9 s instead of 5.4 / 13.0 / 30.8 s at 0.5 / 1.9 / 2.4 GB instead of 1.5 / 3.1 /
+  4.9 GB (Julia-1 / Laya multilingual / Laya typed-decisions); on an Apple M3 CPU 5 / 13 / 35 s instead of 11 / 34 / 88 s; on the
+  GPU plugins 1.2x to 3.9x faster than the previous ones at up to 4.7x less host memory. A model loads in 0.3 to 0.7 s
+  (was 1.4 to 5.5 s). Details: docs/GGML_DECIDE.md.
+- `SET threads` now limits the local models: the CPU engine runs `min(threads, physical cores)` threads (ONNX Runtime ignored the
+  setting), so `SET threads = 1` is slower than before.
+- A graph the engine cannot run says so with the op it lacks: `the graph '...' cannot run on the ggml engine (...)`.
+- `decide_gpu_precompile` is deprecated (no effect: the plugins build a shape's graph on its first use).
 - A session served by a GPU plugin no longer keeps the model's checkpoint resident in the process once the plugin has copied or
   uploaded the weights (the mapping stays valid; pages come back from the file only if read again). Up to ~1.3 GB lower peak RSS for
   Laya on MLX.
@@ -58,8 +68,18 @@ All notable changes to `anofox_decide` are documented here. The format follows
 
 ### Deprecated
 - `anofox_decide_plugin_dir`, the old name of `anofox_decide_ep_path`: read when `anofox_decide_ep_path` is empty,
-  removed in the next release. The plugin sources in `plugins/cuda`, `plugins/migraphx` and `plugins/mlx` are
-  superseded and are removed in a later release.
+  removed in the next release.
+
+### Removed
+- ONNX Runtime: it is no longer built, linked or downloaded (no vcpkg `onnxruntime` port, no `ort-vcpkg` feature, no
+  `DECIDE_ORT_VCPKG`, no ONNX Runtime CUDA runtime download). The extension links only OpenSSL and the vendored engine.
+- decide's own GPU plugins (`plugins/cuda`, `plugins/migraphx`, `plugins/mlx`, plugin ABI v1): the CUDA, ROCm and MLX plugins are
+  anofox-ggml-adapter's.
+
+### Fixed
+- A GPU plugin that runs out of device memory is reported as such, with the batch-size remedy (the adapter's "out of device memory"
+  was reported as a generic plugin failure). A missing runtime library names what that backend's plugin links: the NVIDIA driver,
+  ROCm's HIP, hipBLAS and rocBLAS, or `brew install mlx mlx-c`.
 
 ## [2026.11.24] - 2026-11-23
 

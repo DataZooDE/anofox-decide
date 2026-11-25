@@ -37,7 +37,7 @@ FROM tickets;
 ### Hosted or on your machine
 - **Hosted**: TypeSafe **Jev**, Liquid AI **D1**, Cloudflare **Clef**, OpenAI **gpt-6-luna**, Google **gemini-decision-1**
 - **Local servers**: **strands-decider**, **Kev** (or any System One compatible server)
-- **In-process, fully offline**: **Julia-1** and **Laya** on ONNX Runtime, optional GPU (CUDA, ROCm, Apple MLX)
+- **In-process, fully offline**: **Julia-1** and **Laya** on a built-in engine (ggml), optional GPU (CUDA, ROCm, Apple MLX)
 - **One SQL surface**: swap the model without touching the query, compare models on your own data in one statement
 
 ### Measure and calibrate

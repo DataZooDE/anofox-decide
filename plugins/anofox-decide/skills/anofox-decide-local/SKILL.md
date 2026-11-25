@@ -19,7 +19,7 @@ user-invocable: false
 
 # Anofox Decide — Local Models & GPU
 
-**Extension:** `anofox_decide` v2026.11.24 | **DuckDB:** v1.5.6 / v2.0 | **Runtime:** ONNX Runtime, linked
+**Extension:** `anofox_decide` v2026.11.24 | **DuckDB:** v1.5.6 / v2.0 | **Runtime:** built-in ggml engine, linked
 in | **Dual naming:** `decide_*` and `anofox_decide_*`
 
 A local model runs inside DuckDB. After the one-time download nothing leaves the machine: no key, no
@@ -35,8 +35,8 @@ hosted models (see `anofox-decide-questions`).
 2. **Long text is an error, not a silent cut.** When a text, question or option does not fit the window,
    the call fails and says how much would be lost. Find long rows with `decide_token_count`. To accept the
    cut, use `SET anofox_decide_on_truncate = 'ignore'`.
-3. **The first call in a session loads the model:** about 1.4 s (julia-1) to 5.5 s (laya-typed-decisions).
-   Later calls reuse it. Peak memory is 1.5 to 5.1 GB.
+3. **The first call in a session loads the model:** about 0.3 s (julia-1) to 0.7 s (Laya).
+   Later calls reuse it. Peak memory is 0.5 to 2.4 GB.
 4. **Local models score one text at a time** unless `anofox_decide_batch_tokens` is set. Batching gives
    identical answers. On CPU it barely changes speed. On a GPU, set it (e.g. `8192`).
 5. **An explicit GPU device never falls back to the CPU silently.** `anofox_decide_device = 'auto'` (the default) uses a GPU only when its
@@ -52,9 +52,9 @@ hosted models (see `anofox-decide-questions`).
 
 | Model | Download | Peak memory | Notes |
 |---|---|---|---|
-| `laya-multilingual` | 0.68 GB | 3.4 GB | multilingual (mmBERT-base). **The recommended start** |
-| `laya-typed-decisions` | 0.85 GB | 5.1 GB | English (ModernBERT-large). The best in-process router |
-| `julia-1` | 0.61 GB | 1.5 GB | smallest and fastest, the weakest |
+| `laya-multilingual` | 0.68 GB | 1.9 GB | multilingual (mmBERT-base). **The recommended start** |
+| `laya-typed-decisions` | 0.85 GB | 2.4 GB | English (ModernBERT-large). The best in-process router |
+| `julia-1` | 0.61 GB | 0.5 GB | smallest and fastest, the weakest |
 
 ```sql
 -- needs: network (downloads about 0.7 GB from Hugging Face, once)
@@ -137,7 +137,7 @@ accepted on ROCm but does no work (refused on CUDA, MLX and the CPU).
 | `anofox_decide_gpu_precision` | `fp32` | only `fp32`. Other values are rejected |
 | `anofox_decide_ep_path` | `<cache dir>/plugins` | where plugins are installed and loaded from. Must not be writable by other users. `anofox_decide_plugin_dir` is its deprecated old name, read when it is empty |
 
-Requirements (the plugin is the only download; no ONNX Runtime, CUDA toolkit or cuDNN): Linux x86-64 with an
+Requirements (the plugin is the only download; no CUDA toolkit or cuDNN): Linux x86-64 with an
 NVIDIA GPU of sm_75 or newer and its driver; Linux x86-64 with ROCm (HIP, hipBLAS, rocBLAS) and an AMD GPU of
 gfx90a, gfx942, gfx1030, gfx1100-gfx1102, gfx1150, gfx1151, gfx1200 or gfx1201; or macOS on Apple silicon with
 `brew install mlx mlx-c`. Not supported yet: half precision, CUDA on Windows. GPU probabilities match the CPU to

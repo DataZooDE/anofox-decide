@@ -12,8 +12,9 @@ Order: feature parity on the CPU, then on GPUs (CUDA, ROCm, MLX), then performan
 | Parity (GPU, fp32) | 0 label flips, probabilities within 1e-3 |
 | Performance | faster (evaluation wall time) and lower peak RSS than ONNX Runtime, per model |
 
-During the move, `SET anofox_decide_local_engine = 'ort' | 'ggml'` picks the engine (default from the
-`ANOFOX_DECIDE_LOCAL_ENGINE` environment variable, else `'ort'`). It goes away with ONNX Runtime.
+During the move, `SET anofox_decide_local_engine = 'ort' | 'ggml'` picked the engine (default from the
+`ANOFOX_DECIDE_LOCAL_ENGINE` environment variable). Both were removed with ONNX Runtime after the gate below passed: ggml is the
+only engine. The measurements in this file name the engine each run used.
 
 ## Phase 0: the ONNX Runtime baseline (2026-11-23)
 
@@ -73,14 +74,12 @@ expected answers were captured from ONNX Runtime; any engine must reproduce them
 
 ```
 # DuckDB's unittest gives each SQL test its own HOME, so the downloaded models are passed in with DECIDE_CACHE_DIR
-DECIDE_REAL_WEIGHTS=1 DECIDE_CACHE_DIR=~/.cache/anofox-decide ANOFOX_DECIDE_LOCAL_ENGINE=ort  ./build/release/test/unittest test/sql/decide_local_e2e.test
-DECIDE_REAL_WEIGHTS=1 DECIDE_CACHE_DIR=~/.cache/anofox-decide ANOFOX_DECIDE_LOCAL_ENGINE=ggml ./build/release/test/unittest test/sql/decide_local_e2e.test
-make e2e_local ANOFOX_DECIDE_LOCAL_ENGINE=ggml   # both E2E files and the real-weight C++ goldens; fails if anything is missing
+DECIDE_REAL_WEIGHTS=1 DECIDE_CACHE_DIR=~/.cache/anofox-decide ./build/release/test/unittest test/sql/decide_local_e2e.test
+make e2e_local   # both E2E files and the real-weight C++ goldens; fails if anything is missing
 ```
 
-The engine is required, never defaulted: each file sets it and checks with `__anofox_decide_local_sessions()` (a
-development diagnostic: the cached sessions, their engine and forward passes) that this engine, and only it, answered.
-A mistyped `ANOFOX_DECIDE_LOCAL_ENGINE` is an error, not a silent ONNX Runtime run.
+Each file pins the CPU (`anofox_decide_device = 'cpu'`) and checks with `__anofox_decide_local_sessions()` (a development
+diagnostic: the cached sessions, their engine and forward passes) that the ggml engine, and only it, answered.
 
 ```
 ```
