@@ -144,6 +144,8 @@ public:
 	const string &Engine() const {
 		return engine;
 	}
+	//! Graphs its engine compiled so far (ggml; 0 for other engines): a diagnostic for the shape buckets.
+	int64_t Compiles() const;
 	int64_t Runs() const {
 		return runs.load();
 	}

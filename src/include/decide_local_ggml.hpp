@@ -34,6 +34,9 @@ shared_ptr<DecideGgmlModel> DecideGgmlOpenWeightFree(const void *graph, idx_t si
 //! The graph's inputs (initializers excluded), for the input-contract check.
 vector<string> DecideGgmlInputs(const DecideGgmlModel &model);
 
+//! Graphs the engine compiled for this model so far (one per distinct input shape; a diagnostic).
+int64_t DecideGgmlCompiles(const DecideGgmlModel &model);
+
 //! Raw scores [B][M] in marker order.
 vector<vector<float>> DecideGgmlScore(DecideGgmlModel &model, const DecideLocalBatch &batch, const string &function);
 

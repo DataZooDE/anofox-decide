@@ -450,13 +450,17 @@ shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, 
 }
 
 void DecideLocalSession::Precompile(int64_t batch, int64_t seq, int64_t markers, const char *function_name) {
-	if (impl->plugin) {
+	if (impl && impl->plugin) {
 		impl->plugin->Precompile(batch, seq, markers, function_name);
 	}
 }
 
+int64_t DecideLocalSession::Compiles() const {
+	return ggml ? DecideGgmlCompiles(*ggml) : 0;
+}
+
 string DecideLocalSession::PluginBackend() const {
-	return impl->plugin ? impl->plugin->Backend() : string();
+	return impl && impl->plugin ? impl->plugin->Backend() : string(); // a ggml CPU session has no impl
 }
 
 vector<vector<float>> DecideLocalSession::Score(const DecideLocalBatch &batch, const char *function_name) {
@@ -840,14 +844,17 @@ vector<LocalRow> CollateQuestions(const LocalSettings &st, const string &state, 
 	return rows;
 }
 
-//! Pads the rows to [B, T] and [B, M] (masked slots carry the pad token and zeros).
-DecideLocalBatch BuildLocalBatch(const LocalSettings &st, const vector<const LocalRow *> &rows, int64_t T) {
+//! Pads the rows to [B, T] and [B, M] (masked slots carry the pad token and zeros). Every distinct shape is a graph the engine compiles
+//! and keeps, so M (one marker per option, 2..20) is rounded up to a multiple of 4, and B to `rows_to` when that is larger (a GPU
+//! pads batches to powers of two: an all-padding row costs it little, a compile a lot). A padding marker or row is masked and never read.
+DecideLocalBatch BuildLocalBatch(const LocalSettings &st, const vector<const LocalRow *> &rows, int64_t T, int64_t rows_to = 0) {
 	int64_t M = 0;
 	for (auto *r : rows) {
 		M = std::max<int64_t>(M, r->c.markers.size());
 	}
+	M = (M + 3) / 4 * 4;
 	DecideLocalBatch batch;
-	batch.batch = (int64_t)rows.size();
+	batch.batch = std::max<int64_t>((int64_t)rows.size(), rows_to);
 	batch.seq = T;
 	batch.markers = M;
 	batch.ids.assign(batch.batch * T, st.tok->Specials().pad);
@@ -925,6 +932,19 @@ DecideAnswer BuildLocalAnswer(const LocalSettings &st, const DecideModelEntry &e
 	return a;
 }
 
+//! The rows a batch runs with: a GPU session pads to the next power of two (an all-padding row costs it little, a new compiled shape a
+//! lot); the CPU runs exactly the rows it has (a padding row there costs as much as a real one).
+int64_t BatchRowsFor(const DecideLocalSession &session, int64_t rows) {
+	if (session.PluginBackend().empty()) {
+		return rows;
+	}
+	int64_t p = 1;
+	while (p < rows) {
+		p *= 2;
+	}
+	return p;
+}
+
 //! The padded length a batch of rows of at most `len` tokens runs at, never above the model window (and never below `len`). Every
 //! distinct length is a graph the engine compiles and keeps: the steps grow with the length (32 up to 512 tokens, then 64, 128 and 256
 //! beyond 2048, about 56 lengths up to 8192) so few lengths cover every text while padding stays a small fraction of the work (attention
@@ -953,9 +973,9 @@ vector<DecideAnswer> DecideLocalScore(ClientContext &context, const DecideModelE
 		ptrs.push_back(&r);
 		T = std::max<int64_t>(T, r.c.ids.size());
 	}
-	// padded to a bucket: a table of texts of every length compiles a few dozen graphs, not one per length
-	const auto batch = BuildLocalBatch(st, ptrs, PaddedLength(T, st.max_length));
 	auto session = DecideLocalSession::Open(context, entry, function.c_str());
+	// padded to a bucket: a table of texts of every length compiles a few dozen graphs, not one per length
+	const auto batch = BuildLocalBatch(st, ptrs, PaddedLength(T, st.max_length), BatchRowsFor(*session, (int64_t)ptrs.size()));
 	auto scores = session->Score(batch, function.c_str());
 	vector<DecideAnswer> out;
 	for (size_t b = 0; b < rows.size(); b++) {
@@ -1041,7 +1061,7 @@ void DecideLocalScoreMany(ClientContext &context, const DecideModelEntry &entry,
 				throw InterruptException();
 			}
 			try {
-				auto batch_scores = session->Score(BuildLocalBatch(st, ptrs, T), function.c_str());
+				auto batch_scores = session->Score(BuildLocalBatch(st, ptrs, T, BatchRowsFor(*session, (int64_t)ptrs.size())), function.c_str());
 				for (size_t i = begin; i < end; i++) {
 					scores[slots[i].request][slots[i].question] = std::move(batch_scores[i - begin]);
 				}
@@ -1100,21 +1120,21 @@ int64_t DecideLocalTokenCount(ClientContext &context, const DecideModelEntry &en
 namespace {
 
 struct LocalSessionsState : public GlobalTableFunctionState {
-	vector<std::tuple<string, string, int64_t>> rows; // model (graph or weights key), engine, forward passes
+	vector<std::tuple<string, string, int64_t, int64_t>> rows; // model (graph or weights key), engine, forward passes, compiled graphs
 	idx_t offset = 0;
 };
 
 unique_ptr<FunctionData> LocalSessionsBind(ClientContext &, TableFunctionBindInput &, vector<LogicalType> &types,
                                            duckdb_compat::BindNames &names) {
-	duckdb_compat::AssignBindNames(names, {"model", "engine", "runs"});
-	types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::BIGINT};
+	duckdb_compat::AssignBindNames(names, {"model", "engine", "runs", "compiles"});
+	types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::BIGINT};
 	return make_uniq<TableFunctionData>();
 }
 
 unique_ptr<GlobalTableFunctionState> LocalSessionsInit(ClientContext &context, TableFunctionInitInput &) {
 	auto state = make_uniq<LocalSessionsState>();
 	for (auto &kv : LocalCache(context)->sessions.Entries()) {
-		state->rows.emplace_back(kv.second->GraphPath(), kv.second->Engine(), kv.second->Runs());
+		state->rows.emplace_back(kv.second->GraphPath(), kv.second->Engine(), kv.second->Runs(), kv.second->Compiles());
 	}
 	return std::move(state);
 }
@@ -1127,6 +1147,7 @@ void LocalSessionsScan(ClientContext &, TableFunctionInput &data, DataChunk &out
 		output.SetValue(0, n, Value(std::get<0>(row)));
 		output.SetValue(1, n, Value(std::get<1>(row)));
 		output.SetValue(2, n, Value::BIGINT(std::get<2>(row)));
+		output.SetValue(3, n, Value::BIGINT(std::get<3>(row)));
 		n++;
 	}
 	output.SetCardinality(n);

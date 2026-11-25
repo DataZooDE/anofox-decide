@@ -174,6 +174,10 @@ vector<string> DecideGgmlInputs(const DecideGgmlModel &model) {
 	return out;
 }
 
+int64_t DecideGgmlCompiles(const DecideGgmlModel &model) {
+	return static_cast<int64_t>(model.executor->CompileCount());
+}
+
 vector<vector<float>> DecideGgmlScore(DecideGgmlModel &model, const DecideLocalBatch &batch, const string &function) {
 	// Integer inputs go in as data: token ids (< 2^24 for every supported vocabulary), positions and masks are exact as floats, and the
 	// graph's declared input types keep their integer and bool semantics.

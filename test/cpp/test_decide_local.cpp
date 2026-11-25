@@ -875,3 +875,22 @@ TEST_CASE("Ctrl-C stops a chunk of local texts between model runs", "[anofox_dec
 		REQUIRE(seconds < 2.0); // the whole chunk takes about 5 s
 	}
 }
+
+TEST_CASE("local shapes: questions with different option counts and texts of nearby lengths share one compiled graph", "[anofox_decide][local][shapes]") {
+	// Every distinct (rows, tokens, markers) shape is a graph the engine compiles and keeps: the markers (one per option) and the text
+	// length are bucketed so a table of real questions compiles a handful of graphs, not one per option count and length.
+	DuckDB db(nullptr);
+	db.LoadStaticExtension<AnofoxDecideExtension>();
+	Connection con(db);
+	REQUIRE_FALSE(con.Query("SET anofox_decide_local_engine = 'ggml'")->HasError());
+	REQUIRE_FALSE(con.Query("SELECT decide_register_model('tiny-shapes', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json')")->HasError());
+	for (const char *q : {"SELECT decide_choice('ab ab', 'pick?', ['a', 'b'], model := 'tiny-shapes')",
+	                      "SELECT decide_choice('ab ab ab', 'pick?', ['a', 'b', 'c'], model := 'tiny-shapes')",
+	                      "SELECT decide_choice('ab ab ab ab', 'pick?', ['a', 'b', 'c', 'd'], model := 'tiny-shapes')"}) {
+		REQUIRE_FALSE(con.Query(q)->HasError());
+	}
+	auto r = con.Query("SELECT compiles FROM __anofox_decide_local_sessions() WHERE model LIKE '%julia1_tiny.onnx%'");
+	REQUIRE_FALSE(r->HasError());
+	REQUIRE(r->RowCount() == 1);
+	REQUIRE(duckdb_compat::ResultValue(*r, 0, 0) == Value::BIGINT(1));
+}
