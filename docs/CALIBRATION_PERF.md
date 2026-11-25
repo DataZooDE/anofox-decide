@@ -69,13 +69,12 @@ Notes:
   single-question enrichment over large tables should use the scalars;
   `decide_many`/`decide_table` pay off at ≥10 questions/row by sharing one
   parse and (for remote) one request.
-- `tiny-local` is ~10× the stub per row (BPE tokenize + micro-graph ORT
-  run). Real Julia-1 weights (144M params) will be orders of magnitude
+- `tiny-local` is ~10× the stub per row (BPE tokenize + micro-graph run on the former engine). Real Julia-1 weights (144M params) will be orders of magnitude
   slower than this fixture — re-run this table after export before quoting
   local-model SLAs.
 - `decide_table` evaluates once per scan (bind parses, init-global scores,
   scan emits rows): batching N questions over one state costs one provider
-  round trip for remote, one ORT session run per row for local.
+  round trip for remote, one session run per row for local.
 
 ## 3. Reliability (no partial success as complete)
 

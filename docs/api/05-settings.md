@@ -27,6 +27,9 @@ example.
 | `anofox_telemetry_key` | *(the project's PostHog key)* | PostHog API key the telemetry is sent with; there is no need to change it |
 | `datazoo_banner` | `true` | The once-a-day feedback banner in interactive terminals |
 
+DuckDB's own `threads` setting also sets the local models' CPU threads: they run on `min(threads, physical cores)` (a second
+thread per core adds no arithmetic and slows every step), so `SET threads = 1` makes them slower; the default needs no change.
+
 ## Environment variables
 
 | Variable | Used for |

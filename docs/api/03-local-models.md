@@ -37,7 +37,8 @@ Behind a proxy, set `HTTPS_PROXY` as for the hosted models ([Environment variabl
 The first call in a session loads the model (0.7 s for `laya-multilingual` and `laya-typed-decisions`, 0.3 s for
 `julia-1` on the test machine, files in the page cache); later calls reuse it. Peak resident memory is the table
 above (the 200-ticket evaluation, measured with `getrusage` over a whole DuckDB process): the Laya checkpoints are
-float16 and the engine computes in float32.
+float16 and the engine computes in float32. DuckDB's own `threads` setting also sets the local models' CPU threads: they run on `min(threads, physical cores)` (a second
+thread per core adds no arithmetic and slows every step), so `SET threads = 1` makes them slower; the default needs no change.
 
 ## Your own exported model
 

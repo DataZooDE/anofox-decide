@@ -31,7 +31,7 @@ inline string DecidePluginLibrarySuffix(const string &os) {
 }
 
 //! The plugin's own name for a device: 'cuda' and 'rocm' are the ggml plugin per vendor (ggml-cuda, ggml-rocm), Apple GPUs use mlx.
-//! The removed MIGraphX plugin's name, 'migraphx', is the ROCm plugin.
+//! The removed MIGraphX plugin's name, 'migraphx', is the ROCm plugin. [removed]
 inline string DecidePluginBaseName(const string &backend) {
 	return ::anofox::ggml_adapter::PluginBaseName(backend);
 }

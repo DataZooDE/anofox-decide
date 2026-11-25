@@ -57,7 +57,7 @@ write to. A plugin built against another interface version (plugin ABI v3) or st
 
 The ggml and MLX plugins build their compute graph for a shape on its first use, as part of that call: no
 minutes-long compile and no compiled programs on disk, so there is nothing to compile ahead. `decide_gpu_precompile` is still accepted on ROCm (and refused on CUDA, MLX
-and the CPU), but with the ggml ROCm plugin it does no work. Details: [docs/GPU_ROCM.md](../GPU_ROCM.md).
+and the CPU), but with the ggml ROCm plugin it compiles nothing (it only loads the model onto the GPU and returns one row per former bucket). Details: [docs/GPU_ROCM.md](../GPU_ROCM.md).
 
 ## Verified
 

@@ -1,8 +1,9 @@
 // decide_gpu_precompile.cpp — decide_gpu_precompile(model [, seq := N]), deprecated.
 //
 // It compiled a model's shape buckets ahead of time for the former ROCm plugin, which needed minutes per shape. The GPU plugins of
-// anofox-ggml-adapter build a shape's graph on its first use, so the function does no work: it is still accepted on ROCm (one row per
-// bucket of decide_gpu_buckets.hpp, each a no-op) and refused on CUDA, MLX and the CPU, until it is removed.
+// anofox-ggml-adapter build a shape's graph on its first use, so nothing is compiled: on ROCm it still loads the model onto the GPU and
+// returns one row per bucket of decide_gpu_buckets.hpp (the plugin's precompile is a no-op), and it is refused on CUDA, MLX and the CPU,
+// until it is removed.
 
 #include "anofox_function_alias.hpp"
 #include "decide_devices.hpp"
@@ -84,8 +85,7 @@ unique_ptr<GlobalTableFunctionState> PrecompileInit(ClientContext &context, Tabl
 	if (device.backend == "cpu") {
 		throw InvalidInputException(DecideMsg(
 		    function, "'" + entry.id + "' runs on the CPU under the current settings, and the CPU compiles nothing",
-		    "CALL decide_accelerate(); then SET anofox_decide_device = 'rocm'; (decide_backends() shows what serves "
-		    "which model)"));
+		    "nothing to do: decide_gpu_precompile is deprecated and compiles nothing; decide_backends() shows what serves which model"));
 	}
 	// Only a backend that compiles per shape has anything to warm: on CUDA and MLX the plugin's precompile is a
 	// no-op, and a row per bucket would claim compilation that never happened.
@@ -102,7 +102,7 @@ unique_ptr<GlobalTableFunctionState> PrecompileInit(ClientContext &context, Tabl
 		throw InvalidInputException(DecideMsg(
 		    function,
 		    "seq = " + std::to_string(data.seq) + " is longer than the largest bucket of '" + entry.id + "' (" +
-		        std::to_string(largest) + " tokens), so no program serves it",
+		        std::to_string(largest) + " tokens)",
 		    "CALL decide_gpu_precompile('" + data.model + "', seq := " + std::to_string(largest) + "); (or omit seq to compile every bucket)"));
 	}
 	auto session = DecideLocalSession::Open(context, entry, function);
@@ -147,11 +147,10 @@ void RegisterDecideGpuPrecompile(ExtensionLoader &loader) {
 	duckdb_compat::AddNamedParameter(func, "seq", LogicalType::BIGINT);
 	RegisterTableFunctionWithAlias(
 	    loader, std::move(func), "decide_gpu_precompile",
-	    DecideDocs("Deprecated, no effect: compiled a local model's shape buckets ahead of time for the former ROCm plugin. "
-	               "The GPU plugins build a shape's graph on its first use, so there is nothing to compile ahead. Still "
-	               "accepted with the model on ROCm (SET anofox_decide_device = 'rocm';), where it returns one row per "
-	               "bucket and does no work; refused on CUDA, MLX and the CPU. Columns: model, device, batch, seq, "
-	               "markers, seconds.",
+	    DecideDocs("Deprecated: compiled a local model's shape buckets ahead of time for the former ROCm plugin. The GPU "
+	               "plugins build a shape's graph on its first use, so nothing is compiled. Still accepted with the model on "
+	               "ROCm (SET anofox_decide_device = 'rocm';), where it loads the model onto the GPU and returns one row per "
+	               "bucket; refused on CUDA, MLX and the CPU. Columns: model, device, batch, seq, markers, seconds.",
 	               "devices",
 	               {{{"model"}, {LogicalType::VARCHAR}, "CALL decide_gpu_precompile('laya-multilingual');"},
 	                {{"model", "seq"},

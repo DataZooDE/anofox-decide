@@ -650,15 +650,15 @@ TEST_CASE("local end-to-end over real Laya typed-decisions", "[anofox_decide][lo
 }
 
 // ONNX Runtime is gone: every in-process session runs on the ggml engine, and the development switch that chose between the two
-// (anofox_decide_local_engine, never released) is removed.
+// (anofox_decide_local_engine, never released) is removed. [removed]
 TEST_CASE("local engine: every session runs on ggml, and the removed engine switch is unknown", "[anofox_decide][local]") {
 	DuckDB db(nullptr);
 	Connection con(db);
 	auto session = DecideLocalSession::Open(*con.context, "test/fixtures/julia1_tiny.onnx");
 	REQUIRE(session->Engine() == "ggml");
-	auto r = con.Query("SET anofox_decide_local_engine = 'ort'"); // the removed switch
+	auto r = con.Query("SET anofox_decide_local_engine = 'ort'"); // [removed] the switch
 	REQUIRE(r->HasError());
-	REQUIRE_THAT(r->GetError(), Contains("anofox_decide_local_engine")); // unknown: removed
+	REQUIRE_THAT(r->GetError(), Contains("anofox_decide_local_engine")); // [removed]: unknown
 }
 
 // ggml against ONNX Runtime on the random-init fixtures, both load paths: a full graph (inline weights) and a weight-free graph with the

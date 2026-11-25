@@ -195,7 +195,7 @@ TEST_CASE("plugin file names, sidecar parsing and the release URL", "[anofox_dec
 	// the plugins are anofox-ggml-adapter's, shared with anofox-tabfm: the ggml plugin per vendor, and MLX
 	REQUIRE(DecidePluginFileNameFor("cuda", "linux") == "libanofox_ggml-cuda_plugin.so");
 	REQUIRE(DecidePluginFileNameFor("rocm", "linux") == "libanofox_ggml-rocm_plugin.so");
-	REQUIRE(DecidePluginFileNameFor("migraphx", "linux") == "libanofox_ggml-rocm_plugin.so"); // the removed MIGraphX plugin's name
+	REQUIRE(DecidePluginFileNameFor("migraphx", "linux") == "libanofox_ggml-rocm_plugin.so"); // [removed] MIGraphX plugin's name
 	REQUIRE(DecidePluginFileNameFor("mlx", "osx") == "libanofox_mlx_plugin.dylib");
 	REQUIRE(DecidePluginFileNameFor("cuda", "windows") == "anofox_ggml-cuda_plugin.dll");
 	REQUIRE(DecidePluginSha256AssetName("rocm") == "ggml-rocm_plugin.sha256");

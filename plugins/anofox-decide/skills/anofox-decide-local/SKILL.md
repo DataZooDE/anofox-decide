@@ -36,7 +36,8 @@ hosted models (see `anofox-decide-questions`).
    the call fails and says how much would be lost. Find long rows with `decide_token_count`. To accept the
    cut, use `SET anofox_decide_on_truncate = 'ignore'`.
 3. **The first call in a session loads the model:** about 0.3 s (julia-1) to 0.7 s (Laya).
-   Later calls reuse it. Peak memory is 0.5 to 2.4 GB.
+   Later calls reuse it. Peak memory is 0.5 to 2.4 GB. The CPU engine runs `min(threads, physical cores)` threads,
+   so DuckDB's `SET threads = 1` makes local models slower; the default needs no change.
 4. **Local models score one text at a time** unless `anofox_decide_batch_tokens` is set. Batching gives
    identical answers. On CPU it barely changes speed. On a GPU, set it (e.g. `8192`).
 5. **An explicit GPU device never falls back to the CPU silently.** `anofox_decide_device = 'auto'` (the default) uses a GPU only when its
@@ -46,7 +47,7 @@ hosted models (see `anofox-decide-questions`).
 6. **GPU plugins are native code.** They are verified against the release's `.sha256` file. A plugin copied
    by hand without a `.sha256` file beside it is trusted as-is.
 7. **No GPU needs a compile step.** The plugins build a shape's graph on first use. `decide_gpu_precompile`
-   is still accepted on ROCm but does no work, and is refused on CUDA and MLX.
+   is deprecated: still accepted on ROCm, where it compiles nothing (it only loads the model onto the GPU), and refused on CUDA and MLX.
 
 ## The catalog
 
@@ -129,7 +130,7 @@ CALL decide_download_runtime('cuda');         -- or 'rocm', 'mlx'
 ```
 
 No GPU needs a compile step: the plugins build a shape's graph on first use. `decide_gpu_precompile` is still
-accepted on ROCm but does no work (refused on CUDA, MLX and the CPU).
+accepted on ROCm, where it compiles nothing and only loads the model onto the GPU (deprecated; refused on CUDA, MLX and the CPU).
 
 | Setting | Default | Meaning |
 |---|---|---|

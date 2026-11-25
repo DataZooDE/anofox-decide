@@ -26,8 +26,8 @@ SET anofox_decide_device = 'rocm';
 SET anofox_decide_batch_tokens = 8192;       -- feed the GPU batches; the default (0) scores one text at a time
 ```
 
-`decide_gpu_precompile` is still accepted on ROCm, but with this plugin it does no work: there is nothing to compile
-ahead.
+`decide_gpu_precompile` is deprecated: still accepted on ROCm, but with this plugin it compiles nothing (it only loads the model onto the GPU and returns one row per former bucket); there is nothing to
+compile ahead.
 
 Agreement with the CPU: the local end-to-end suite (`test/sql/decide_local_e2e_gpu.test`, 40 tickets, all three
 catalog models) gives every probability within 1e-3 of the CPU reference and the labels exact where the reference

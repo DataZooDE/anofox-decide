@@ -66,7 +66,7 @@ See [Evaluate and calibrate](../guides/03-evaluate-and-calibrate.md) for how to 
 | `decide_backends()` | table | which device can serve which local model, and why not: the same check `anofox_decide_device = 'auto'` uses ([GPU](04-gpu.md)) |
 | `decide_accelerate()` | table | finds the GPU, downloads and verifies its plugin, activates it for this session ([GPU](04-gpu.md)) |
 | `decide_download_runtime(backend)` | table | download and verify the plugin of `'cuda'`, `'rocm'` or `'mlx'` ([GPU](04-gpu.md)) |
-| `decide_gpu_precompile(model[, seq := N])` | table | compiled a local model's shape buckets ahead of time for the former MIGraphX plugin; still accepted on ROCm, where the ggml plugin has nothing to compile and it does no work ([ROCm](../GPU_ROCM.md)) |
+| `decide_gpu_precompile(model[, seq := N])` | table | compiled a local model's shape buckets ahead of time for the former MIGraphX plugin; deprecated: still accepted on ROCm, where the ggml plugin has nothing to compile and it only loads the model onto the GPU ([ROCm](../GPU_ROCM.md)) |
 
 ## Several questions at once
 

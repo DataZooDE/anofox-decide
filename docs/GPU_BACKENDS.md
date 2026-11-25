@@ -73,7 +73,7 @@ plugin gets the weight-free graph and the safetensors weights, a registered mode
 
 `decide_gpu_precompile('<model>')` compiled a model's shape buckets ahead of time for the former MIGraphX plugin.
 The ggml and MLX plugins build a shape's graph on its first use, so it is no longer needed: it is still accepted on
-ROCm, where it does no work, and refused on CUDA, MLX and the CPU.
+ROCm, where it compiles nothing (it only loads the model onto the GPU and returns one row per former bucket), and refused on CUDA, MLX and the CPU.
 
 ## Requirements
 
@@ -84,8 +84,9 @@ ROCm, where it does no work, and refused on CUDA, MLX and the CPU.
 | MLX | macOS on Apple silicon (arm64), `brew install mlx mlx-c` | the plugin only; it links Homebrew's `libmlx` and `libmlxc` |
 
 Disk: the cached models are the ones `decide_download` already put in the cache directory; the plugins write no
-compiled programs. Memory, measured with the previous plugins: CUDA 1.6 to 2.6 GB of VRAM up to 4096 tokens; MLX
-about 1.2 to 1.3 GB for the smaller shapes and Julia-1 at 8192 tokens peaked at 7.4 GB.
+compiled programs. Host memory on the 200-ticket evaluation: 1.0 to 1.4 GB per process on CUDA and ROCm, about 1.3 GB on
+MLX ([Measured](#measured)). Device memory was measured only with the previous plugins (CUDA 1.6 to 2.6 GB of VRAM up to
+4096 tokens), not yet with these.
 
 ## Measured
 
@@ -200,5 +201,5 @@ Checklist for a release:
 3. **After publishing**, on a clean Linux and a clean macOS machine run `CALL decide_accelerate();` against the real
    assets and score the two recorded sentences.
 
-The former plugin sources (`plugins/cuda`, `plugins/migraphx`, `plugins/mlx`) and their release workflows are
-superseded and are removed in a later release.
+The former plugin sources (`plugins/cuda`, `plugins/migraphx`, `plugins/mlx`) and their release workflows are gone;
+ONNX Runtime was removed with them.
