@@ -253,13 +253,11 @@ TEST_CASE("plugin file names, sidecar parsing and the release URL", "[anofox_dec
 	REQUIRE(DecidePluginReleaseAssetUrl("a.so", "v1", "http://127.0.0.1:1/dl") == "http://127.0.0.1:1/dl/v1/a.so");
 }
 
-TEST_CASE("the plugin release tag pins the release the extension is", "[anofox_decide][plugin]") {
-	// The release commit bumps the version string; the plugin pin must move with it, or a release would download
-	// the previous release's plugins.
-	const auto source = ReadFile("src/anofox_decide_extension.cpp");
-	std::smatch match;
-	REQUIRE(std::regex_search(source, match, std::regex("version = \"([0-9]{4}\\.[0-9]{2}\\.[0-9]{2})\";")));
-	REQUIRE(string(DECIDE_PLUGIN_RELEASE_TAG) == "v" + match[1].str());
+TEST_CASE("the plugin release tag is the adapter release the plugins come from", "[anofox_decide][plugin]") {
+	// The GPU plugins are anofox-ggml-adapter's, released from that repo: decide pins the adapter's release (its vendored
+	// plugin_artifacts.hpp), which moves with the adapter submodule, not with decide's own version.
+	REQUIRE(string(DECIDE_PLUGIN_RELEASE_TAG) == string(::anofox::ggml_adapter::ANOFOX_GGML_PLUGIN_RELEASE_TAG));
+	REQUIRE(std::regex_match(string(DECIDE_PLUGIN_RELEASE_TAG), std::regex("v[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}")));
 }
 
 TEST_CASE("platform refusals name what IS published and the fix", "[anofox_decide][plugin]") {

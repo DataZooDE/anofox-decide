@@ -190,7 +190,7 @@ reference and the labels to match where the reference is not a near tie, and che
 The plugins are released by [anofox-ggml-adapter](https://github.com/DataZooDE/anofox-ggml-adapter/releases), not
 by this repository: `decide_download_runtime` fetches from the adapter release that `DECIDE_PLUGIN_RELEASE_TAG`
 (`src/include/decide_plugin_artifacts.hpp`) names, which is the adapter's `ANOFOX_GGML_PLUGIN_RELEASE_TAG`
-(currently `v2026.11.24`). A stale pin is safe: the loader refuses a plugin of another ABI version or struct layout.
+(currently `v2026.11.25`). A stale pin is safe: the loader refuses a plugin of another ABI version or struct layout.
 Checklist for a release:
 
 1. **Bump the adapter submodule** (`vendor/anofox-ggml-adapter`) when a new plugin release is wanted; the pin moves
