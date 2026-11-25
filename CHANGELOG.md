@@ -11,6 +11,16 @@ All notable changes to `anofox_decide` are documented here. The format follows
   the cache directory), the same name as in anofox-tabfm.
 
 ### Changed
+- Local model sessions: one per model, built outside any shared lock (a first load no longer stalls other models' scoring); a
+  `SET threads`, engine or device switch replaces the model's session instead of keeping a second copy of its weights; the
+  held memory is reported to DuckDB's object cache. Ctrl-C stops a chunk of texts between model runs.
+- Fewer compiled shapes: text lengths are bucketed (steps of 32 up to 512 tokens, then 64/128/256, also with batching, whose
+  doubling ladder wasted up to half a batch), markers rounded to multiples of 4, GPU batches to powers of two. A text asked
+  several questions is tokenised once. The GELU, the embedding lookup and the attention run as native ggml ops on GPUs too.
+- GPU sessions hand the plugin the checkpoint's own 16-bit weights instead of a float32 copy (1.3-1.7 GB less host memory per
+  Laya GPU session); registered models' weights are uploaded to the device once instead of on every run.
+- Only a graph refusal sends a registered model to the CPU for good under `anofox_decide_device = 'auto'`; an out-of-memory or
+  driver failure is raised and not remembered, and a refusal ends when the plugin or the graph file changes.
 - Long texts: the ggml CPU engine fuses each encoder layer's attention into one flash-attention op (the adapter's
   `ggml_flash_attn_ext` lowering). julia-1 at about 2,000 tokens is about 40% faster than ONNX Runtime (it was 12% slower),
   and every model is faster at about 500 tokens; answers unchanged (0 flips on the evaluation).
