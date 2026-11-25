@@ -259,8 +259,11 @@ unique_ptr<DecidePluginSession> DecideLoadPlugin(const string &library_path, Dec
 	if (request.weights) {
 		const auto &w = *request.weights;
 		for (idx_t i = 0; i < w.names.size(); i++) {
-			// every tensor DecideLoadWeights serves is float32 (16-bit checkpoints are upcast, transposes gathered, there)
-			params.weights.push_back({w.names[i], ANOFOX_GGML_DTYPE_FLOAT, w.data[i], static_cast<int64_t>(w.bytes[i] / sizeof(float)),
+			// float32, or a 16-bit checkpoint's own type (DecideLoadWeights with keep_16bit): the plugin upcasts on its upload
+			const auto dtype = w.dtypes.empty() ? DecideDtype::F32 : w.dtypes[i];
+			const int32_t onnx = dtype == DecideDtype::F16 ? ANOFOX_GGML_DTYPE_FLOAT16 : dtype == DecideDtype::BF16 ? ANOFOX_GGML_DTYPE_BFLOAT16
+			                                                                                                         : ANOFOX_GGML_DTYPE_FLOAT;
+			params.weights.push_back({w.names[i], onnx, w.data[i], static_cast<int64_t>(w.bytes[i] / DecideDtypeSize(dtype)),
 			                          std::vector<int64_t>(w.shapes[i].begin(), w.shapes[i].end())});
 		}
 	}

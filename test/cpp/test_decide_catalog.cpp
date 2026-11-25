@@ -847,3 +847,47 @@ TEST_CASE("a graph's .meta.json decides the profile", "[anofox_decide][catalog]"
 	REQUIRE_NO_FAIL(con.Query("SELECT decide_register_model('m3', 'local', '" + dir + "/g.onnx', '" + dir + "/tok.json', 'julia-1')"));
 	fs::remove_all(dir);
 }
+
+// GPU sessions: the plugin takes 16-bit weights and upcasts them on its upload, so the host need not keep a float32 copy for the
+// session's life (twice the checkpoint in host memory). keep_16bit hands the mapped checkpoint over as it is; a transposed tensor is
+// still copied (transposed) but stays 16-bit. The CPU engine keeps reading float32 (keep_16bit off).
+TEST_CASE("weights for a GPU session stay 16-bit: read from the mapping, transposed copies 16-bit too", "[anofox_decide][catalog][weights]") {
+	// {"a": F16 [2, 3], "t": F16 [2, 3] (the graph wants it transposed: [3, 2])}
+	string header = R"({"a":{"dtype":"F16","shape":[2,3],"data_offsets":[0,12]},"t":{"dtype":"F16","shape":[2,3],"data_offsets":[12,24]}})";
+	while (header.size() % 8) {
+		header.push_back(' ');
+	}
+	string file;
+	uint64_t n = header.size();
+	file.append(reinterpret_cast<const char *>(&n), 8);
+	file += header;
+	const uint16_t halves[6] = {0x3C00, 0x4000, 0x4200, 0x4400, 0x4500, 0x4600}; // 1, 2, 3, 4, 5, 6
+	file.append(reinterpret_cast<const char *>(halves), 12);
+	file.append(reinterpret_cast<const char *>(halves), 12);
+	const auto path = TempDir("w16") + "/m.safetensors";
+	{
+		std::ofstream out(path, std::ios::binary);
+		out.write(file.data(), static_cast<std::streamsize>(file.size()));
+	}
+	DecideTensorMap map;
+	map.entries.push_back({"A", "a", false, {2, 3}});
+	map.entries.push_back({"T", "t", true, {3, 2}});
+
+	auto f32 = DecideLoadWeights(map, path, "m", "f");
+	REQUIRE(f32->dtypes == vector<DecideDtype> {DecideDtype::F32, DecideDtype::F32});
+	REQUIRE(f32->bytes == vector<idx_t> {24, 24});
+	REQUIRE(static_cast<const float *>(f32->data[1])[1] == 4.0f); // T[0][1] = t[1][0]
+
+	auto w16 = DecideLoadWeights(map, path, "m", "f", true);
+	REQUIRE(w16->dtypes == vector<DecideDtype> {DecideDtype::F16, DecideDtype::F16});
+	REQUIRE(w16->bytes == vector<idx_t> {12, 12});
+	REQUIRE(w16->passthrough_bytes == 12); // "a" is read straight from the mapping
+	REQUIRE(w16->arena_bytes == 12);       // only the transposed "t" is copied, as 16-bit
+	const auto *a = static_cast<const uint16_t *>(w16->data[0]);
+	const auto *t = static_cast<const uint16_t *>(w16->data[1]);
+	REQUIRE(a[5] == 0x4600);
+	const uint16_t want_t[6] = {0x3C00, 0x4400, 0x4000, 0x4500, 0x4200, 0x4600}; // [3, 2]: the columns of t
+	for (int i = 0; i < 6; i++) {
+		REQUIRE(t[i] == want_t[i]);
+	}
+}

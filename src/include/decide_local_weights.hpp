@@ -53,6 +53,7 @@ struct DecideLoadedWeights {
 	vector<vector<int64_t>> shapes;
 	vector<const void *> data;
 	vector<idx_t> bytes;
+	vector<DecideDtype> dtypes; // F32 unless loaded with keep_16bit (then a 16-bit checkpoint's own type)
 	DecideMappedFile file;
 	unsafe_unique_array<data_t> arena;
 	idx_t arena_bytes = 0;
@@ -61,8 +62,10 @@ struct DecideLoadedWeights {
 
 //! Map `path`, verify every mapped tensor exists with the shape the graph expects, and materialize float32
 //! buffers. Throws InvalidInputException with an actionable message (`function`: ... Fix: ...) naming the model.
+//! `keep_16bit` (GPU sessions): float16/bfloat16 tensors stay 16-bit, read straight from the mapped file unless transposed (then copied,
+//! transposed, still 16-bit); the plugin upcasts them on its upload, so the host keeps no float32 copy.
 unique_ptr<DecideLoadedWeights> DecideLoadWeights(const DecideTensorMap &map, const string &path,
-                                                  const string &model_id, const char *function);
+                                                  const string &model_id, const char *function, bool keep_16bit = false);
 
 } // namespace anofox
 } // namespace duckdb
