@@ -899,7 +899,15 @@ TEST_CASE("a mapped checkpoint's resident pages can be dropped and the data stay
 	// A GPU plugin copies (or uploads) the weights at create, but the host keeps the mapped checkpoint for the session (the plugin ABI
 	// lets a plugin read it until destroy): its pages stayed resident, ~1.1-1.3 GB of a Laya MLX session on an M3. Dropping them keeps
 	// the mapping valid: a later read pages the bytes in again from the file.
-	const auto path = TempDir("resident") + "/w.bin";
+	const auto dir = TempDir("resident");
+	struct Cleanup {
+		string dir;
+		~Cleanup() {
+			std::error_code ec;
+			fs::remove_all(dir, ec); // 64 MB: never left behind in a tmpfs /tmp
+		}
+	} cleanup {dir};
+	const auto path = dir + "/w.bin";
 	std::string bytes(64 << 20, '\0');
 	for (size_t i = 0; i < bytes.size(); i++) {
 		bytes[i] = static_cast<char>(i * 131 % 251);

@@ -50,8 +50,8 @@ const char *kCpuFix = "SET anofox_decide_device = 'cpu'; to score on the CPU";
 //! LAST: the plugin reads the host's weight buffers for the session's whole life (the graph's bytes only during create).
 class LoadedPlugin : public DecidePluginSession {
 public:
-	LoadedPlugin(unique_ptr<DecideLoadedWeights> weights_p, std::unique_ptr<ga::PluginSession> session_p)
-	    : weights(std::move(weights_p)), session(std::move(session_p)), backend(session->Name()) {
+	LoadedPlugin(unique_ptr<DecideLoadedWeights> weights_p, std::unique_ptr<ga::PluginSession> session_p, string backend_p)
+	    : weights(std::move(weights_p)), session(std::move(session_p)), backend(std::move(backend_p)) {
 	}
 
 	vector<vector<float>> Run(const DecideLocalBatch &batch, const string &function) override {
@@ -110,6 +110,18 @@ private:
 
 } // namespace
 
+string DecideMissingRuntimeHint(const string &backend, const string &message) {
+	const string low = Lower(message);
+	auto has = [&](const char *needle) { return low.find(needle) != string::npos; };
+	if (!(has("cannot open shared object") || has("library not loaded") || has("libcuda") || has("libamdhip") || has("libhip") ||
+	      has("librocblas") || has("libmlx"))) {
+		return "";
+	}
+	return backend == "cuda"  ? "install the NVIDIA driver (it provides libcuda.so.1)"
+	       : backend == "mlx" ? "brew install mlx mlx-c"
+	                          : "install ROCm (HIP, hipBLAS and rocBLAS)";
+}
+
 string DecidePluginErrorMessage(const string &backend, const string &plugin_message, const string &function,
                                 DecidePluginStage stage, string &kind) {
 	const string low = Lower(plugin_message);
@@ -125,13 +137,8 @@ string DecidePluginErrorMessage(const string &backend, const string &plugin_mess
 		                 "score fewer rows at once (SET anofox_decide_batch_tokens = 4096;), shorten the text (check "
 		                 "it with decide_token_count), or " + string(kCpuFix));
 	}
-	if (has("cannot open shared object") || has("library not loaded") || has("libcuda") || has("libhip") ||
-	    has("librocblas") || has("libmlx")) {
-		// What each plugin links (anofox-ggml-adapter): CUDA carries its runtime and needs only the driver; ROCm links the system's
-		// HIP, hipBLAS and rocBLAS; MLX links Apple's libmlx and libmlxc from Homebrew.
-		const string install = backend == "cuda"   ? "install the NVIDIA driver (it provides libcuda.so.1)"
-		                       : backend == "mlx" ? "brew install mlx mlx-c"
-		                                          : "install ROCm (HIP, hipBLAS and rocBLAS)";
+	const string install = DecideMissingRuntimeHint(backend, plugin_message);
+	if (!install.empty()) {
 		return DecideMsg(function,
 		                 "the '" + backend + "' backend " + doing + ": a runtime library it needs is missing (" +
 		                     detail + ")",
@@ -263,16 +270,27 @@ unique_ptr<DecidePluginSession> DecideLoadPlugin(const string &library_path, Dec
 			                          std::vector<int64_t>(w.shapes[i].begin(), w.shapes[i].end())});
 		}
 	}
+	// Named after the device it serves: the plugin's own name is shared (the ggml plugin is "ggml" on CUDA and on ROCm).
+	const string backend = request.backend.empty() ? string("unknown") : request.backend;
 	std::unique_ptr<ga::PluginSession> session;
 	try {
 		session = ga::PluginSession::Open(library_path, params);
 	} catch (const ga::PluginError &e) {
 		switch (e.kind) {
-		case ga::PluginError::Kind::NOT_LOADABLE:
+		case ga::PluginError::Kind::NOT_LOADABLE: {
+			// The plugin is there but a library it links is missing (the driver, ROCm, MLX): downloading the plugin again does not help.
+			std::error_code exists_ec;
+			const string install = std::filesystem::exists(library_path, exists_ec) ? DecideMissingRuntimeHint(backend, e.detail) : string();
+			if (!install.empty()) {
+				throw IOException(DecideMsg(function, "cannot load the GPU plugin '" + library_path + "': a runtime library it needs is missing (" +
+				                                          e.detail + ")",
+				                            install + ", then CALL decide_accelerate(); again (or " + string(kCpuFix) + ")"));
+			}
 			throw IOException(DecideMsg(function, "cannot load the GPU plugin '" + library_path + "' (" + e.detail + ")",
 			                            "CALL decide_accelerate(); fetches and verifies the plugin, or SET anofox_decide_ep_path = '<folder "
 			                            "that holds it>'; (or " +
 			                                string(kCpuFix) + ")"));
+		}
 		case ga::PluginError::Kind::NOT_A_PLUGIN:
 			throw IOException(DecideMsg(function,
 			                            "'" + library_path + "' is not an anofox GPU plugin: " + e.detail +
@@ -283,7 +301,7 @@ unique_ptr<DecidePluginSession> DecideLoadPlugin(const string &library_path, Dec
 			                            "CALL decide_accelerate(); installs the plugin that matches this extension"));
 		default: {
 			string kind;
-			const auto text = DecidePluginErrorMessage(e.backend.empty() ? string("unknown") : e.backend,
+			const auto text = DecidePluginErrorMessage(backend,
 			                                           e.kind == ga::PluginError::Kind::OUT_OF_MEMORY ? "out of memory: " + e.detail : e.detail,
 			                                           function, DecidePluginStage::CREATE, kind);
 			if (kind == "memory") {
@@ -301,7 +319,7 @@ unique_ptr<DecidePluginSession> DecideLoadPlugin(const string &library_path, Dec
 		// The mapping itself stays valid for the plugin ABI's "alive until destroy" (a read pages it in again).
 		request.weights->file.ReleaseResidentPages();
 	}
-	return make_uniq<LoadedPlugin>(std::move(request.weights), std::move(session)); // request.graph_bytes is released here
+	return make_uniq<LoadedPlugin>(std::move(request.weights), std::move(session), backend); // request.graph_bytes is released here
 }
 
 } // namespace anofox

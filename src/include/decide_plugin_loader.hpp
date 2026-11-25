@@ -20,6 +20,11 @@ namespace anofox {
 //! Where a plugin call failed: building the backend (CREATE) or scoring a batch (RUN).
 enum class DecidePluginStage { CREATE, RUN };
 
+//! What to install when `message` says a library the `backend` plugin links is missing ("" when it says nothing of the kind):
+//! the adapter's CUDA plugin carries its runtime and needs only the NVIDIA driver, the ROCm plugin links the system's HIP, hipBLAS and
+//! rocBLAS, the MLX plugin Apple's libmlx and libmlxc from Homebrew.
+string DecideMissingRuntimeHint(const string &backend, const string &message);
+
 //! The project-style error text for a failure a plugin reported (the plugin's own text is echoed, bounded to
 //! its first line). `kind` receives "memory" or "plugin"; the first is a resource problem (IOException), the
 //! second is a backend that failed (InvalidInputException). Every message ends with a Fix. Pure, so the
@@ -62,6 +67,7 @@ struct DecidePluginRequest {
 	shared_ptr<const string> graph_bytes;
 	unique_ptr<DecideLoadedWeights> weights;
 	string model; //!< the catalog id, or the registered model's id
+	string backend; //!< the device backend the plugin serves ("cuda", "rocm", "mlx"): names it in errors (a plugin's own name may be shared)
 	string arch;
 	string precision = "fp32";
 	string cache_dir;

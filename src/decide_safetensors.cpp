@@ -298,11 +298,25 @@ void DecideMappedFile::Reset() {
 
 void DecideMappedFile::ReleaseResidentPages() {
 #ifndef _WIN32
-	if (mapped && data && size > 0 && fd >= 0) {
-		// Re-map the same range in place: the old mapping's pages leave the process (madvise(MADV_DONTNEED) is ignored for file pages
-		// on macOS), the address stays valid and reads page in again from the file. On failure the old mapping stays, as it was.
-		mmap(const_cast<data_ptr_t>(data), size, PROT_READ, MAP_PRIVATE | MAP_FIXED, fd, 0);
+	if (!mapped || !data || size == 0) {
+		return;
 	}
+	// The pages leave the process's resident set; they stay in the page cache (reclaimable), and a later read pages them in again
+	// from the file, so the address stays valid for the plugin ABI's "alive until destroy".
+#if defined(__APPLE__)
+	// macOS ignores MADV_DONTNEED for file pages: re-map the same range in place (same file, offset and protection). A failed
+	// MAP_FIXED may already have removed the old mapping, and pointers into it were handed out, so it throws: the caller's session is
+	// not kept, and nothing reads the range again.
+	if (fd >= 0 && mmap(const_cast<data_ptr_t>(data), size, PROT_READ, MAP_PRIVATE | MAP_FIXED, fd, 0) == MAP_FAILED) {
+		mapped = false;
+		data = nullptr;
+		throw IOException("could not re-map the model weights after loading them onto the GPU (%s); retry the call",
+		                  std::strerror(errno));
+	}
+#else
+	// Linux: drops a private, unmodified file mapping's pages with no gap in the mapping. Advice: a failure only keeps them.
+	madvise(const_cast<data_ptr_t>(data), size, MADV_DONTNEED);
+#endif
 #endif
 }
 

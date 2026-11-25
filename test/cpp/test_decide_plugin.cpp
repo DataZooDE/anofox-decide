@@ -307,6 +307,10 @@ TEST_CASE("plugin failures are mapped into the project's error shape", "[anofox_
 	msg = DecidePluginErrorMessage("mlx", "dlopen: Library not loaded: libmlx.dylib", "decide_probability",
 	                               DecidePluginStage::CREATE, kind);
 	REQUIRE_THAT(msg, Contains("Fix: brew install mlx mlx-c"));
+	// The HIP runtime is libamdhip64: it does not contain "libhip".
+	REQUIRE(DecideMissingRuntimeHint("rocm", "libamdhip64.so.7: cannot open shared object file") == "install ROCm (HIP, hipBLAS and rocBLAS)");
+	REQUIRE(DecideMissingRuntimeHint("cuda", "libcuda.so.1: cannot open shared object file") == "install the NVIDIA driver (it provides libcuda.so.1)");
+	REQUIRE(DecideMissingRuntimeHint("cuda", "undefined symbol: foo").empty()); // not a missing library
 
 	msg = DecidePluginErrorMessage("mlx", "something odd", "decide_probability", DecidePluginStage::CREATE, kind);
 	REQUIRE_THAT(msg, Contains("decide_probability: the 'mlx' backend could not be initialised (something odd)"));
@@ -343,6 +347,7 @@ struct PluginFiles {
 			r.weights->bytes = {sizeof(weight)};
 		}
 		r.model = "julia-1";
+		r.backend = "rocm"; // the device the plugin was chosen for: it names the backend in errors, not the plugin's own name
 		r.cache_dir = cache;
 		r.arch = arch;
 		r.precision = precision;
@@ -380,7 +385,7 @@ TEST_CASE("the loader round-trips every tensor and parameter through a real plug
 	PluginFiles files;
 	auto session = DecideLoadPlugin(kFakePlugin, files.Params("sm_89", "fp32", 3), "decide_probability");
 	REQUIRE(session != nullptr);
-	REQUIRE(session->Backend() == "fake");
+	REQUIRE(session->Backend() == "rocm"); // the device it was chosen for (the request), not the plugin's own name
 	const auto batch = ExampleBatch();
 	auto scores = session->Run(batch, "decide_probability");
 	REQUIRE(scores.size() == 2);
@@ -427,7 +432,7 @@ TEST_CASE("the loader reports a missing file, a file that is not a plugin and a 
 
 	// The backend refuses: InvalidInput with the plugin's text and the way out.
 	msg = Message([&] { DecideLoadPlugin(kFakePlugin, files.Params("refuse"), "decide_probability"); });
-	REQUIRE_THAT(msg, Contains("decide_probability: the 'fake' backend could not be initialised (no device matching arch 'refuse')"));
+	REQUIRE_THAT(msg, Contains("decide_probability: the 'rocm' backend could not be initialised (no device matching arch 'refuse')"));
 	REQUIRE_THAT(msg, Contains("Fix: check decide_doctor(); SET anofox_decide_device = 'cpu';"));
 	// Memory exhaustion is an IOException (a resource problem, not a bug).
 	REQUIRE_THROWS_AS(DecideLoadPlugin(kFakePlugin, files.Params("oom"), "decide_probability"), IOException);
@@ -1194,7 +1199,8 @@ TEST_CASE("a plugin that fails after it was chosen always throws, auto included"
 		auto r = con.Query(kQuestion);
 		INFO(device);
 		REQUIRE(r->HasError());
-		REQUIRE_THAT(r->GetError(), Contains("decide_probability: the 'fake' backend could not be initialised (no device matching arch 'refuse')"));
+		// named after the device it serves (the adapter's ggml plugin calls itself 'ggml' for CUDA and ROCm alike)
+		REQUIRE_THAT(r->GetError(), Contains("decide_probability: the 'cuda' backend could not be initialised (no device matching arch 'refuse')"));
 		REQUIRE_THAT(r->GetError(), Contains("Fix: check decide_doctor(); SET anofox_decide_device = 'cpu';"));
 	}
 	// ... and the way out works.

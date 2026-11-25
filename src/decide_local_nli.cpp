@@ -285,6 +285,7 @@ shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, 
 		DecidePluginRequest request;
 		request.graph_bytes = make_shared_ptr<string>(DecideReadLocalFile(context, entry.graph_path, "graph"));
 		request.model = entry.id;
+		request.backend = device.backend;
 		request.arch = device.arch;
 		request.precision = precision;
 		request.cache_dir = (std::filesystem::path(DecideCacheDir(context, function.c_str())) / "gpu-cache").string();
@@ -341,6 +342,7 @@ shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, 
 		request.weights = DecideLoadWeights(gpu_map, entry.weights_path, entry.id, function.c_str(), /*keep_16bit=*/true);
 		const idx_t host_bytes = WeightBytes(*request.weights); // the session keeps the host copy (see the plugin loader)
 		request.model = entry.id;
+		request.backend = device.backend;
 		request.arch = device.arch;
 		request.precision = precision;
 		request.cache_dir = (std::filesystem::path(DecideCacheDir(context, function.c_str())) / "gpu-cache").string();
