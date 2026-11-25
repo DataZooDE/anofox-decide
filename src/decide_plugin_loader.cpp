@@ -237,7 +237,11 @@ bool DecidePluginLoadable(const string &library_path, string *error) {
 	return ga::PluginLoadable(library_path, error);
 }
 
-unique_ptr<DecidePluginSession> DecideLoadPlugin(const string &library_path, DecidePluginRequest request, const string &function) {
+unique_ptr<DecidePluginSession> DecideLoadPlugin(const string &library_path, DecidePluginRequest request, const string &function,
+                                                 bool *graph_refused) {
+	if (graph_refused) {
+		*graph_refused = false;
+	}
 	string unverified;
 	if (!DecideVerifyPluginBeforeLoad(library_path, unverified)) {
 		throw IOException(DecideMsg(function, "the GPU plugin '" + library_path + "' was not loaded: " + unverified,
@@ -285,6 +289,9 @@ unique_ptr<DecidePluginSession> DecideLoadPlugin(const string &library_path, Dec
 			                                           function, DecidePluginStage::CREATE, kind);
 			if (kind == "memory") {
 				throw IOException(text);
+			}
+			if (graph_refused && e.kind == ga::PluginError::Kind::CREATE_FAILED) {
+				*graph_refused = true;
 			}
 			throw InvalidInputException(text);
 		}

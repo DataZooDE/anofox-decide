@@ -77,7 +77,10 @@ struct DecidePluginRequest {
 //! The library is deliberately never unloaded once create() has run: a GPU backend leaves a driver context and
 //! thread-locals behind it, and dlclose'ing underneath those turns shutdown into a crash in an unrelated
 //! destructor.
-unique_ptr<DecidePluginSession> DecideLoadPlugin(const string &library_path, DecidePluginRequest request, const string &function);
+//! `graph_refused`, when given, is set when the plugin's create refused the graph itself (an op or layout it cannot run): not a device,
+//! memory or loading failure. Only such a refusal may send a registered model to the CPU for good (DecideRememberPluginRefusal).
+unique_ptr<DecidePluginSession> DecideLoadPlugin(const string &library_path, DecidePluginRequest request, const string &function,
+                                                 bool *graph_refused = nullptr);
 
 //! Can this library be loaded as a plugin of an ABI we speak? Loads it and checks the entry point and
 //! abi_version, and stops there: it never calls create(), which reaches the driver, can take minutes (a

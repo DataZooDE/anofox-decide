@@ -169,17 +169,23 @@ vector<DecideDeviceInfo> DecideDiscoverDevices() {
 
 namespace {
 std::mutex refusal_lock;
-std::map<std::pair<string, string>, string> refusals; // (plugin path, graph) -> why create failed
+std::map<std::pair<string, string>, string> refusals; // (plugin file, graph file), each with its identity -> why create refused the graph
+//! A refusal belongs to the exact files: another plugin build, or a re-exported graph at the same path, may run where this one did not.
+std::pair<string, string> RefusalKey(const string &plugin_path, const string &graph_key) {
+	return {plugin_path + "#" + DecidePluginFileIdentity(plugin_path), graph_key + "#" + DecidePluginFileIdentity(graph_key)};
+}
 } // namespace
 
 void DecideRememberPluginRefusal(const string &plugin_path, const string &graph_key, const string &reason) {
+	const auto key = RefusalKey(plugin_path, graph_key);
 	std::lock_guard<std::mutex> guard(refusal_lock);
-	refusals[{plugin_path, graph_key}] = reason;
+	refusals[key] = reason;
 }
 
 string DecidePluginRefusal(const string &plugin_path, const string &graph_key) {
+	const auto key = RefusalKey(plugin_path, graph_key);
 	std::lock_guard<std::mutex> guard(refusal_lock);
-	auto it = refusals.find({plugin_path, graph_key});
+	auto it = refusals.find(key);
 	return it == refusals.end() ? string() : it->second;
 }
 
@@ -381,8 +387,12 @@ DecidePluginState DecideProbePlugin(const string &plugin_path) {
 }
 
 void DecideBumpPluginProbeGeneration() {
-	std::lock_guard<std::mutex> guard(probe_lock);
-	probe_cache.clear();
+	{
+		std::lock_guard<std::mutex> guard(probe_lock);
+		probe_cache.clear();
+	}
+	std::lock_guard<std::mutex> guard(refusal_lock); // a new plugin (decide_accelerate) gets to try every graph again
+	refusals.clear();
 }
 
 namespace {

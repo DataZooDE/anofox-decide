@@ -346,12 +346,17 @@ shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, 
 		request.device_ordinal = device.ordinal;
 		auto handle = shared_ptr<DecideLocalSession>(new DecideLocalSession(entry.graph_path, "plugin:" + device.backend));
 		handle->impl = make_shared_ptr<Impl>();
+		bool graph_refused = false;
 		try {
-			handle->impl->plugin = DecideLoadPlugin(plugin_path, std::move(request), function);
+			handle->impl->plugin = DecideLoadPlugin(plugin_path, std::move(request), function, &graph_refused);
 		} catch (const std::exception &e) {
 			// A user's graph the plugin cannot run (an op it lacks, weights in an external file, other inputs) is not servable there:
 			// remember why, so decide_models() and decide_backends() say so and 'auto' scores it on the CPU from now on. An explicit
-			// device keeps the error.
+			// device keeps the error. A failure of the device itself (out of memory, a driver error) is not about the graph: it is
+			// raised as for a catalog model and not remembered.
+			if (!graph_refused) {
+				throw;
+			}
 			DecideRememberPluginRefusal(plugin_path, entry.graph_path, ErrorData(e).RawMessage());
 			if (DecideDeviceSetting(context) != "auto") {
 				throw;

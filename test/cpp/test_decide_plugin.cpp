@@ -1368,6 +1368,54 @@ TEST_CASE("a plugin of another ABI is never used, and every surface says why", "
 	(void)cpu;
 }
 
+
+// The refusal memory is for a graph the plugin cannot run (it sends 'auto' to the CPU for good). A failure of the device itself (out of
+// memory, a driver error) is not about the graph: remembering it pinned the model to the CPU until the process ended (crew review). And
+// a refusal belongs to the plugin file that gave it: a replaced plugin gets to try again.
+TEST_CASE("only a graph refusal is remembered, and only for the plugin file that refused", "[anofox_decide][plugin][sql]") {
+	TinyCatalog catalog;
+	const auto plugin_dir = catalog.cache + "/plugins";
+	const auto own_graph = catalog.cache + "/own_tiny.onnx";
+	std::filesystem::copy_file("test/fixtures/julia1_tiny.onnx", own_graph, std::filesystem::copy_options::overwrite_existing);
+	auto supported_on = [](Connection &con, const string &model, const string &device) {
+		auto r = con.Query("SELECT supported FROM decide_backends() WHERE model = '" + model + "' AND device = '" + device + "'");
+		REQUIRE_NO_FAIL(*r);
+		REQUIRE(r->RowCount() == 1);
+		return duckdb_compat::ResultValue(*r, 0, 0) == Value::BOOLEAN(true);
+	};
+	{
+		DeviceGuard devices({Dev("cuda:0", "Fake RTX", "oom", true)}); // every create runs out of device memory
+		DuckDB db(nullptr);
+		db.LoadStaticExtension<AnofoxDecideExtension>();
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("SET anofox_decide_cache_dir = '" + catalog.cache + "'"));
+		InstallPlugin(kFakePlugin, plugin_dir, "cuda");
+		REQUIRE_NO_FAIL(con.Query("SELECT decide_register_model('own-tiny', 'local', '" + own_graph + "', 'test/fixtures/tiny_tokenizer.json')"));
+		REQUIRE_NO_FAIL(con.Query("SET anofox_decide_device = 'auto'"));
+		auto r = con.Query("SELECT decide_probability('x', 'y?', model := 'own-tiny')");
+		REQUIRE(r->HasError()); // the device failed: said, as for a catalog model, not hidden behind a silent CPU answer
+		REQUIRE_THAT(r->GetError(), Contains("ran out of device memory"));
+		REQUIRE(supported_on(con, "own-tiny", "cuda:0")); // and not remembered as "this graph cannot run there"
+	}
+	{
+		DeviceGuard devices({Dev("cuda:0", "Fake RTX", "sm_89", true)});
+		DuckDB db(nullptr);
+		db.LoadStaticExtension<AnofoxDecideExtension>();
+		Connection con(db);
+		REQUIRE_NO_FAIL(con.Query("SET anofox_decide_cache_dir = '" + catalog.cache + "'"));
+		const auto refuse_graph = catalog.cache + "/refuse_tiny.onnx";
+		std::filesystem::copy_file("test/fixtures/julia1_tiny.onnx", refuse_graph, std::filesystem::copy_options::overwrite_existing);
+		REQUIRE_NO_FAIL(con.Query("SELECT decide_register_model('refuse-tiny', 'local', '" + refuse_graph + "', 'test/fixtures/tiny_tokenizer.json')"));
+		REQUIRE_NO_FAIL(con.Query("SET anofox_decide_device = 'auto'"));
+		REQUIRE_NO_FAIL(con.Query("SELECT decide_probability('x', 'y?', model := 'refuse-tiny')")); // refused -> the CPU answers
+		REQUIRE_FALSE(supported_on(con, "refuse-tiny", "cuda:0"));
+		// a new plugin file (another build, or decide_accelerate) may run it: the old refusal does not apply to it
+		const auto plugin = DecidePluginPath(plugin_dir, "cuda");
+		std::filesystem::last_write_time(plugin, std::filesystem::last_write_time(plugin) + std::chrono::seconds(5));
+		REQUIRE(supported_on(con, "refuse-tiny", "cuda:0"));
+	}
+}
+
 #endif // DECIDE_FAKE_PLUGIN_PATH
 
 TEST_CASE("an explicit device with no hardware or no plugin names CALL decide_accelerate()", "[anofox_decide][plugin][sql]") {
