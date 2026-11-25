@@ -76,8 +76,9 @@ FROM (SELECT decide_probability('The bill is wrong.', 'A refund is requested.', 
 ----
 true	true	true
 
+# served by a ggml session of its own, which replaced the ONNX Runtime one (a model keeps one session: an engine switch must not leave a
+# second copy of its weights behind)
 query II
 SELECT engine, runs >= 1 FROM __anofox_decide_local_sessions() WHERE model LIKE '%julia1_tiny.onnx' ORDER BY engine
 ----
 ggml	true
-ort	true

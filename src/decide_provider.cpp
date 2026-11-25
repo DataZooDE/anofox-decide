@@ -1,4 +1,5 @@
 #include "decide_provider.hpp"
+#include "decide_interrupt.hpp"
 #include "decide_errors.hpp"
 #include "decide_registration.hpp"
 #include "decide_remote.hpp"
@@ -773,6 +774,9 @@ vector<vector<DecideAnswer>> DecideEvaluateBatch(ClientContext &context, const v
 	vector<string> local_order;
 	std::unordered_map<string, vector<idx_t>> local_groups;
 	for (idx_t k = 0; k < u; k++) {
+		if (DecideInterrupted(context)) { // one chunk is up to 2048 texts, each a model run: Ctrl-C stops between them
+			throw InterruptException();
+		}
 		const auto &request = requests[firsts[k]];
 		try {
 			RequireKnownProvider(request.entry);

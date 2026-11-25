@@ -87,7 +87,9 @@ DecideCollatedRow DecideCollateRow(const DecideTokenizer &tok, const string &sta
                                   const string &question, const vector<string> &options,
                                   int qtype, int64_t max_length, int64_t head_length,
                                   bool allow_empty_state_room = false, const string &function = "decide",
-                                  const string &question_id = "");
+                                  const string &question_id = "", const std::vector<int32_t> *state_ids = nullptr);
+// `state_ids`, when given, is `state` already encoded (DecideEncodeState): a text asked several questions is tokenised once.
+std::vector<int32_t> DecideEncodeState(const DecideTokenizer &tok, const string &state);
 
 // The project-style error for a row that collation had to cut ("" when nothing was cut). `laya` selects
 // the wording for models whose limits come from rl_agent_config.json instead of the settings.

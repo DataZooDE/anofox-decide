@@ -1,6 +1,7 @@
 #include "catch.hpp"
 #include "anofox_ggml_adapter/devices.hpp"
 #include "anofox_decide_extension.hpp"
+#include "decide_keyed_cache.hpp"
 #include "decide_local_nli.hpp"
 #include "decide_local_validate.hpp"
 #include "decide_local_weights.hpp"
@@ -12,7 +13,10 @@
 #include "duckdb.hpp"
 #include "duckdb_compat.hpp"
 
+#include <atomic>
+#include <chrono>
 #include <cmath>
+#include <thread>
 #include <cstdlib>
 #include <fstream>
 #include <functional>
@@ -218,9 +222,11 @@ TEST_CASE("SET threads takes effect on the next call: the ggml session is rebuil
 	auto second = con.Query(q);
 	REQUIRE_FALSE(second->HasError());
 	REQUIRE(duckdb_compat::ResultValue(*first, 0, 0) == duckdb_compat::ResultValue(*second, 0, 0)); // the same answer
-	auto sessions = con.Query("SELECT count(*) FROM __anofox_decide_local_sessions() WHERE engine = 'ggml' AND runs > 0");
+	// Rebuilt, and the old one replaced (not kept next to it): one session, which has served only the second call.
+	auto sessions = con.Query("SELECT count(*), sum(runs) FROM __anofox_decide_local_sessions() WHERE engine = 'ggml'");
 	REQUIRE_FALSE(sessions->HasError());
-	REQUIRE(duckdb_compat::ResultValue(*sessions, 0, 0) == Value::BIGINT(2)); // one session per thread count
+	REQUIRE(duckdb_compat::ResultValue(*sessions, 0, 0) == Value::BIGINT(1));
+	REQUIRE(duckdb_compat::ResultValue(*sessions, 1, 0).GetValue<int64_t>() == 1);
 }
 
 TEST_CASE("local end-to-end over the tiny fixture", "[anofox_decide][local]") {
@@ -757,5 +763,115 @@ TEST_CASE("local ggml engine: the tiny fixtures score like ONNX Runtime on both 
 		entry.bundled_map = "tensor_map_test_tiny.json";
 		entry.weights_path = "test/fixtures/local_tiny/tiny.safetensors";
 		compare([&](Connection &con) { return DecideLocalSession::Open(*con.context, entry); });
+	}
+}
+
+// Crew review: the session cache held its one lock through every slow load (a first load of one model stalled every other model's
+// scoring), and never evicted: each SET threads / engine / device switch kept another full copy of the weights.
+TEST_CASE("keyed cache: one build per key, other keys build meanwhile, a group keeps one variant", "[anofox_decide][local][cache]") {
+	using Cache = DecideKeyedCache<int>;
+	SECTION("concurrent callers of one missing key build it once") {
+		Cache cache;
+		std::atomic<int> builds {0};
+		std::vector<std::thread> threads;
+		std::vector<std::shared_ptr<int>> got(4);
+		for (int t = 0; t < 4; t++) {
+			threads.emplace_back([&, t] {
+				got[t] = cache.GetOrBuild("m@2", "m", [&] {
+					builds++;
+					std::this_thread::sleep_for(std::chrono::milliseconds(50));
+					return Cache::Built {std::make_shared<int>(7), 100};
+				});
+			});
+		}
+		for (auto &th : threads) {
+			th.join();
+		}
+		REQUIRE(builds == 1);
+		for (auto &g : got) {
+			REQUIRE(g == got[0]);
+		}
+		REQUIRE(cache.Bytes() == 100);
+	}
+	SECTION("a slow build of one key does not hold up another key") {
+		Cache cache;
+		std::atomic<bool> b_started {false};
+		bool a_saw_b = false;
+		std::thread a([&] {
+			cache.GetOrBuild("a", "a", [&] {
+				// waits (bounded) for b's build to start: with one lock for every build, b could not start until a returned
+				for (int i = 0; i < 200 && !b_started; i++) {
+					std::this_thread::sleep_for(std::chrono::milliseconds(5));
+				}
+				a_saw_b = b_started;
+				return Cache::Built {std::make_shared<int>(1), 1};
+			});
+		});
+		std::this_thread::sleep_for(std::chrono::milliseconds(20));
+		cache.GetOrBuild("b", "b", [&] {
+			b_started = true;
+			return Cache::Built {std::make_shared<int>(2), 1};
+		});
+		a.join();
+		REQUIRE(a_saw_b);
+	}
+	SECTION("a new variant of a group evicts the old one; values handed out live on") {
+		Cache cache;
+		auto old_value = cache.GetOrBuild("m@2", "m", [] { return Cache::Built {std::make_shared<int>(2), 1000}; });
+		cache.GetOrBuild("x@2", "x", [] { return Cache::Built {std::make_shared<int>(9), 10}; });
+		auto new_value = cache.GetOrBuild("m@3", "m", [] { return Cache::Built {std::make_shared<int>(3), 1200}; });
+		REQUIRE(*old_value == 2); // still usable by whoever holds it
+		REQUIRE(cache.Entries().size() == 2);
+		REQUIRE(cache.Bytes() == 1210);
+		cache.EraseIf([](const int &v) { return v == 9; });
+		REQUIRE(cache.Bytes() == 1200);
+	}
+	SECTION("a failed build caches nothing and the next call builds again") {
+		Cache cache;
+		REQUIRE_THROWS(cache.GetOrBuild("k", "k", []() -> Cache::Built { throw std::runtime_error("load failed"); }));
+		auto v = cache.GetOrBuild("k", "k", [] { return Cache::Built {std::make_shared<int>(5), 1}; });
+		REQUIRE(*v == 5);
+	}
+}
+
+TEST_CASE("local sessions: SET threads replaces the model's session instead of adding a second copy", "[anofox_decide][local][cache]") {
+	DuckDB db(nullptr);
+	db.LoadStaticExtension<AnofoxDecideExtension>();
+	Connection con(db);
+	REQUIRE_FALSE(con.Query("SET anofox_decide_local_engine = 'ggml'")->HasError());
+	REQUIRE_FALSE(con.Query("SELECT decide_register_model('tiny-cache', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json')")->HasError());
+	for (int threads : {2, 3, 2}) {
+		REQUIRE_FALSE(con.Query("SET threads = " + std::to_string(threads))->HasError());
+		REQUIRE_FALSE(con.Query("SELECT decide_probability('x', 'y?', model := 'tiny-cache')")->HasError());
+		auto r = con.Query("SELECT count(*) FROM __anofox_decide_local_sessions() WHERE model LIKE '%julia1_tiny.onnx%'");
+		REQUIRE_FALSE(r->HasError());
+		INFO("threads " << threads);
+		REQUIRE(duckdb_compat::ResultValue(*r, 0, 0) == Value::BIGINT(1));
+	}
+}
+
+TEST_CASE("Ctrl-C stops a chunk of local texts between model runs", "[anofox_decide][local][interrupt]") {
+	// One DuckDB chunk is up to 2048 texts and DuckDB checks for an interrupt only between chunks: a chunk of long texts ran to its end
+	// (minutes on a large model) after Ctrl-C. The local scorer checks between model runs.
+	DuckDB db(nullptr);
+	db.LoadStaticExtension<AnofoxDecideExtension>();
+	Connection con(db);
+	REQUIRE_FALSE(con.Query("SET anofox_decide_local_engine = 'ggml'")->HasError());
+	REQUIRE_FALSE(con.Query("SELECT decide_register_model('tiny-int', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json')")->HasError());
+	REQUIRE_FALSE(con.Query("CREATE TABLE t AS SELECT 'ticket ' || i || ' ' || repeat('ab cd ef ', 40 + i % 50) AS text FROM range(2048) r(i)")->HasError());
+	const string q = "SELECT sum(decide_probability(text, 'y?', model := 'tiny-int')) FROM t";
+	for (const char *batching : {"0", "16384"}) { // one run per text, and cross-row batches
+		INFO("anofox_decide_batch_tokens = " << batching);
+		REQUIRE_FALSE(con.Query(string("SET anofox_decide_batch_tokens = ") + batching)->HasError());
+		decltype(con.Query(q)) result;
+		const auto t0 = std::chrono::steady_clock::now();
+		std::thread runner([&] { result = con.Query(q); });
+		std::this_thread::sleep_for(std::chrono::milliseconds(500));
+		con.Interrupt();
+		runner.join();
+		const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+		REQUIRE(result->HasError());
+		REQUIRE_THAT(result->GetError(), Catch::Matchers::Contains("Interrupted"));
+		REQUIRE(seconds < 2.0); // the whole chunk takes about 5 s
 	}
 }
