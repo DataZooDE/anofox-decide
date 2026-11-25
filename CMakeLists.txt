@@ -25,13 +25,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # HTTPS via cpp-httplib (third_party/httplib) needs system OpenSSL.
 find_package(OpenSSL REQUIRED)
 
-# ONNX Runtime for the local NLI provider (cmake/ort.cmake: vcpkg package,
-# else prebuilt archive download). Local dev against tabfm's tree:
-#   CMAKE_PREFIX_PATH=../anofox-tabfm/build/release/vcpkg_installed/x64-linux
-include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/ort.cmake)
-
-# The ggml engine shared with anofox-tabfm (vendor/anofox-ggml-adapter, ggml as its submodule): the in-process models move to it from
-# ONNX Runtime (docs/GGML_DECIDE.md; anofox_decide_local_engine picks the engine until ONNX Runtime is removed).
+# The ggml engine shared with anofox-tabfm (vendor/anofox-ggml-adapter, ggml as its submodule): the in-process models run on it
+# (docs/GGML_DECIDE.md).
 include(${CMAKE_CURRENT_SOURCE_DIR}/vendor/anofox-ggml-adapter/cmake/anofox_ggml_adapter.cmake)
 
 # Weight-free graphs + tensor maps from resources/ compiled into the extension.
@@ -95,7 +90,6 @@ foreach(_tgt ${EXTENSION_NAME} ${LOADABLE_EXTENSION_NAME})
         datazoo_banner
         OpenSSL::SSL
         OpenSSL::Crypto
-        decide_onnxruntime
         anofox_ggml)
     add_dependencies(${_tgt} ggml)
 endforeach()
