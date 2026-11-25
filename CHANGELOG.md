@@ -13,10 +13,11 @@ All notable changes to `anofox_decide` are documented here. The format follows
 ### Changed
 - **The in-process models run on the ggml engine** (vendor/anofox-ggml-adapter, shared with anofox-tabfm) instead of ONNX Runtime.
   Same answers (0 label flips on the 200-ticket evaluation against ONNX Runtime, on every platform and GPU path), faster and with
-  less memory: on a Linux x64 CPU 4.7 / 10.7 / 25.9 s instead of 5.4 / 13.0 / 30.8 s at 0.5 / 1.9 / 2.4 GB instead of 1.5 / 3.1 /
-  4.9 GB (Julia-1 / Laya multilingual / Laya typed-decisions); on an Apple M3 CPU 5 / 13 / 35 s instead of 11 / 34 / 88 s; on the
+  less memory: on a Linux x64 CPU 4.5 / 10.2 / 25.9 s instead of 5.6 / 12.5 / 32.2 s at 0.4 / 1.9 / 2.4 GB instead of 1.4 / 3.2 /
+  4.8 GB (Julia-1 / Laya multilingual / Laya typed-decisions); on an Apple M3 CPU 5 / 13 / 35 s instead of 11 / 34 / 88 s; on the
   GPU plugins 1.2x to 3.9x faster than the previous ones at up to 4.7x less host memory. A model loads in 0.3 to 0.7 s
   (was 1.4 to 5.5 s). Details: docs/GGML_DECIDE.md.
+- The CPU pads a batch to 8-token steps (was 32): ~20% faster on short texts for the Laya models; the GPU plugins keep 32.
 - `SET threads` now limits the local models: the CPU engine runs `min(threads, physical cores)` threads, at most one per physical
   core (a second thread per core adds no arithmetic and slows every op's barrier; ONNX Runtime ignored the setting), so
   `SET threads = 1` is slower than before.

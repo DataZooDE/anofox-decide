@@ -18,7 +18,7 @@ Three models work out of the box:
 |---|---|---|---|
 | `laya-multilingual` | 0.68 GB | 1.9 GB | multilingual (mmBERT-base encoder); the recommended start |
 | `laya-typed-decisions` | 0.85 GB | 2.4 GB | English (ModernBERT-large encoder); the best router in our evaluation |
-| `julia-1` | 0.61 GB | 0.5 GB | smallest and fastest, but the weakest in our evaluation |
+| `julia-1` | 0.61 GB | 0.4 GB | smallest and fastest, but the weakest in our evaluation |
 
 ```sql
 CALL decide_download('laya-multilingual');           -- once: fetches and verifies the files (8 to 11 seconds on the test machine's connection)

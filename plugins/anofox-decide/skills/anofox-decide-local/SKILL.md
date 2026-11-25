@@ -36,7 +36,7 @@ hosted models (see `anofox-decide-questions`).
    the call fails and says how much would be lost. Find long rows with `decide_token_count`. To accept the
    cut, use `SET anofox_decide_on_truncate = 'ignore'`.
 3. **The first call in a session loads the model:** about 0.3 s (julia-1) to 0.7 s (Laya).
-   Later calls reuse it. Peak memory is 0.5 to 2.4 GB. The CPU engine runs `min(threads, physical cores)` threads,
+   Later calls reuse it. Peak memory is 0.4 to 2.4 GB. The CPU engine runs `min(threads, physical cores)` threads,
    so DuckDB's `SET threads = 1` makes local models slower; the default needs no change.
 4. **Local models score one text at a time** unless `anofox_decide_batch_tokens` is set. Batching gives
    identical answers. On CPU it barely changes speed. On a GPU, set it (e.g. `8192`).
@@ -55,7 +55,7 @@ hosted models (see `anofox-decide-questions`).
 |---|---|---|---|
 | `laya-multilingual` | 0.68 GB | 1.9 GB | multilingual (mmBERT-base). **The recommended start** |
 | `laya-typed-decisions` | 0.85 GB | 2.4 GB | English (ModernBERT-large). The best in-process router |
-| `julia-1` | 0.61 GB | 0.5 GB | smallest and fastest, the weakest |
+| `julia-1` | 0.61 GB | 0.4 GB | smallest and fastest, the weakest |
 
 ```sql
 -- needs: network (downloads about 0.7 GB from Hugging Face, once)

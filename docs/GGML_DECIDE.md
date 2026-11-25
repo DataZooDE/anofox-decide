@@ -204,7 +204,7 @@ Wall time and peak RSS, julia-1 / laya-multilingual / laya-typed-decisions:
 
 | Platform | Baseline | ggml engine | Baseline wall | ggml wall | Baseline RSS | ggml RSS |
 |---|---|---|---|---|---|---|
-| Linux x64 CPU (Ryzen AI 9 HX 370) | ORT CPU | CPU | 5.4 / 13.0 / 30.8 s | 4.7 / 10.7 / 25.9 s | 1.45 / 3.13 / 4.89 GB | 0.49 / 1.94 / 2.44 GB |
+| Linux x64 CPU (Ryzen AI 9 HX 370) | ORT CPU | CPU | 5.6 / 12.5 / 32.2 s | 4.5 / 10.2 / 25.9 s | 1.42 / 3.24 / 4.84 GB | 0.41 / 1.93 / 2.44 GB |
 | macOS arm64 CPU (M3) | ORT CPU | CPU (P-cores, Accelerate) | 11 / 34 / 88 s | 5 / 13 / 35 s | 1.49 / 3.12 / 4.91 GB | 0.39 / 2.00 / 2.42 GB |
 | NVIDIA RTX 4090 | ORT CUDA | ggml-CUDA plugin | 11 / 15 / 18 s | 4 / 6 / 7 s | 1.78 / 4.02 / 6.05 GB | 1.04 / 1.21 / 1.35 GB |
 | AMD gfx1201 (RX 9070) | ORT MIGraphX | ggml-ROCm plugin | 16 / 26 / 43 s | 6 / 7 / 11 s | 2.59 / 4.61 / 5.74 GB | 0.98 / 1.09 / 1.21 GB |
@@ -212,8 +212,9 @@ Wall time and peak RSS, julia-1 / laya-multilingual / laya-typed-decisions:
 
 Notes:
 
-- **AMD gfx1150** (Radeon 890M): the released MIGraphX path does not support it; the ggml-ROCm plugin serves it. A new capability, no
-  baseline.
+- **AMD gfx1150** (Radeon 890M, the laptop's integrated GPU): the released MIGraphX path does not support it; the ggml-ROCm plugin
+  serves it. A new capability, no baseline: 6 / 11 / 27 s at 1.03 / 1.10 / 1.23 GB, 0 flips against ONNX Runtime (max |dp| 8.4e-5),
+  every model served by `plugin:rocm`; it shares the CPU's memory bandwidth, so it is not faster than the 12-core CPU beside it.
 - **Host CPU time on a GPU.** The ggml GPU plugins spend more host CPU time than ORT: on the RTX 4090 16 / 23 / 37 s against
   12 / 16 / 20 s, on gfx1201 about 1.6x MIGraphX's. Wall time and memory are better in every row; the extra CPU is the per-op
   launch work on the host.
@@ -225,3 +226,18 @@ Notes:
   Physical footprint, laya-typed-decisions: 1.73 GB against the old plugin's 1.79 GB.
 - **The released v2026.11.24 has no working ORT-CUDA download** (its release carries no CUDA plugin); the RTX 4090 baseline used the
   v2026.11.13 plugin, the last that was released.
+
+### Re-run on the final code (2026-11-25, after the ONNX Runtime removal)
+
+The Phase 3 and Phase 4 checks again on anofox-decide 0cd7fab (ggml only), this machine, released plugin v2026.11.25:
+
+- **Phase 4 (CPU), 200-ticket evaluation, 2 rounds alternating with ONNX Runtime (decide v2026.11.24):** ggml 4.5 / 10.2-10.5 /
+  25.9-26.2 s against 5.6 / 12.5-13.0 / 32.2-32.4 s; peak RSS 0.41 / 1.93 / 2.44 GB against 1.42 / 3.24 / 4.84 GB; CPU time 46 / 109 /
+  296 s against 103 / 252 / 684 s; 0 flips, max |dp| 3.3e-5. Against the Phase 0 baseline (21 / 48 / 87 s, 1.5 / 3.4 / 5.1 GB) every
+  model is faster and smaller.
+  The first re-run found a regression: the crew review's 32-token length buckets made the Laya models ~20% slower on the CPU (short
+  tickets padded by up to 31 tokens, against a ~7 ms compile per shape), so ggml merely tied ONNX Runtime. The CPU now pads to
+  8-token steps (measured the same as exact lengths); the GPU plugins keep 32-token steps, MLX exact lengths.
+- **Phase 3 (gfx1150, ROCm):** `test/sql/decide_local_e2e_gpu.test` passes (85 assertions, every block served by `plugin:rocm`); the
+  evaluation as above. gfx1201 (bigfox) and the RTX 4090 were measured on the same plugin release earlier the same day (table above),
+  the M3 MLX row with the adapter's merged MLX fixes.
