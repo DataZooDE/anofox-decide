@@ -175,3 +175,17 @@ The GPU is faster than the CPU for every model (no regression). laya-typed-decis
 largest probability difference 2.6e-5, metrics identical. Every text length compiles its own graph on first use, which
 dominates the smaller models' GPU time on 200 short tickets; the host RSS includes the weights' host copy that the plugin
 keeps next to its device copy.
+
+**Re-run on the final commits (2026-11-25, fused attention on the CPU, adapter 5c98f18), another RTX 4090 pod** (128 cores):
+
+| Model | CUDA wall | CPU (pod, fused attention) wall | CUDA peak host RSS |
+|---|---|---|---|
+| julia-1 | 27 s | 10 s | 4.50 GB |
+| laya-multilingual | 56 s | 17 s | 8.14 GB |
+| laya-typed-decisions | 28 s | 34 s | 4.23 GB |
+
+Every suite passed and every model was served by `plugin:cuda`; laya-typed-decisions 0 flips against the CPU (max |dp|
+2.4e-5). The GPU path itself is faster than on the first pod, but on this host the fused CPU engine now beats CUDA for the
+two smaller models on 200 short tickets: their GPU time is mostly the per-length graph compile and the host-device
+round trips, not arithmetic. On a GPU the large model and long texts gain; for the small models on short texts the CPU
+is the better device. Shape bucketing (fewer distinct lengths, fewer compiles) is the lever if that matters.
