@@ -177,6 +177,8 @@ def gpu_variant(cpu_test):
         "#              DECIDE_E2E_EP_PATH), to the GPU bar: probabilities and scores within 1e-3 of ONNX Runtime on the CPU, labels\n"
         "#              exact where the reference is not a near tie, and every block served by the plugin. Below: the CPU suite's text.\n"
         "#              End-to-end support-ticket triage on the three in-process catalog models")
+    sub("#              Runs on the ggml engine on the CPU (anofox_decide_device = 'cpu') and checks that it, and only it, answered.\n",
+        "#              Runs on the GPU plugin of DECIDE_E2E_DEVICE and checks that it, and only it, answered.\n")
     sub("require-env DECIDE_CACHE_DIR\n", "require-env DECIDE_E2E_DEVICE\n\nrequire-env DECIDE_E2E_EP_PATH\n\nrequire-env DECIDE_CACHE_DIR\n")
     sub("SET anofox_decide_device = 'cpu';\n",
         "SET anofox_decide_device = '${DECIDE_E2E_DEVICE}';\n\nstatement ok\nSET anofox_decide_ep_path = '${DECIDE_E2E_EP_PATH}';\n")

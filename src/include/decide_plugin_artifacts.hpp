@@ -102,8 +102,7 @@ inline string DecidePluginSha256AssetName(const string &backend) {
 	return ::anofox::ggml_adapter::PluginSha256AssetName(backend);
 }
 
-//! Pull one file's digest out of a `sha256sum` sidecar. The sidecar may cover several files (the plugin and its
-//! private ORT core), so the line is matched by filename rather than assumed to be the first.
+//! Pull one file's digest out of a `sha256sum` sidecar. The sidecar may cover several files, so the line is matched by filename rather than assumed to be the first.
 //!
 //! Returns "" when the file is not listed, which callers must treat as a failure, not as "nothing to check": a
 //! sidecar that does not mention the file it is supposed to vouch for proves nothing about it.

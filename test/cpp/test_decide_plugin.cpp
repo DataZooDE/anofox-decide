@@ -203,7 +203,7 @@ TEST_CASE("plugin file names, sidecar parsing and the release URL", "[anofox_dec
 
 	const string a(64, 'a'), b(64, 'b');
 	const string upper = "ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789";
-	// A sidecar can vouch for several files (the plugin and its private ORT core): matched by name, a path and the
+	// A sidecar can vouch for several files: matched by name, a path and the
 	// '*' binary marker are tolerated, CRLF too, digests come back lower-case.
 	const string sidecar = a + "  libanofox_ggml-cuda_plugin.so\r\n" + b + " *build/out/libanofox_ggml-rocm_plugin.so\n" + upper +
 	                       "  other.so\n";

@@ -7,7 +7,6 @@
 
 #include <algorithm>
 
-#include <cstdlib>
 
 namespace duckdb {
 namespace anofox {

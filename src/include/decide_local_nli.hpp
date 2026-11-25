@@ -30,7 +30,7 @@ struct DecideQuestion;
 class DecideTokenizer;
 class DecideGgmlModel;
 
-// Padded batch in ORT feed order.
+// Padded batch in the graph's input order.
 struct DecideLocalBatch {
 	vector<int64_t> ids;
 	vector<int64_t> mask;
@@ -179,7 +179,7 @@ struct DecideLocalRequest {
 	const vector<DecideQuestion> *questions;
 };
 
-// Scores many requests against one local model in as few ORT runs as the token budget allows: every
+// Scores many requests against one local model in as few engine runs as the token budget allows: every
 // (text, question) row is collated exactly as DecideLocalScore does (so truncation behaves the same),
 // rows are sorted by length and cut into batches of at most `batch_tokens` padded tokens (batch size times
 // padded length; one row always fits), padded to the ladder 128..8192 (capped by the model window) and the

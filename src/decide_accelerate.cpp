@@ -100,55 +100,22 @@ bool RedirectAllowed(const string &start, const string &from, const string &to) 
 	return true;
 }
 
-//! Atomic .part-then-rename fetch. With a known size a partial file resumes with a Range request and the result
-//! must have exactly that many bytes; with -1 the file is fetched whole. Redirects are followed (a release
-//! asset is a 302 to a signed CDN URL, sent byte for byte). `not_found` is the message for a 404.
-//!
-//! A known-size download keeps a fixed .part name, so it resumes across sessions; a download of unknown size (every
-//! plugin and sidecar) is written to a name private to this process.
-void FetchFileImpl(const string &url0, const string &dest, int64_t expected_size, int timeout_ms, const string &function,
+//! Atomic .part-then-rename fetch of a whole file (a plugin or its sidecar; the sha256 check afterwards is what vouches for the
+//! bytes). Redirects are followed (a release asset is a 302 to a signed CDN URL, sent byte for byte). `not_found` is the message
+//! for a 404. The partial file has a name private to this process and is removed on every failure.
+void FetchFileImpl(const string &url0, const string &dest, const fs::path &part, int timeout_ms, const string &function,
                    const string &what, const string &not_found, const string &not_found_fix) {
-	const fs::path part = expected_size > 0 ? dest + ".part" : dest + ".part." + ProcessSuffix();
 	std::error_code ec;
-	const string retry = "CALL " + function + "(...); again (a partial download resumes where it stopped)";
-	idx_t have = 0;
-	if (fs::exists(part, ec)) {
-		have = fs::file_size(part, ec);
-		if (ec || expected_size < 0 || have > (idx_t)expected_size) {
-			fs::remove(part, ec);
-			have = 0;
-		}
-	}
-	if (expected_size > 0) {
-		const auto space = fs::space(fs::path(dest).parent_path(), ec);
-		if (!ec && space.available < ((idx_t)expected_size - have) + (64ull << 20)) {
-			Fail(function,
-			     "not enough free disk space for " + what + ": " + DecideFormatBytes((idx_t)expected_size - have) +
-			         " are needed and " + DecideFormatBytes(space.available) + " are free",
-			     "free some space or SET anofox_decide_ep_path = '<directory on a larger disk>';");
-		}
-	}
+	const string retry = "CALL " + function + "(...); again";
 	string url = url0;
 	int redirects = 0;
-	bool restarted = false;
-	idx_t offset = have;
 	while (true) {
 		std::ofstream out;
 		bool writing = false;
 		bool write_failed = false;
-		auto on_headers = [&](int status, const string &content_range) {
+		auto on_headers = [&](int status, const string &) {
 			writing = false;
-			if (status == 206) {
-				const string want = "bytes " + std::to_string(offset) + "-";
-				if (offset == 0 || content_range.compare(0, want.size(), want) != 0) {
-					return false; // the server answered a different range than asked for
-				}
-				out.open(part, std::ios::binary | std::ios::app);
-				writing = (bool)out;
-				return writing;
-			}
 			if (status == 200) {
-				offset = 0; // a full answer replaces any partial file
 				out.open(part, std::ios::binary | std::ios::trunc);
 				writing = (bool)out;
 				return writing;
@@ -164,22 +131,15 @@ void FetchFileImpl(const string &url0, const string &dest, int64_t expected_size
 				write_failed = true;
 				return false;
 			}
-			offset += n;
 			return true;
 		};
-		auto res = DecideHttpGet(url, (int64_t)offset, timeout_ms, on_headers, on_data);
+		auto res = DecideHttpGet(url, 0, timeout_ms, on_headers, on_data);
 		out.close();
 		if (write_failed) {
 			Fail(function, "cannot write to '" + part.string() + "' (disk full or not writable)",
 			     "free some space or SET anofox_decide_ep_path = '<another directory>'; then " + retry);
 		}
 		if (!res.transport_ok) {
-			if (res.error_kind == "refused" && offset > 0 && !restarted) {
-				restarted = true; // unexpected Range answer: discard the partial file and start over
-				fs::remove(part, ec);
-				offset = 0;
-				continue;
-			}
 			string fix = "check the network connection (behind a proxy, set HTTPS_PROXY); " + retry;
 			if (res.error_kind == "tls") {
 				fix = "the TLS certificate of " + HostOf(url) +
@@ -194,7 +154,6 @@ void FetchFileImpl(const string &url0, const string &dest, int64_t expected_size
 			}
 			const auto next = res.location[0] == '/' ? Origin(url) + res.location : res.location;
 			if (!RedirectAllowed(url0, url, next)) {
-				fs::remove(part, ec);
 				Fail(function,
 				     "refusing to follow a redirect from " + HostOf(url) + " to " + HostOf(next) + " while fetching " + what +
 				         (Scheme(next) != "https" ? " (not https)" : " (not a GitHub host)"),
@@ -203,32 +162,15 @@ void FetchFileImpl(const string &url0, const string &dest, int64_t expected_size
 			url = next;
 			continue;
 		}
-		if (res.status == 416 && !restarted) {
-			restarted = true;
-			fs::remove(part, ec);
-			offset = 0;
-			continue;
-		}
 		if (res.status == 404) {
 			Fail(function, not_found, not_found_fix);
 		}
-		if (res.status != 200 && res.status != 206) {
+		if (res.status != 200) {
 			Fail(function, "HTTP " + std::to_string(res.status) + " from " + HostOf(url) + " for " + what,
 			     res.status == 401 || res.status == 403 ? string("check the network or proxy; the files are public, no login is needed")
 			                                            : retry);
 		}
-		if (expected_size >= 0 && offset < (idx_t)expected_size) {
-			Fail(function, "the download of " + what + " stopped at " + DecideFormatBytes(offset) + " of " +
-			                   DecideFormatBytes((idx_t)expected_size),
-			     retry);
-		}
 		break;
-	}
-	if (expected_size >= 0 && offset != (idx_t)expected_size) {
-		fs::remove(part, ec);
-		Fail(function, what + " has " + std::to_string(offset) + " bytes, expected " + std::to_string(expected_size) +
-		                   "; the partial file was removed",
-		     "retry the call");
 	}
 	fs::remove(dest, ec);
 	fs::rename(part, dest, ec);
@@ -238,17 +180,15 @@ void FetchFileImpl(const string &url0, const string &dest, int64_t expected_size
 	}
 }
 
-//! FetchFileImpl, minus the leftovers: a failed fetch that wrote to a name private to this process removes it, so a
-//! failure leaves no junk next to the plugins.
-void FetchFile(const string &url0, const string &dest, int64_t expected_size, int timeout_ms, const string &function,
-               const string &what, const string &not_found, const string &not_found_fix) {
+//! FetchFileImpl, minus the leftovers: a failed fetch removes its partial file, so a failure leaves no junk next to the plugins.
+void FetchFile(const string &url0, const string &dest, int timeout_ms, const string &function, const string &what,
+               const string &not_found, const string &not_found_fix) {
+	const fs::path part = dest + ".part." + ProcessSuffix();
 	try {
-		FetchFileImpl(url0, dest, expected_size, timeout_ms, function, what, not_found, not_found_fix);
+		FetchFileImpl(url0, dest, part, timeout_ms, function, what, not_found, not_found_fix);
 	} catch (...) {
-		if (expected_size <= 0) {
-			std::error_code ec;
-			fs::remove(dest + ".part." + ProcessSuffix(), ec);
-		}
+		std::error_code ec;
+		fs::remove(part, ec);
 		throw;
 	}
 }
@@ -309,7 +249,7 @@ void VerifyAgainstSidecar(const DecideRuntimeArtifact &artifact, const string &c
 		const bool cached = attempt == 0 && fs::exists(sidecar_path, ec);
 		if (!cached) {
 			try {
-				FetchFile(artifact.sidecar_url, sidecar_path, -1, timeout_ms, function,
+				FetchFile(artifact.sidecar_url, sidecar_path, timeout_ms, function,
 				          "the checksum of the '" + artifact.backend + "' plugin",
 				          "the release " + string(DECIDE_PLUGIN_RELEASE_TAG) + " has no checksum file '" +
 				              DecidePluginSha256AssetName(artifact.backend) + "' for the '" + artifact.backend + "' plugin",
@@ -425,7 +365,7 @@ vector<DecideRuntimeFile> DecideInstallRuntime(ClientContext &context, const Dec
 		// matched. Every failure on the way deletes it.
 		const auto quarantine = plugin_path + ".verify." + ProcessSuffix();
 		try {
-			FetchFile(artifact.plugin_url, quarantine, -1, timeout_ms, function,
+			FetchFile(artifact.plugin_url, quarantine, timeout_ms, function,
 			          "the '" + artifact.backend + "' plugin",
 			          "the release " + string(DECIDE_PLUGIN_RELEASE_TAG) + " has no '" + artifact.plugin_name +
 			              "' asset: this release was published without GPU plugins",
@@ -650,12 +590,9 @@ unique_ptr<GlobalTableFunctionState> AccelerateInit(ClientContext &context, Tabl
 	} else {
 		string detail = "the plugin at " + plugin_path + " cannot be used: " +
 		                (!probe.exists ? string("it is missing") : probe.problem) + ".";
-		if (probe.problem.find("libhip") != string::npos || probe.problem.find("librocblas") != string::npos) {
-			detail += " ROCm is not installed: install ROCm (HIP, hipBLAS and rocBLAS), then run CALL decide_accelerate(); again.";
-		} else if (probe.problem.find("libcuda") != string::npos) {
-			detail += " The NVIDIA driver is missing (it provides libcuda.so.1, the only library the CUDA plugin needs).";
-		} else if (probe.problem.find("libmlx") != string::npos) {
-			detail += " Apple MLX is not installed: brew install mlx mlx-c, then run CALL decide_accelerate(); again.";
+		const auto install = probe.exists ? DecideMissingRuntimeHint(backend, probe.problem) : string();
+		if (!install.empty()) {
+			detail += " A runtime library it links is missing: " + install + ", then run CALL decide_accelerate(); again.";
 		}
 		add("verify", "failed", detail + " Scoring continues on the CPU.");
 	}

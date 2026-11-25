@@ -9,7 +9,7 @@
 #              the reference (ONNX Runtime 1.29 in decide v2026.11.24, captured by tools/e2e/make_local_e2e.py): probabilities to 1e-4 and
 #              2e-3 in log-odds, scores to 1e-4, labels exactly where the reference is not a near tie.
 #
-#              Runs on the ggml engine on the CPU (anofox_decide_device = 'cpu') and checks that it, and only it, answered.
+#              Runs on the GPU plugin of DECIDE_E2E_DEVICE and checks that it, and only it, answered.
 #              Needs the weights in the default cache:
 #                CALL decide_download('julia-1'); CALL decide_download('laya-multilingual'); CALL decide_download('laya-typed-decisions');
 #                DECIDE_REAL_WEIGHTS=1 ./build/release/test/unittest test/sql/decide_local_e2e.test

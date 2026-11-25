@@ -28,13 +28,20 @@ public:
 	unique_ptr<DecideLoadedWeights> weights; // catalog models: the safetensors the external initializers point into
 	std::unordered_map<string, std::pair<const float *, size_t>> by_name;
 	string what;
+	bool bundled = false; // a catalog graph that ships with the extension (the user cannot export it again)
 	unique_ptr<ga::GgmlExecutor> executor;
 };
 
 namespace {
 
-//! What a user can do when the engine cannot run a graph: the exporter's graphs use only ops it runs.
-const char *kEngineRemedy = "export the model with tools/export_julia, or report the model at https://github.com/DataZooDE/anofox-decide/issues";
+//! What a user can do when the engine cannot run a graph. Their own graph: the exporter's graphs use only ops the engine runs. A catalog
+//! graph ships with the extension, so a failure there is ours.
+const char *kUserGraphRemedy =
+    "export the model with tools/export_julia; if it came from there, report the model at https://github.com/DataZooDE/anofox-decide/issues";
+const char *kBundledGraphRemedy = "report it at https://github.com/DataZooDE/anofox-decide/issues (the graph ships with the extension)";
+const char *Remedy(bool bundled) {
+	return bundled ? kBundledGraphRemedy : kUserGraphRemedy;
+}
 const char *kExportFix = "export the model again with tools/export_julia (see "
                          "https://github.com/DataZooDE/anofox-decide/blob/main/docs/api/03-local-models.md#your-own-exported-model) and "
                          "register the .onnx file it writes";
@@ -47,12 +54,12 @@ bool IsMemory(const std::exception &e) {
 	return m.find("bad_alloc") != string::npos || m.find("out of memory") != string::npos || m.find("failed to allocate") != string::npos;
 }
 
-[[noreturn]] void ThrowLoadError(const std::exception &e, const string &what, const string &function) {
+[[noreturn]] void ThrowLoadError(const std::exception &e, const string &what, const string &function, bool bundled) {
 	if (IsMemory(e)) {
 		throw IOException(DecideMsg(function, "not enough memory to load the graph '" + what + "' (" + e.what() + ")",
 		                            "close other programs or use a machine with more memory; local models are held in memory while they run"));
 	}
-	throw InvalidInputException(DecideMsg(function, "the graph '" + what + "' cannot run on the ggml engine (" + e.what() + ")", kEngineRemedy));
+	throw InvalidInputException(DecideMsg(function, "the graph '" + what + "' cannot run on the ggml engine (" + e.what() + ")", Remedy(bundled)));
 }
 
 void RequireCpu(const string &function) {
@@ -63,14 +70,14 @@ void RequireCpu(const string &function) {
 	}
 }
 
-void RequireOps(const onnx::Graph &graph, const string &what, const string &function) {
+void RequireOps(const onnx::Graph &graph, const string &what, const string &function, bool bundled) {
 	vector<string> ops;
 	for (const auto &n : graph.nodes) {
 		ops.push_back(n.op_type);
 	}
 	const auto refusal = ga::GgmlRefusal(ops, "");
 	if (!refusal.empty()) {
-		throw InvalidInputException(DecideMsg(function, "the graph '" + what + "' cannot run on the ggml engine: " + refusal, kEngineRemedy));
+		throw InvalidInputException(DecideMsg(function, "the graph '" + what + "' cannot run on the ggml engine: " + refusal, Remedy(bundled)));
 	}
 }
 
@@ -92,7 +99,7 @@ shared_ptr<DecideGgmlModel> Finish(shared_ptr<DecideGgmlModel> model, int thread
 	try {
 		model->executor = make_uniq<ga::GgmlExecutor>(model->graph, std::move(config));
 	} catch (const std::exception &e) {
-		ThrowLoadError(e, model->what, function);
+		ThrowLoadError(e, model->what, function, model->bundled);
 	}
 	return model;
 }
@@ -135,7 +142,7 @@ shared_ptr<DecideGgmlModel> DecideGgmlOpenFull(string bytes, const string &what,
 	try {
 		model->graph = onnx::ParseModelBytes(reinterpret_cast<const uint8_t *>(bytes.data()), bytes.size(), what);
 	} catch (const std::bad_alloc &e) {
-		ThrowLoadError(e, what, function);
+		ThrowLoadError(e, what, function, false);
 	} catch (const std::exception &e) {
 		throw InvalidInputException(DecideMsg(function, "the graph '" + what + "' is not a readable ONNX model (" + e.what() + ")",
 		                                      string("pass the .onnx file the exporter wrote; a weights file (.safetensors), a text file or "
@@ -144,7 +151,7 @@ shared_ptr<DecideGgmlModel> DecideGgmlOpenFull(string bytes, const string &what,
 	}
 	string().swap(bytes); // the file's bytes are no longer needed: halve the load peak of a large model
 	DecideRequireGraphInputs(DecideGgmlInputs(*model), required_inputs, function, what);
-	RequireOps(model->graph, what, function);
+	RequireOps(model->graph, what, function, false);
 	return Finish(std::move(model), threads, function);
 }
 
@@ -154,20 +161,21 @@ shared_ptr<DecideGgmlModel> DecideGgmlOpenWeightFree(const void *graph, idx_t si
 	RequireCpu(function);
 	auto model = make_shared_ptr<DecideGgmlModel>();
 	model->what = what;
+	model->bundled = true;
 	try {
 		model->graph = onnx::ParseModelBytes(static_cast<const uint8_t *>(graph), size, what);
 	} catch (const std::exception &e) {
 		throw InternalException("anofox_decide: the embedded graph '%s' cannot be read: %s", what, e.what());
 	}
 	DecideRequireGraphInputs(DecideGgmlInputs(*model), required_inputs, function, what);
-	RequireOps(model->graph, what, function);
+	RequireOps(model->graph, what, function, true);
 	model->weights = std::move(weights);
 	auto &w = *model->weights;
 	for (idx_t i = 0; i < w.names.size(); i++) {
 		model->by_name[w.names[i]] = {static_cast<const float *>(w.data[i]), static_cast<size_t>(w.bytes[i] / sizeof(float))};
 	}
-	// Every external initializer of the graph must be served, with the element count its shape needs: checked here, at load (as the ONNX
-	// Runtime path does), not when the first query compiles the graph.
+	// Every external initializer of the graph must be served, with the element count its shape needs: checked here, at load, not when the
+	// first query compiles the graph.
 	for (const auto &t : model->graph.initializers) {
 		const bool inline_data = !t.raw.empty() || !t.floats.empty() || !t.int64s.empty() || !t.int32s.empty();
 		if (inline_data || t.data_type != 1) {
@@ -229,7 +237,7 @@ vector<vector<float>> DecideGgmlScore(DecideGgmlModel &model, const DecideLocalB
 			                            "anofox_decide_max_length"));
 		}
 		throw IOException(DecideMsg(function, "scoring with the graph '" + model.what + "' failed in the ggml engine (" + e.what() + ")",
-		                            kEngineRemedy));
+		                            Remedy(model.bundled)));
 	}
 	const auto it = out.find("scores");
 	if (it == out.end() || it->second.shape.size() != 2 || it->second.shape[0] != batch.batch || it->second.shape[1] != batch.markers) {

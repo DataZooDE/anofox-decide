@@ -74,7 +74,7 @@ TEST_CASE("local session runs the tiny fixture graph", "[anofox_decide][local]")
 	Connection con(db);
 	auto session = DecideLocalSession::Open(*con.context, "test/fixtures/julia1_tiny.onnx");
 	REQUIRE(session->GraphPath() == "test/fixtures/julia1_tiny.onnx");
-	// Same path returns the cached session (one ORT session per database).
+	// Same path returns the cached session (one session per database).
 	REQUIRE(DecideLocalSession::Open(*con.context, "test/fixtures/julia1_tiny.onnx").get() == session.get());
 
 	DecideLocalBatch batch;
@@ -678,6 +678,7 @@ TEST_CASE("local ggml engine: the tiny fixtures score like ONNX Runtime did on b
 	auto compare = [&](const std::function<shared_ptr<DecideLocalSession>(Connection &)> &open, const vector<vector<float>> &ort) {
 		DuckDB db(nullptr);
 		Connection con(db);
+		REQUIRE(!con.Query("SET anofox_decide_device = 'cpu'")->HasError()); // an installed plugin must not serve the CPU check
 		auto session = open(con);
 		REQUIRE(session->Engine() == "ggml");
 		auto ggml = session->Score(batch);

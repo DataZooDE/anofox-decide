@@ -62,7 +62,7 @@ struct DecideLocalCache : public ObjectCacheEntry {
 	optional_idx GetEstimatedCacheMemory() const override {
 		return optional_idx(sessions.Bytes());
 	}
-	//! One session per (model, variant): built once outside any shared lock, and a new variant (another thread count, engine or
+	//! One session per (model, variant): built once outside any shared lock, and a new variant (another thread count or
 	//! device) replaces the model's old one (see decide_keyed_cache.hpp).
 	DecideKeyedCache<DecideLocalSession, shared_ptr<DecideLocalSession>> sessions;
 	std::mutex lock; // tokenizers and Laya configs (small, quick to load)
@@ -340,7 +340,9 @@ shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, 
 		request.graph_data = graph.data;
 		request.graph_size = graph.size;
 		request.weights = DecideLoadWeights(gpu_map, entry.weights_path, entry.id, function.c_str(), /*keep_16bit=*/true);
-		const idx_t host_bytes = WeightBytes(*request.weights); // the session keeps the host copy (see the plugin loader)
+		// What the session holds in host memory: the checkpoint itself leaves the resident set once the plugin has it (the plugin
+		// loader), only an arena of transposed or upcast tensors stays.
+		const idx_t host_bytes = request.weights->arena_bytes;
 		request.model = entry.id;
 		request.backend = device.backend;
 		request.arch = device.arch;
