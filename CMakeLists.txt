@@ -64,7 +64,6 @@ set(EXTENSION_SOURCES
         src/decide_tokenizer.cpp
         src/decide_local_nli.cpp
         src/decide_local_ggml.cpp
-        src/decide_ort_errors.cpp
         src/decide_local_validate.cpp
         src/decide_metrics.cpp
         src/decide_secret.cpp

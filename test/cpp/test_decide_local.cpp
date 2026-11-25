@@ -2,10 +2,10 @@
 #include "anofox_ggml_adapter/devices.hpp"
 #include "anofox_decide_extension.hpp"
 #include "decide_keyed_cache.hpp"
+#include "decide_local_ggml.hpp"
 #include "decide_local_nli.hpp"
 #include "decide_local_validate.hpp"
 #include "decide_local_weights.hpp"
-#include "decide_ort_errors.hpp"
 #include "decide_provider.hpp"
 #include "decide_remote.hpp"
 #include "decide_tokenizer.hpp"
@@ -211,7 +211,6 @@ TEST_CASE("SET threads takes effect on the next call: the ggml session is rebuil
 	DuckDB db(nullptr);
 	db.LoadStaticExtension<AnofoxDecideExtension>();
 	Connection con(db);
-	REQUIRE_FALSE(con.Query("SET anofox_decide_local_engine = 'ggml'")->HasError());
 	REQUIRE_FALSE(con.Query("SELECT decide_register_model('tiny-local', 'local', 'test/fixtures/julia1_tiny.onnx', "
 	                        "'test/fixtures/tiny_tokenizer.json')")->HasError());
 	const string q = "SELECT decide_probability('ab ab', 'y?', model := 'tiny-local')";
@@ -448,7 +447,7 @@ string OpenError(Connection &con, const string &path, const char *function = "de
 
 } // namespace
 
-TEST_CASE("ONNX Runtime failures while opening a graph are mapped to project errors", "[anofox_decide][local]") {
+TEST_CASE("a graph that cannot be opened is reported in the project's error shape", "[anofox_decide][local]") {
 	DuckDB db(nullptr);
 	Connection con(db);
 	SECTION("a text file is not a readable model") {
@@ -490,27 +489,7 @@ TEST_CASE("ONNX Runtime failures while opening a graph are mapped to project err
 	}
 }
 
-TEST_CASE("ORT error mapping is keyed on the error code and ends with a Fix", "[anofox_decide][local]") {
-	string kind;
-	auto msg = DecideOrtErrorMessage(7 /* ORT_INVALID_PROTOBUF */, "Load model from x failed:Protobuf parsing failed.\nsecond line",
-	                                 "decide_register_model", "x.onnx", DecideOrtStage::LOAD, kind);
-	REQUIRE(kind == "invalid");
-	REQUIRE_THAT(msg, Contains("decide_register_model: the graph 'x.onnx' is not a readable ONNX model"));
-	REQUIRE_THAT(msg, Contains("Protobuf parsing failed."));
-	REQUIRE_THAT(msg, !Contains("second line"));
-	REQUIRE_THAT(msg, Contains(" Fix: "));
-	msg = DecideOrtErrorMessage(1, "std::bad_alloc", "decide_probability", "x.onnx", DecideOrtStage::RUN, kind);
-	REQUIRE(kind == "memory");
-	REQUIRE_THAT(msg, Contains("ran out of memory scoring with the graph 'x.onnx'"));
-	REQUIRE_THAT(msg, Contains("Fix: score fewer questions per call"));
-	msg = DecideOrtErrorMessage(2, "Unsupported model IR version: 99", "decide_doctor", "x.onnx", DecideOrtStage::LOAD,
-	                            kind);
-	REQUIRE_THAT(msg, Contains("ONNX version this build of ONNX Runtime does not support"));
-	REQUIRE_THAT(msg, Contains("Fix: export it again with the default opset (17)"));
-	msg = DecideOrtErrorMessage(2, "Invalid Feed Input Name:foo", "decide_probability", "x.onnx", DecideOrtStage::RUN,
-	                            kind);
-	REQUIRE(kind == "invalid");
-	REQUIRE_THAT(msg, Contains("ONNX Runtime rejected the input of the graph 'x.onnx'"));
+TEST_CASE("the input contract check names the missing and the unused inputs", "[anofox_decide][local]") {
 	REQUIRE_THROWS_WITH(DecideRequireGraphInputs({"x", "attention_mask"}, {"input_ids", "attention_mask"},
 	                                             "decide_probability", "x.onnx"),
 	                    Contains("has the inputs 'x', 'attention_mask', but a local model is fed 'input_ids', "
@@ -670,49 +649,23 @@ TEST_CASE("local end-to-end over real Laya typed-decisions", "[anofox_decide][lo
 	REQUIRE(std::fabs(s2[0].expected - 0.1438) < 2e-4);
 }
 
-// The engine switch (anofox_decide_local_engine) reaches EVERY way a session is opened, including the graph-path
-// overload the tests and the registered-model path use, and a mistyped ANOFOX_DECIDE_LOCAL_ENGINE is an error rather
-// than a silent fall back to ONNX Runtime (a "ggml" run that is really ONNX Runtime would prove nothing).
-TEST_CASE("local engine switch: every session open honours it, and a bad environment value is refused", "[anofox_decide][local]") {
-	SECTION("the graph-path overload") {
-		DuckDB db(nullptr);
-		Connection con(db);
-		REQUIRE(!con.Query("SET anofox_decide_local_engine = 'ggml'")->HasError());
-		auto ggml = DecideLocalSession::Open(*con.context, "test/fixtures/julia1_tiny.onnx");
-		REQUIRE(ggml->Engine() == "ggml");
-		REQUIRE(!con.Query("SET anofox_decide_local_engine = 'ort'")->HasError());
-		auto ort = DecideLocalSession::Open(*con.context, "test/fixtures/julia1_tiny.onnx");
-		REQUIRE(ort->Engine() == "ort");
-		REQUIRE(ort.get() != ggml.get()); // one session per engine, never the other engine's
-	}
-	SECTION("a mistyped environment value") {
-		const char *old = std::getenv("ANOFOX_DECIDE_LOCAL_ENGINE");
-		struct Restore {
-			bool had;
-			string value;
-			~Restore() {
-				SetEnv("ANOFOX_DECIDE_LOCAL_ENGINE", had ? value.c_str() : nullptr); // also when a REQUIRE below fails
-			}
-		} restore {old != nullptr, old ? old : ""};
-		SetEnv("ANOFOX_DECIDE_LOCAL_ENGINE", "gglm");
-		{
-			DuckDB db(nullptr);
-			Connection con(db);
-			auto r = con.Query("SELECT decide_register_model('tiny-local', 'local', 'test/fixtures/julia1_tiny.onnx', "
-			                   "'test/fixtures/tiny_tokenizer.json')");
-			REQUIRE(!r->HasError());
-			r = con.Query("SELECT decide_probability('The bill is wrong.', 'A refund is requested.', model := 'tiny-local')");
-			REQUIRE(r->HasError());
-			REQUIRE_THAT(r->GetError(), Contains("ANOFOX_DECIDE_LOCAL_ENGINE"));
-			REQUIRE_THAT(r->GetError(), Contains("'gglm'"));
-		}
-	}
+// ONNX Runtime is gone: every in-process session runs on the ggml engine, and the development switch that chose between the two
+// (anofox_decide_local_engine, never released) no longer exists.
+TEST_CASE("local engine: every session runs on ggml, and the removed engine switch is unknown", "[anofox_decide][local]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto session = DecideLocalSession::Open(*con.context, "test/fixtures/julia1_tiny.onnx");
+	REQUIRE(session->Engine() == "ggml");
+	auto r = con.Query("SET anofox_decide_local_engine = 'ort'"); // the removed switch
+	REQUIRE(r->HasError());
+	REQUIRE_THAT(r->GetError(), Contains("anofox_decide_local_engine")); // unknown: removed
 }
 
 // ggml against ONNX Runtime on the random-init fixtures, both load paths: a full graph (inline weights) and a weight-free graph with the
 // safetensors injected by name (how the catalog models load). Raw scores must agree to float rounding; this is the parity check that
-// runs without real weights.
-TEST_CASE("local ggml engine: the tiny fixtures score like ONNX Runtime on both load paths", "[anofox_decide][local]") {
+// runs without real weights. The reference is ONNX Runtime 1.29's output on this batch, recorded before ONNX Runtime was removed
+// (anofox-decide 2432b2f); -10000 is the head's score for a masked marker.
+TEST_CASE("local ggml engine: the tiny fixtures score like ONNX Runtime did on both load paths", "[anofox_decide][local]") {
 	DecideLocalBatch batch;
 	batch.batch = 2;
 	batch.seq = 8;
@@ -722,12 +675,9 @@ TEST_CASE("local ggml engine: the tiny fixtures score like ONNX Runtime on both 
 	batch.marker_pos = {1, 2, 1, 2};
 	batch.marker_mask = {1, 1, 1, 0};
 	batch.qtype = {0, 2};
-	auto compare = [&](const std::function<shared_ptr<DecideLocalSession>(Connection &)> &open) {
+	auto compare = [&](const std::function<shared_ptr<DecideLocalSession>(Connection &)> &open, const vector<vector<float>> &ort) {
 		DuckDB db(nullptr);
 		Connection con(db);
-		REQUIRE(!con.Query("SET anofox_decide_local_engine = 'ort'")->HasError());
-		auto ort = open(con)->Score(batch);
-		REQUIRE(!con.Query("SET anofox_decide_local_engine = 'ggml'")->HasError());
 		auto session = open(con);
 		REQUIRE(session->Engine() == "ggml");
 		auto ggml = session->Score(batch);
@@ -741,7 +691,8 @@ TEST_CASE("local ggml engine: the tiny fixtures score like ONNX Runtime on both 
 		}
 	};
 	SECTION("a full graph with its weights inside (a user-registered model)") {
-		compare([](Connection &con) { return DecideLocalSession::Open(*con.context, "test/fixtures/julia1_tiny.onnx"); });
+		compare([](Connection &con) { return DecideLocalSession::Open(*con.context, "test/fixtures/julia1_tiny.onnx"); },
+		        {{0.312846601f, 0.134577602f}, {0.144864768f, -10000.0f}});
 	}
 	SECTION("a weight-free graph with injected safetensors (a catalog model)") {
 		unordered_map<string, string> res;
@@ -762,7 +713,8 @@ TEST_CASE("local ggml engine: the tiny fixtures score like ONNX Runtime on both 
 		entry.bundled_graph = "graph_test_tiny";
 		entry.bundled_map = "tensor_map_test_tiny.json";
 		entry.weights_path = "test/fixtures/local_tiny/tiny.safetensors";
-		compare([&](Connection &con) { return DecideLocalSession::Open(*con.context, entry); });
+		compare([&](Connection &con) { return DecideLocalSession::Open(*con.context, entry); },
+		        {{0.312853515f, 0.134633958f}, {0.14479211f, -10000.0f}});
 	}
 }
 
@@ -838,7 +790,6 @@ TEST_CASE("local sessions: SET threads replaces the model's session instead of a
 	DuckDB db(nullptr);
 	db.LoadStaticExtension<AnofoxDecideExtension>();
 	Connection con(db);
-	REQUIRE_FALSE(con.Query("SET anofox_decide_local_engine = 'ggml'")->HasError());
 	REQUIRE_FALSE(con.Query("SELECT decide_register_model('tiny-cache', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json')")->HasError());
 	for (int threads : {2, 3, 2}) {
 		REQUIRE_FALSE(con.Query("SET threads = " + std::to_string(threads))->HasError());
@@ -856,7 +807,6 @@ TEST_CASE("Ctrl-C stops a chunk of local texts between model runs", "[anofox_dec
 	DuckDB db(nullptr);
 	db.LoadStaticExtension<AnofoxDecideExtension>();
 	Connection con(db);
-	REQUIRE_FALSE(con.Query("SET anofox_decide_local_engine = 'ggml'")->HasError());
 	REQUIRE_FALSE(con.Query("SELECT decide_register_model('tiny-int', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json')")->HasError());
 	REQUIRE_FALSE(con.Query("CREATE TABLE t AS SELECT 'ticket ' || i || ' ' || repeat('ab cd ef ', 40 + i % 50) AS text FROM range(2048) r(i)")->HasError());
 	const string q = "SELECT sum(decide_probability(text, 'y?', model := 'tiny-int')) FROM t";
@@ -882,7 +832,6 @@ TEST_CASE("local shapes: questions with different option counts and texts of nea
 	DuckDB db(nullptr);
 	db.LoadStaticExtension<AnofoxDecideExtension>();
 	Connection con(db);
-	REQUIRE_FALSE(con.Query("SET anofox_decide_local_engine = 'ggml'")->HasError());
 	REQUIRE_FALSE(con.Query("SELECT decide_register_model('tiny-shapes', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json')")->HasError());
 	for (const char *q : {"SELECT decide_choice('ab ab', 'pick?', ['a', 'b'], model := 'tiny-shapes')",
 	                      "SELECT decide_choice('ab ab ab', 'pick?', ['a', 'b', 'c'], model := 'tiny-shapes')",

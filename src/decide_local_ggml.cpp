@@ -2,7 +2,6 @@
 
 #include "decide_errors.hpp"
 #include "decide_local_nli.hpp"
-#include "decide_ort_errors.hpp"
 #include "decide_local_weights.hpp"
 
 #include "anofox_ggml_adapter/cpu_support.hpp"
@@ -12,6 +11,7 @@
 
 #include "duckdb/common/exception.hpp"
 
+#include <algorithm>
 #include <new>
 #include <unordered_map>
 
@@ -33,8 +33,8 @@ public:
 
 namespace {
 
-//! What a user can do when the ggml engine cannot run a graph (until ONNX Runtime is removed, the way back to it).
-const char *kEngineRemedy = "SET anofox_decide_local_engine = 'ort'; and please report the model";
+//! What a user can do when the engine cannot run a graph: the exporter's graphs use only ops it runs.
+const char *kEngineRemedy = "export the model with tools/export_julia, or report the model at https://github.com/DataZooDE/anofox-decide/issues";
 const char *kExportFix = "export the model again with tools/export_julia (see "
                          "https://github.com/DataZooDE/anofox-decide/blob/main/docs/api/03-local-models.md#your-own-exported-model) and "
                          "register the .onnx file it writes";
@@ -47,7 +47,6 @@ bool IsMemory(const std::exception &e) {
 	return m.find("bad_alloc") != string::npos || m.find("out of memory") != string::npos || m.find("failed to allocate") != string::npos;
 }
 
-//! The same messages as the ONNX Runtime path, so a user sees one wording whatever the engine.
 [[noreturn]] void ThrowLoadError(const std::exception &e, const string &what, const string &function) {
 	if (IsMemory(e)) {
 		throw IOException(DecideMsg(function, "not enough memory to load the graph '" + what + "' (" + e.what() + ")",
@@ -99,6 +98,34 @@ shared_ptr<DecideGgmlModel> Finish(shared_ptr<DecideGgmlModel> model, int thread
 }
 
 } // namespace
+
+void DecideRequireGraphInputs(const vector<string> &actual, const vector<string> &expected, const string &function,
+                              const string &graph_path) {
+	vector<string> missing, unexpected;
+	for (auto &name : expected) {
+		if (std::find(actual.begin(), actual.end(), name) == actual.end()) {
+			missing.push_back(name);
+		}
+	}
+	for (auto &name : actual) {
+		if (std::find(expected.begin(), expected.end(), name) == expected.end()) {
+			unexpected.push_back(name);
+		}
+	}
+	if (missing.empty() && unexpected.empty()) {
+		return;
+	}
+	string what = "the graph '" + graph_path + "' has the inputs " + DecideJoinQuoted(actual) +
+	              ", but a local model is fed " + DecideJoinQuoted(expected);
+	if (!missing.empty()) {
+		what += "; missing " + DecideJoinQuoted(missing);
+	}
+	if (!unexpected.empty()) {
+		what += "; not used " + DecideJoinQuoted(unexpected);
+	}
+	throw InvalidInputException(DecideMsg(function, what,
+	                                      "this is not a scores graph from tools/export_julia; " + string(kExportFix)));
+}
 
 shared_ptr<DecideGgmlModel> DecideGgmlOpenFull(string bytes, const string &what, const vector<string> &required_inputs, int threads,
                                                const string &function) {

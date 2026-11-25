@@ -34,6 +34,11 @@ shared_ptr<DecideGgmlModel> DecideGgmlOpenWeightFree(const void *graph, idx_t si
 //! The graph's inputs (initializers excluded), for the input-contract check.
 vector<string> DecideGgmlInputs(const DecideGgmlModel &model);
 
+//! Compare a graph's input names with the ones the local scorer feeds. Throws InvalidInputException naming the missing and the unused
+//! inputs when they differ (as sets); returns normally when they match.
+void DecideRequireGraphInputs(const vector<string> &actual, const vector<string> &expected, const string &function,
+                              const string &graph_path);
+
 //! Graphs the engine compiled for this model so far (one per distinct input shape; a diagnostic).
 int64_t DecideGgmlCompiles(const DecideGgmlModel &model);
 

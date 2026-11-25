@@ -7,7 +7,7 @@
 #              Needs the catalog models downloaded and the three exports under DECIDE_EXPORTS_DIR:
 #                <dir>/out/<model>/julia1.onnx (+ rl_agent_config.json for Laya), <dir>/weights/... tokenizers
 #                (tools/export_julia/README.md, "Export"; docs/GGML_DECIDE.md lists the exact commands).
-#                DECIDE_REAL_WEIGHTS=1 DECIDE_EXPORTS_DIR=<dir> ANOFOX_DECIDE_LOCAL_ENGINE=ort|ggml \
+#                DECIDE_REAL_WEIGHTS=1 DECIDE_EXPORTS_DIR=<dir> \
 #                  ./build/release/test/unittest test/sql/decide_local_e2e_registered.test
 # group: [anofox_decide]
 
@@ -17,15 +17,13 @@ require-env DECIDE_REAL_WEIGHTS
 
 require-env DECIDE_EXPORTS_DIR
 
-require-env ANOFOX_DECIDE_LOCAL_ENGINE
-
 require-env DECIDE_CACHE_DIR
 
 statement ok
 LOAD anofox_decide
 
 statement ok
-SET anofox_decide_local_engine = '${ANOFOX_DECIDE_LOCAL_ENGINE}';
+SET anofox_decide_device = 'cpu';
 
 # DuckDB's unittest gives every test its own HOME, so the downloaded models are found through DECIDE_CACHE_DIR
 # (scripts/e2e_local.sh sets it to ~/.cache/anofox-decide)
@@ -102,9 +100,9 @@ FROM (SELECT *, greatest(least(decide_probability(text, 'A refund is requested.'
 ----
 0	0	0
 
-# both load paths ran on the engine under test, and nothing on another engine
+# both load paths ran on the ggml engine, and nothing elsewhere
 query II
-SELECT count(*) FILTER (engine = '${ANOFOX_DECIDE_LOCAL_ENGINE}' AND runs > 0), count(*) FILTER (engine <> '${ANOFOX_DECIDE_LOCAL_ENGINE}')
+SELECT count(*) FILTER (engine = 'ggml' AND runs > 0), count(*) FILTER (engine <> 'ggml')
 FROM __anofox_decide_local_sessions()
 ----
 6	0

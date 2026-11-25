@@ -6,14 +6,13 @@
 #              laya-typed-decisions) with their real weights, short tickets and long threads (past the 128-token
 #              local-attention window): refund probability, team routing, frustration score, a thresholded decision,
 #              several questions at once (decide_answers, decide_many) and cross-row batching. Every answer must match
-#              the reference engine (ONNX Runtime, captured by tools/e2e/make_local_e2e.py): probabilities to 1e-4 and
+#              the reference (ONNX Runtime 1.29 in decide v2026.11.24, captured by tools/e2e/make_local_e2e.py): probabilities to 1e-4 and
 #              2e-3 in log-odds, scores to 1e-4, labels exactly where the reference is not a near tie.
 #
-#              Runs on the engine named by ANOFOX_DECIDE_LOCAL_ENGINE (required: a run that does not say which
-#              engine it tests proves nothing), and checks that this engine, and only it, answered.
+#              Runs on the ggml engine on the CPU (anofox_decide_device = 'cpu') and checks that it, and only it, answered.
 #              Needs the weights in the default cache:
 #                CALL decide_download('julia-1'); CALL decide_download('laya-multilingual'); CALL decide_download('laya-typed-decisions');
-#                DECIDE_REAL_WEIGHTS=1 ANOFOX_DECIDE_LOCAL_ENGINE=ort|ggml ./build/release/test/unittest test/sql/decide_local_e2e.test
+#                DECIDE_REAL_WEIGHTS=1 ./build/release/test/unittest test/sql/decide_local_e2e.test
 #              Generated file: edit tools/e2e/make_local_e2e.py and regenerate, do not edit by hand.
 # group: [anofox_decide]
 

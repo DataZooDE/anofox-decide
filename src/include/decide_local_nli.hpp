@@ -1,10 +1,9 @@
 #pragma once
 
-// DecideLocalNli — Julia-1 local scoring (plan step 5).
+// DecideLocalNli — local scoring of the in-process models.
 //
-// Owns the ORT session cache, the data.sequence collation port, and the
-// softmax/answer mapping. onnxruntime_cxx_api.h is included ONLY by
-// decide_local_nli.cpp so ORT compiles exactly once.
+// Owns the session cache (the ggml engine on the CPU, a GPU plugin elsewhere), the data.sequence collation port, and the
+// softmax/answer mapping.
 //
 // Collation mirrors julia/data.py sequence() (non-strict: truncate, sanitize
 // mask tokens) and julia/typed.py question mapping: noul markers are the
@@ -106,11 +105,6 @@ int64_t DecideLocalTokenCount(ClientContext &context, const DecideModelEntry &en
 void DecideEnsureTokenizer(ClientContext &context, const string &path, const string &function);
 void DecideEnsureLayaConfig(ClientContext &context, const string &path, const string &function);
 
-// ORT session handle (per graph path, cached per database instance).
-//! The engine that runs local models (anofox_decide_local_engine): "ort" or "ggml". Throws, naming the fix, for a
-//! mistyped ANOFOX_DECIDE_LOCAL_ENGINE.
-string DecideLocalEngine(ClientContext &context, const string &function);
-
 //! The threads the ggml CPU engine runs a local model with: DuckDB's thread count, at most one per physical core (SMT siblings add
 //! no arithmetic and slow every op's barrier; measured 25-30% faster on the evaluation). Read when a session is created.
 int DecideLocalEngineThreads(ClientContext &context);
@@ -128,7 +122,7 @@ DecideShapePolicy DecideShapePolicyFor(const string &backend);
 
 class DecideLocalSession {
 public:
-	//! `function` is the user-facing function named in errors (ONNX Runtime failures go through DecideMapOrtError).
+	//! A session per graph path, cached per database instance. `function` is the user-facing function named in errors.
 	static shared_ptr<DecideLocalSession> Open(ClientContext &context, const string &graph_path,
 	                                           const char *function = "decide");
 	//! Catalog models: the embedded weight-free graph + the downloaded safetensors injected as initializers;
@@ -146,7 +140,7 @@ public:
 	//! Warms a shape bucket of a GPU backend that compiles per shape (a no-op on the CPU and on backends that do
 	//! not). Compiling can take minutes; the backend reports its progress itself.
 	void Precompile(int64_t batch, int64_t seq, int64_t markers, const char *function = "decide");
-	//! The GPU backend serving this session ("migraphx", "cuda", ...), "" on the CPU.
+	//! The GPU backend serving this session ("cuda", "rocm", "mlx"), "" on the CPU.
 	string PluginBackend() const;
 
 	const string &GraphPath() const {
@@ -155,7 +149,7 @@ public:
 	const string &Engine() const {
 		return engine;
 	}
-	//! Graphs its engine compiled so far (ggml; 0 for other engines): a diagnostic for the shape buckets.
+	//! Graphs the CPU engine compiled so far (0 for a plugin session): a diagnostic for the shape buckets.
 	int64_t Compiles() const;
 	int64_t Runs() const {
 		return runs.load();
@@ -167,7 +161,7 @@ private:
 	string graph_path;
 	string engine;
 	std::atomic<int64_t> runs {0};
-	shared_ptr<DecideGgmlModel> ggml; // the ggml engine's model (anofox_decide_local_engine = 'ggml'), else impl is ONNX Runtime
+	shared_ptr<DecideGgmlModel> ggml; // a CPU session's model; a GPU session has impl (its plugin) instead
 	struct Impl;
 	shared_ptr<Impl> impl;
 };

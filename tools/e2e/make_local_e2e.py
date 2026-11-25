@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Generate test/sql/decide_local_e2e.test: realistic support-ticket decisions on the three catalog models,
-with the expected answers captured from a reference build (the ONNX Runtime engine, before the ggml switch).
+with the expected answers captured from a reference build: decide v2026.11.24 or earlier, whose only engine is ONNX Runtime
+(formerly decide's engine; it was removed when the models moved to ggml).
 
 The tickets are written for this repository (no third-party data). Short tickets (20-60 tokens) and long ones
 (about 250-850 tokens: longer than ModernBERT's 128-token local-attention window, so the sliding-window layers
@@ -11,10 +12,12 @@ cross-row batching. julia-1 (8192-token window) also reads a ~3000-token thread.
 The test compares against the captured values: probabilities to 1e-4 absolute AND 2e-3 in log-odds (so a
 saturated 1e-8 cannot hide a wrong logit), scores to 1e-4, labels exactly where the reference has a clear margin
 (argmax margin and |p - 0.5| above 1e-3; closer calls are compared through their probabilities only). The engine
-under test is pinned by ANOFOX_DECIDE_LOCAL_ENGINE and proven by __anofox_decide_local_sessions().
+under test is the ggml engine on the CPU, proven by __anofox_decide_local_sessions().
 
-  python3 tools/e2e/make_local_e2e.py --duckdb build/release/duckdb \
-      --extension build/release/extension/anofox_decide/anofox_decide.duckdb_extension
+  python3 tools/e2e/make_local_e2e.py --duckdb <a DuckDB CLI that loads it> \
+      --extension <the anofox_decide.duckdb_extension of v2026.11.24>
+
+The committed suites keep the values captured that way; --gpu-from derives the GPU suite without any reference build.
 
 The models must be downloaded (CALL decide_download(...)) into the default cache.
 """
@@ -142,9 +145,9 @@ def answers_sql(model, table):
 
 
 def run(duckdb, ext, sql):
-    # The reference is ONNX Runtime on the CPU, pinned here whatever ANOFOX_DECIDE_LOCAL_ENGINE or an installed GPU plugin says.
-    full = f"LOAD '{ext}';\nSET anofox_decide_local_engine = 'ort';\nSET anofox_decide_device = 'cpu';\n{sql}"
-    env = {k: v for k, v in os.environ.items() if k != "ANOFOX_DECIDE_LOCAL_ENGINE"}
+    # The reference build answers on the CPU, whatever GPU plugin is installed.
+    full = f"LOAD '{ext}';\nSET anofox_decide_device = 'cpu';\n{sql}"
+    env = dict(os.environ)
     out = subprocess.run([duckdb, "-unsigned", "-csv"], input=full, text=True, capture_output=True,
                          env={**env, "DATAZOO_DISABLE_TELEMETRY": "1"})
     if out.returncode != 0:
@@ -174,8 +177,8 @@ def gpu_variant(cpu_test):
         "#              DECIDE_E2E_EP_PATH), to the GPU bar: probabilities and scores within 1e-3 of ONNX Runtime on the CPU, labels\n"
         "#              exact where the reference is not a near tie, and every block served by the plugin. Below: the CPU suite's text.\n"
         "#              End-to-end support-ticket triage on the three in-process catalog models")
-    sub("require-env ANOFOX_DECIDE_LOCAL_ENGINE\n", "require-env DECIDE_E2E_DEVICE\n\nrequire-env DECIDE_E2E_EP_PATH\n")
-    sub("SET anofox_decide_local_engine = '${ANOFOX_DECIDE_LOCAL_ENGINE}';\n",
+    sub("require-env DECIDE_CACHE_DIR\n", "require-env DECIDE_E2E_DEVICE\n\nrequire-env DECIDE_E2E_EP_PATH\n\nrequire-env DECIDE_CACHE_DIR\n")
+    sub("SET anofox_decide_device = 'cpu';\n",
         "SET anofox_decide_device = '${DECIDE_E2E_DEVICE}';\n\nstatement ok\nSET anofox_decide_ep_path = '${DECIDE_E2E_EP_PATH}';\n")
     sub("CREATE MACRO same_p(a, b) AS coalesce(abs(a - b) <= 1e-4 AND\n"
         "    (a <= 0 OR a >= 1 OR b <= 0 OR b >= 1 OR abs(ln(a / (1 - a)) - ln(b / (1 - b))) <= 2e-3), false);",
@@ -184,12 +187,11 @@ def gpu_variant(cpu_test):
         "CREATE MACRO same_x(a, b) AS coalesce(abs(a - b) <= 1e-3, false);")
     sub("# the same probability: 1e-4 absolute and 2e-3 in log-odds (both sides strictly inside (0, 1)); NULL is never the same",
         "# the same probability on a GPU: 1e-3 absolute (the GPU bar); NULL is never the same")
-    old = ("SELECT count(*) FILTER (engine = '${ANOFOX_DECIDE_LOCAL_ENGINE}' AND runs > 0), count(*) FILTER (engine <> "
-           "'${ANOFOX_DECIDE_LOCAL_ENGINE}')")
+    old = "SELECT count(*) FILTER (engine = 'ggml' AND runs > 0), count(*) FILTER (engine <> 'ggml')"
     new = ("SELECT count(*) FILTER (engine = 'plugin:${DECIDE_E2E_DEVICE}' AND runs > 0), count(*) FILTER (engine <> "
            "'plugin:${DECIDE_E2E_DEVICE}')")
     assert out.count(old) == 3, out.count(old)
-    out = out.replace(old, new).replace("# the engine under test answered, and only it", "# the GPU plugin answered, and only it")
+    out = out.replace(old, new).replace("# the ggml engine answered, and only it", "# the GPU plugin answered, and only it")
     return out
 
 
@@ -300,9 +302,9 @@ JOIN {t} g USING (id)
 statement ok
 RESET anofox_decide_batch_tokens;
 
-# the engine under test answered, and only it
+# the ggml engine answered, and only it
 query II
-SELECT count(*) FILTER (engine = '${{ANOFOX_DECIDE_LOCAL_ENGINE}}' AND runs > 0), count(*) FILTER (engine <> '${{ANOFOX_DECIDE_LOCAL_ENGINE}}')
+SELECT count(*) FILTER (engine = 'ggml' AND runs > 0), count(*) FILTER (engine <> 'ggml')
 FROM __anofox_decide_local_sessions() WHERE model LIKE 'weights:graph_{model}|%'
 ----
 1	0
@@ -313,14 +315,13 @@ FROM __anofox_decide_local_sessions() WHERE model LIKE 'weights:graph_{model}|%'
 #              laya-typed-decisions) with their real weights, short tickets and long threads (past the 128-token
 #              local-attention window): refund probability, team routing, frustration score, a thresholded decision,
 #              several questions at once (decide_answers, decide_many) and cross-row batching. Every answer must match
-#              the reference engine (ONNX Runtime, captured by tools/e2e/make_local_e2e.py): probabilities to 1e-4 and
+#              the reference (ONNX Runtime 1.29 in decide v2026.11.24, captured by tools/e2e/make_local_e2e.py): probabilities to 1e-4 and
 #              2e-3 in log-odds, scores to 1e-4, labels exactly where the reference is not a near tie.
 #
-#              Runs on the engine named by ANOFOX_DECIDE_LOCAL_ENGINE (required: a run that does not say which
-#              engine it tests proves nothing), and checks that this engine, and only it, answered.
+#              Runs on the ggml engine on the CPU (anofox_decide_device = 'cpu') and checks that it, and only it, answered.
 #              Needs the weights in the default cache:
 #                CALL decide_download('julia-1'); CALL decide_download('laya-multilingual'); CALL decide_download('laya-typed-decisions');
-#                DECIDE_REAL_WEIGHTS=1 ANOFOX_DECIDE_LOCAL_ENGINE=ort|ggml ./build/release/test/unittest test/sql/decide_local_e2e.test
+#                DECIDE_REAL_WEIGHTS=1 ./build/release/test/unittest test/sql/decide_local_e2e.test
 #              Generated file: edit tools/e2e/make_local_e2e.py and regenerate, do not edit by hand.
 # group: [anofox_decide]
 
@@ -328,15 +329,13 @@ require anofox_decide
 
 require-env DECIDE_REAL_WEIGHTS
 
-require-env ANOFOX_DECIDE_LOCAL_ENGINE
-
 require-env DECIDE_CACHE_DIR
 
 statement ok
 LOAD anofox_decide
 
 statement ok
-SET anofox_decide_local_engine = '${{ANOFOX_DECIDE_LOCAL_ENGINE}}';
+SET anofox_decide_device = 'cpu';
 
 # DuckDB's unittest gives every test its own HOME, so the downloaded models are found through DECIDE_CACHE_DIR
 # (scripts/e2e_local.sh sets it to ~/.cache/anofox-decide)
