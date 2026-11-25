@@ -25,6 +25,9 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#ifndef _WIN32
+#include <sys/mman.h>
+#endif
 #include <mutex>
 #include <sstream>
 #include <thread>
@@ -890,4 +893,44 @@ TEST_CASE("weights for a GPU session stay 16-bit: read from the mapping, transpo
 	for (int i = 0; i < 6; i++) {
 		REQUIRE(t[i] == want_t[i]);
 	}
+}
+
+TEST_CASE("a mapped checkpoint's resident pages can be dropped and the data stays readable", "[anofox_decide][catalog][weights]") {
+	// A GPU plugin copies (or uploads) the weights at create, but the host keeps the mapped checkpoint for the session (the plugin ABI
+	// lets a plugin read it until destroy): its pages stayed resident, ~1.1-1.3 GB of a Laya MLX session on an M3. Dropping them keeps
+	// the mapping valid: a later read pages the bytes in again from the file.
+	const auto path = TempDir("resident") + "/w.bin";
+	std::string bytes(64 << 20, '\0');
+	for (size_t i = 0; i < bytes.size(); i++) {
+		bytes[i] = static_cast<char>(i * 131 % 251);
+	}
+	{
+		std::ofstream out(path, std::ios::binary);
+		out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+	}
+	auto file = DecideMappedFile::Open(path);
+	REQUIRE(file.Mapped());
+	volatile uint64_t sum = 0; // volatile: the reads must happen (an unused sum let the compiler drop the loop)
+	for (idx_t i = 0; i < file.Size(); i += 4096) {
+		sum = sum + file.Data()[i]; // touch every page
+	}
+#ifdef __linux__
+	// The process's resident pages (statm field 2), not the page cache: the file may stay cached, the process must stop holding it.
+	auto resident_pages = [] {
+		std::ifstream statm("/proc/self/statm");
+		uint64_t size = 0, resident = 0;
+		statm >> size >> resident;
+		return resident;
+	};
+	const auto before = resident_pages();
+	file.ReleaseResidentPages();
+	const auto after = resident_pages();
+	const uint64_t file_pages = file.Size() / 4096;
+	INFO("resident pages " << before << " -> " << after << ", the file is " << file_pages);
+	REQUIRE(before >= after + file_pages * 3 / 4);
+#else
+	file.ReleaseResidentPages();
+#endif
+	REQUIRE(std::memcmp(file.Data(), bytes.data(), bytes.size()) == 0); // still readable: paged in again from the file
+	(void)sum;
 }

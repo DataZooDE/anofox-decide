@@ -300,6 +300,11 @@ unique_ptr<DecidePluginSession> DecideLoadPlugin(const string &library_path, Dec
 		}
 		}
 	}
+	if (request.weights) {
+		// The plugin has copied (MLX) or uploaded (ggml) the weights during create: the host's mapped checkpoint need not stay resident.
+		// The mapping itself stays valid for the plugin ABI's "alive until destroy" (a read pages it in again).
+		request.weights->file.ReleaseResidentPages();
+	}
 	return make_uniq<LoadedPlugin>(std::move(request.weights), std::move(session)); // request.graph_bytes is released here
 }
 

@@ -120,6 +120,9 @@ public:
 	bool Mapped() const {
 		return mapped;
 	}
+	//! Lets the OS drop the mapping's resident pages (a plugin copied or uploaded the weights at create). The mapping stays valid: a later
+	//! read pages the bytes in again from the file. A no-op for a non-mapped (read) file and on Windows.
+	void ReleaseResidentPages();
 
 private:
 	void Reset();

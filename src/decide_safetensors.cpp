@@ -296,6 +296,16 @@ void DecideMappedFile::Reset() {
 	mapped = false;
 }
 
+void DecideMappedFile::ReleaseResidentPages() {
+#ifndef _WIN32
+	if (mapped && data && size > 0 && fd >= 0) {
+		// Re-map the same range in place: the old mapping's pages leave the process (madvise(MADV_DONTNEED) is ignored for file pages
+		// on macOS), the address stays valid and reads page in again from the file. On failure the old mapping stays, as it was.
+		mmap(const_cast<data_ptr_t>(data), size, PROT_READ, MAP_PRIVATE | MAP_FIXED, fd, 0);
+	}
+#endif
+}
+
 DecideMappedFile DecideMappedFile::Open(const string &path) {
 	DecideMappedFile out;
 #ifdef _WIN32
