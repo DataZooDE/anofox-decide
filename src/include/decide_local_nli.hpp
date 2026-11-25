@@ -112,9 +112,15 @@ int DecideLocalEngineThreads(ClientContext &context);
 //! How a batch's shape is padded for the engine serving it (see DecideShapePolicyFor).
 struct DecideShapePolicy {
 	bool bucket_lengths = true; // pad the token length to a bucket (few compiled lengths)
+	bool fine_lengths = false;  // 8-token steps instead of 32 (DecidePaddedLength): a compile is cheap, padding is not
 	bool round_markers = true;  // round the marker count up to a multiple of 4
 	bool pow2_rows = false;     // pad a batch's rows to a power of two (padding rows are cheap on a GPU, compiles are not)
 };
+//! The padded length a batch of rows of at most `len` tokens runs at, never above `max_length` (and never below `len`). Every distinct
+//! length is a graph the engine compiles and keeps, and every padded token is computed: the steps grow with the length (32 up to 512
+//! tokens, then 64, 128 and 256; `fine` divides them by 4) so few lengths cover every text while padding stays a small part of the work.
+int64_t DecidePaddedLength(int64_t len, int64_t max_length, bool fine);
+
 //! The shape policy for the backend serving a session ("" for the in-process CPU engine, else the plugin's name): the ggml engine
 //! compiles a graph per shape, so its shapes are bucketed (and a ggml GPU's rows padded to powers of two); MLX compiles nothing per shape,
 //! so it runs the exact shapes.

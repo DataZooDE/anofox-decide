@@ -822,17 +822,16 @@ int64_t BatchRowsFor(const DecideLocalSession &session, int64_t rows) {
 	return p;
 }
 
-//! The padded length a batch of rows of at most `len` tokens runs at, never above the model window (and never below `len`). Every
-//! distinct length is a graph the engine compiles and keeps: the steps grow with the length (32 up to 512 tokens, then 64, 128 and 256
-//! beyond 2048, about 56 lengths up to 8192) so few lengths cover every text while padding stays a small fraction of the work (attention
-//! grows with the square of the length). The old doubling ladder wasted up to half of a batch on padding.
-int64_t PaddedLength(int64_t len, int64_t max_length) {
-	const int64_t step = len <= 512 ? 32 : len <= 1024 ? 64 : len <= 2048 ? 128 : 256;
+} // namespace
+
+int64_t DecidePaddedLength(int64_t len, int64_t max_length, bool fine) {
+	int64_t step = len <= 512 ? 32 : len <= 1024 ? 64 : len <= 2048 ? 128 : 256;
+	if (fine) {
+		step /= 4;
+	}
 	const int64_t bucket = (len + step - 1) / step * step;
 	return std::max<int64_t>(len, std::min(bucket, max_length));
 }
-
-} // namespace
 
 DecideShapePolicy DecideShapePolicyFor(const string &backend) {
 	DecideShapePolicy p;
@@ -841,6 +840,9 @@ DecideShapePolicy DecideShapePolicyFor(const string &backend) {
 		p.round_markers = false;
 		return p;
 	}
+	// The CPU compiles a shape in ~7 ms, so 32-token steps cost more in padding than they save in compiles: on the 200-ticket evaluation
+	// the Laya models ran ~20% slower than with 8-token steps (or exact lengths, which measured the same). A GPU compile costs more.
+	p.fine_lengths = backend.empty();
 	p.pow2_rows = !backend.empty();
 	return p;
 }
@@ -864,7 +866,7 @@ vector<DecideAnswer> DecideLocalScore(ClientContext &context, const DecideModelE
 	auto session = DecideLocalSession::Open(context, entry, function.c_str());
 	// padded to a bucket: a table of texts of every length compiles a few dozen graphs, not one per length (MLX: exact)
 	const auto shapes = DecideShapePolicyFor(session->PluginBackend());
-	const auto batch = BuildLocalBatch(st, ptrs, shapes.bucket_lengths ? PaddedLength(T, st.max_length) : T,
+	const auto batch = BuildLocalBatch(st, ptrs, shapes.bucket_lengths ? DecidePaddedLength(T, st.max_length, shapes.fine_lengths) : T,
 	                                   BatchRowsFor(*session, (int64_t)ptrs.size()), shapes.round_markers);
 	auto scores = session->Score(batch, function.c_str());
 	vector<DecideAnswer> out;
@@ -930,18 +932,21 @@ void DecideLocalScoreMany(ClientContext &context, const DecideModelEntry &entry,
 		// cut a new batch whenever one more row at the padded length of the longest would exceed the token budget.
 		// One row always fits, however long it is.
 		std::stable_sort(slots.begin(), slots.end(), [](const Slot &a, const Slot &b) { return a.len < b.len; });
+		const auto shapes = DecideShapePolicyFor(session->PluginBackend());
+		auto padded_length = [&](int64_t len) {
+			return shapes.bucket_lengths ? DecidePaddedLength(len, st.max_length, shapes.fine_lengths) : len;
+		};
 		size_t begin = 0;
 		while (begin < slots.size()) {
 			size_t end = begin + 1;
 			while (end < slots.size()) {
-				const int64_t padded = PaddedLength(slots[end].len, st.max_length);
+				const int64_t padded = padded_length(slots[end].len);
 				if ((int64_t)(end - begin + 1) * padded > batch_tokens) {
 					break;
 				}
 				end++;
 			}
-			const auto shapes = DecideShapePolicyFor(session->PluginBackend());
-			const int64_t T = shapes.bucket_lengths ? PaddedLength(slots[end - 1].len, st.max_length) : slots[end - 1].len;
+			const int64_t T = padded_length(slots[end - 1].len);
 			vector<const LocalRow *> ptrs;
 			size_t first_request = slots[begin].request;
 			for (size_t i = begin; i < end; i++) {

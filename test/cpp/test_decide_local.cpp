@@ -834,8 +834,9 @@ TEST_CASE("local shapes: questions with different option counts and texts of nea
 	db.LoadStaticExtension<AnofoxDecideExtension>();
 	Connection con(db);
 	REQUIRE_FALSE(con.Query("SELECT decide_register_model('tiny-shapes', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json')")->HasError());
-	for (const char *q : {"SELECT decide_choice('ab ab', 'pick?', ['a', 'b'], model := 'tiny-shapes')",
-	                      "SELECT decide_choice('ab ab ab', 'pick?', ['a', 'b', 'c'], model := 'tiny-shapes')",
+	// (within one 8-token step of the CPU: 3 and 4 options round to 4 markers, the texts differ by a token)
+	for (const char *q : {"SELECT decide_choice('ab ab ab', 'pick?', ['a', 'b', 'c'], model := 'tiny-shapes')",
+	                      "SELECT decide_choice('ab ab ab', 'pick?', ['a', 'b', 'c', 'd'], model := 'tiny-shapes')",
 	                      "SELECT decide_choice('ab ab ab ab', 'pick?', ['a', 'b', 'c', 'd'], model := 'tiny-shapes')"}) {
 		REQUIRE_FALSE(con.Query(q)->HasError());
 	}
@@ -845,17 +846,33 @@ TEST_CASE("local shapes: questions with different option counts and texts of nea
 	REQUIRE(duckdb_compat::ResultValue(*r, 0, 0) == Value::BIGINT(1));
 }
 
+// The 32-token steps cost ~20% on the CPU for the Laya models on the 200-ticket evaluation (short tickets padded by up to 31 tokens,
+// against a ~7 ms compile): the CPU pads to 8-token steps (exact lengths measured the same), the GPU plugins keep 32.
+TEST_CASE("padded lengths: fine steps on the CPU, coarse on a GPU, never below the text or above the window", "[anofox_decide][local][shapes]") {
+	REQUIRE(DecidePaddedLength(100, 1024, true) == 104);
+	REQUIRE(DecidePaddedLength(100, 1024, false) == 128);
+	REQUIRE(DecidePaddedLength(104, 1024, true) == 104);
+	REQUIRE(DecidePaddedLength(600, 1024, true) == 608);
+	REQUIRE(DecidePaddedLength(1500, 8192, true) == 1504);
+	REQUIRE(DecidePaddedLength(3000, 8192, true) == 3008);
+	REQUIRE(DecidePaddedLength(3000, 8192, false) == 3072);
+	REQUIRE(DecidePaddedLength(1020, 1022, true) == 1022); // capped at the window
+	REQUIRE(DecidePaddedLength(1, 1024, true) == 8);
+}
+
 TEST_CASE("shape policy: compiling engines bucket shapes, MLX runs exact shapes", "[anofox_decide][local][shapes]") {
 	// The ggml engine compiles a graph per input shape (CPU and the CUDA/ROCm plugins): lengths, markers and GPU rows are bucketed so
 	// few graphs serve every text. MLX builds its graph lazily on every call and compiles nothing per shape: padding is pure extra work
 	// there (the M3 evaluation ran ~1.4x slower than decide's earlier MLX plugin, which used exact shapes).
 	const auto cpu = DecideShapePolicyFor("");
 	REQUIRE(cpu.bucket_lengths);
+	REQUIRE(cpu.fine_lengths); // a CPU compile is cheap (~7 ms): 8-token steps, not 32
 	REQUIRE(cpu.round_markers);
 	REQUIRE_FALSE(cpu.pow2_rows);
 	for (const char *gpu : {"ggml", "cuda", "rocm"}) { // the ggml GPU plugin names itself "ggml" (CUDA and ROCm alike)
 		const auto p = DecideShapePolicyFor(gpu);
 		REQUIRE(p.bucket_lengths);
+		REQUIRE_FALSE(p.fine_lengths);
 		REQUIRE(p.round_markers);
 		REQUIRE(p.pow2_rows);
 	}
