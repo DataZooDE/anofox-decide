@@ -115,6 +115,17 @@ string DecideLocalEngine(ClientContext &context, const string &function);
 //! no arithmetic and slow every op's barrier; measured 25-30% faster on the evaluation). Read when a session is created.
 int DecideLocalEngineThreads(ClientContext &context);
 
+//! How a batch's shape is padded for the engine serving it (see DecideShapePolicyFor).
+struct DecideShapePolicy {
+	bool bucket_lengths = true; // pad the token length to a bucket (few compiled lengths)
+	bool round_markers = true;  // round the marker count up to a multiple of 4
+	bool pow2_rows = false;     // pad a batch's rows to a power of two (padding rows are cheap on a GPU, compiles are not)
+};
+//! The shape policy for the backend serving a session ("" for the in-process CPU engine, else the plugin's name): the ggml engine
+//! compiles a graph per shape, so its shapes are bucketed (and a ggml GPU's rows padded to powers of two); MLX compiles nothing per shape,
+//! so it runs the exact shapes.
+DecideShapePolicy DecideShapePolicyFor(const string &backend);
+
 class DecideLocalSession {
 public:
 	//! `function` is the user-facing function named in errors (ONNX Runtime failures go through DecideMapOrtError).

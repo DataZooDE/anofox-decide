@@ -894,3 +894,23 @@ TEST_CASE("local shapes: questions with different option counts and texts of nea
 	REQUIRE(r->RowCount() == 1);
 	REQUIRE(duckdb_compat::ResultValue(*r, 0, 0) == Value::BIGINT(1));
 }
+
+TEST_CASE("shape policy: compiling engines bucket shapes, MLX runs exact shapes", "[anofox_decide][local][shapes]") {
+	// The ggml engine compiles a graph per input shape (CPU and the CUDA/ROCm plugins): lengths, markers and GPU rows are bucketed so
+	// few graphs serve every text. MLX builds its graph lazily on every call and compiles nothing per shape: padding is pure extra work
+	// there (the M3 evaluation ran ~1.4x slower than decide's earlier MLX plugin, which used exact shapes).
+	const auto cpu = DecideShapePolicyFor("");
+	REQUIRE(cpu.bucket_lengths);
+	REQUIRE(cpu.round_markers);
+	REQUIRE_FALSE(cpu.pow2_rows);
+	for (const char *gpu : {"ggml", "cuda", "rocm"}) { // the ggml GPU plugin names itself "ggml" (CUDA and ROCm alike)
+		const auto p = DecideShapePolicyFor(gpu);
+		REQUIRE(p.bucket_lengths);
+		REQUIRE(p.round_markers);
+		REQUIRE(p.pow2_rows);
+	}
+	const auto mlx = DecideShapePolicyFor("mlx");
+	REQUIRE_FALSE(mlx.bucket_lengths);
+	REQUIRE_FALSE(mlx.round_markers);
+	REQUIRE_FALSE(mlx.pow2_rows);
+}

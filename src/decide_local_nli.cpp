@@ -844,15 +844,18 @@ vector<LocalRow> CollateQuestions(const LocalSettings &st, const string &state, 
 	return rows;
 }
 
-//! Pads the rows to [B, T] and [B, M] (masked slots carry the pad token and zeros). Every distinct shape is a graph the engine compiles
-//! and keeps, so M (one marker per option, 2..20) is rounded up to a multiple of 4, and B to `rows_to` when that is larger (a GPU
-//! pads batches to powers of two: an all-padding row costs it little, a compile a lot). A padding marker or row is masked and never read.
-DecideLocalBatch BuildLocalBatch(const LocalSettings &st, const vector<const LocalRow *> &rows, int64_t T, int64_t rows_to = 0) {
+//! Pads the rows to [B, T] and [B, M] (masked slots carry the pad token and zeros). For an engine that compiles per shape, M (one marker
+//! per option, 2..20) is rounded up to a multiple of 4 (`round_markers`), and B to `rows_to` when that is larger (a GPU pads batches to
+//! powers of two: an all-padding row costs it little, a compile a lot). A padding marker or row is masked and never read.
+DecideLocalBatch BuildLocalBatch(const LocalSettings &st, const vector<const LocalRow *> &rows, int64_t T, int64_t rows_to = 0,
+                                 bool round_markers = true) {
 	int64_t M = 0;
 	for (auto *r : rows) {
 		M = std::max<int64_t>(M, r->c.markers.size());
 	}
-	M = (M + 3) / 4 * 4;
+	if (round_markers) {
+		M = (M + 3) / 4 * 4;
+	}
 	DecideLocalBatch batch;
 	batch.batch = std::max<int64_t>((int64_t)rows.size(), rows_to);
 	batch.seq = T;
@@ -935,7 +938,7 @@ DecideAnswer BuildLocalAnswer(const LocalSettings &st, const DecideModelEntry &e
 //! The rows a batch runs with: a GPU session pads to the next power of two (an all-padding row costs it little, a new compiled shape a
 //! lot); the CPU runs exactly the rows it has (a padding row there costs as much as a real one).
 int64_t BatchRowsFor(const DecideLocalSession &session, int64_t rows) {
-	if (session.PluginBackend().empty()) {
+	if (!DecideShapePolicyFor(session.PluginBackend()).pow2_rows) {
 		return rows;
 	}
 	int64_t p = 1;
@@ -957,6 +960,17 @@ int64_t PaddedLength(int64_t len, int64_t max_length) {
 
 } // namespace
 
+DecideShapePolicy DecideShapePolicyFor(const string &backend) {
+	DecideShapePolicy p;
+	if (backend == "mlx") {
+		p.bucket_lengths = false;
+		p.round_markers = false;
+		return p;
+	}
+	p.pow2_rows = !backend.empty();
+	return p;
+}
+
 vector<DecideAnswer> DecideLocalScore(ClientContext &context, const DecideModelEntry &entry,
                                            const string &state, const vector<DecideQuestion> &questions,
                                            const char *function_name) {
@@ -974,8 +988,10 @@ vector<DecideAnswer> DecideLocalScore(ClientContext &context, const DecideModelE
 		T = std::max<int64_t>(T, r.c.ids.size());
 	}
 	auto session = DecideLocalSession::Open(context, entry, function.c_str());
-	// padded to a bucket: a table of texts of every length compiles a few dozen graphs, not one per length
-	const auto batch = BuildLocalBatch(st, ptrs, PaddedLength(T, st.max_length), BatchRowsFor(*session, (int64_t)ptrs.size()));
+	// padded to a bucket: a table of texts of every length compiles a few dozen graphs, not one per length (MLX: exact)
+	const auto shapes = DecideShapePolicyFor(session->PluginBackend());
+	const auto batch = BuildLocalBatch(st, ptrs, shapes.bucket_lengths ? PaddedLength(T, st.max_length) : T,
+	                                   BatchRowsFor(*session, (int64_t)ptrs.size()), shapes.round_markers);
 	auto scores = session->Score(batch, function.c_str());
 	vector<DecideAnswer> out;
 	for (size_t b = 0; b < rows.size(); b++) {
@@ -1050,7 +1066,8 @@ void DecideLocalScoreMany(ClientContext &context, const DecideModelEntry &entry,
 				}
 				end++;
 			}
-			const int64_t T = PaddedLength(slots[end - 1].len, st.max_length);
+			const auto shapes = DecideShapePolicyFor(session->PluginBackend());
+			const int64_t T = shapes.bucket_lengths ? PaddedLength(slots[end - 1].len, st.max_length) : slots[end - 1].len;
 			vector<const LocalRow *> ptrs;
 			size_t first_request = slots[begin].request;
 			for (size_t i = begin; i < end; i++) {
@@ -1061,7 +1078,8 @@ void DecideLocalScoreMany(ClientContext &context, const DecideModelEntry &entry,
 				throw InterruptException();
 			}
 			try {
-				auto batch_scores = session->Score(BuildLocalBatch(st, ptrs, T, BatchRowsFor(*session, (int64_t)ptrs.size())), function.c_str());
+				auto batch_scores = session->Score(BuildLocalBatch(st, ptrs, T, BatchRowsFor(*session, (int64_t)ptrs.size()), shapes.round_markers),
+				                                  function.c_str());
 				for (size_t i = begin; i < end; i++) {
 					scores[slots[i].request][slots[i].question] = std::move(batch_scores[i - begin]);
 				}
