@@ -11,6 +11,9 @@ All notable changes to `anofox_decide` are documented here. The format follows
   the cache directory), the same name as in anofox-tabfm.
 
 ### Changed
+- A session served by a GPU plugin no longer keeps the model's checkpoint resident in the process once the plugin has copied or
+  uploaded the weights (the mapping stays valid; pages come back from the file only if read again). Up to ~1.3 GB lower peak RSS for
+  Laya on MLX.
 - Local model sessions: one per model, built outside any shared lock (a first load no longer stalls other models' scoring); a
   `SET threads`, engine or device switch replaces the model's session instead of keeping a second copy of its weights; the
   held memory is reported to DuckDB's object cache. Ctrl-C stops a chunk of texts between model runs.
