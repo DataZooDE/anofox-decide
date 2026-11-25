@@ -173,7 +173,9 @@ COPY (
                        capture_output=True, text=True, env=e)
     dt = time.time() - t0
     usage = [l.split() for l in p.stderr.splitlines() if l.startswith("@@usage ")]
-    if p.returncode != 0 or not res.exists():
+    # A released build without the engine diagnostic fails only at that last query, after scoring: the run counts (engine '?').
+    probe_missing = engine_probe and "__anofox_decide_local_sessions does not exist" in p.stderr
+    if (p.returncode != 0 and not probe_missing) or not res.exists():
         err = "\n".join(l for l in p.stderr.splitlines() if "Schema error" not in l and not l.startswith("@@usage") and l.strip())[:600]
         if device not in (None, "auto") and "anofox_decide_device" in err:
             # An explicit device that cannot serve the model is a hard error of the extension, never a CPU run.
