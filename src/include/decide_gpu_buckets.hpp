@@ -1,21 +1,13 @@
 //===----------------------------------------------------------------------===//
-// decide_gpu_buckets.hpp — the fixed shapes a compile-per-shape GPU backend (MIGraphX) serves.
+// decide_gpu_buckets.hpp — the shape buckets decide_gpu_precompile() reports (deprecated, no effect).
 //
-// Header-only and free of DuckDB types: the MIGraphX plugin includes it and so does the extension (to know which
-// buckets decide_gpu_precompile() has to warm), and the unit tests exercise it without a GPU.
-//
-// MIGraphX compiles a program for one concrete shape, and a compile costs minutes and 0.6-1.7 GB of cache, so
-// the plugin serves a deliberately small grid:
+// The former ROCm plugin compiled a program per concrete shape (minutes each), so it served a small grid of shapes and
+// decide_gpu_precompile() warmed it. The plugins of anofox-ggml-adapter build a shape's graph on first use; the grid is kept only for
+// the deprecated function's rows until it is removed:
 //
 //   markers  M = 20 always (the most options a question can have; unused slots carry marker_mask 0)
-//   tokens   T from a short per-model list; a batch is padded UP to the next bucket
-//   rows     B = 1 (the interactive single row), 4 (one text with a few questions), or the largest batch whose
-//            padded tokens stay within kBucketTokens (a bigger request is cut into chunks of that size); a
-//            request pads up to the next rung with its spare rows a copy of its first row
-//
-// Three row rungs per token bucket keep the cache small instead of a ladder of programs nobody asked for. The
-// plugin also reuses a bigger program that is already compiled rather than stalling a query on a compile of
-// the ideal one; decide_gpu_precompile warms them all.
+//   tokens   T from a short per-model list
+//   rows     B = 1, 4, or the largest batch whose padded tokens stay within kBucketTokens
 //===----------------------------------------------------------------------===//
 
 #pragma once

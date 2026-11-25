@@ -21,24 +21,8 @@ class ClientContext;
 
 namespace anofox {
 
-//! One file to lift out of the ORT wheel. `dest_name` is the name the plugin's DT_NEEDED asks for;
-//! `patch_soname` renames the core's SONAME in flight (see decide_soname_patch.hpp).
-struct DecideRuntimeEntry {
-	string zip_path;
-	string dest_name;
-	bool patch_soname = false;
-	//! sha256 of the file as written to disk (after the SONAME patch). Empty = not pinned. Checked on every
-	//! install call; a mismatch deletes the file.
-	string sha256;
-};
-
 struct DecideRuntimeArtifact {
 	string backend;
-	//! The ORT-GPU wheel (CUDA only: the plugin carries its own renamed core). Empty = nothing to fetch.
-	string wheel_url;
-	int64_t wheel_bytes = 0;
-	string wheel_sha256;
-	vector<DecideRuntimeEntry> wheel_entries;
 	//! The plugin itself and its sha256 sidecar, from the pinned release's assets.
 	string plugin_name;
 	string plugin_url;
@@ -59,12 +43,6 @@ struct DecideRuntimeFile {
 //! Fetches (or verifies) the artifact into `plugin_dir`. Idempotent per file; throws IOException with a Fix.
 vector<DecideRuntimeFile> DecideInstallRuntime(ClientContext &context, const DecideRuntimeArtifact &artifact,
                                                const string &plugin_dir, int timeout_ms);
-
-//! Extracts `entries` from the zip at `wheel_path` into `dest_dir` (atomically, via .part), patching the SONAME
-//! where asked. Refuses (and removes nothing it did not write) when an entry is missing or the SONAME does not
-//! occur exactly once. Returns the written paths.
-vector<string> DecideExtractWheelEntries(const string &wheel_path, const vector<DecideRuntimeEntry> &entries,
-                                         const string &dest_dir, const string &function);
 
 //! Checks `plugin_path` against the sidecar next to it (fetching the sidecar when absent). Throws IOException
 //! and deletes the plugin on EVERY failure (a mismatch, a sidecar that does not name it, a sidecar that cannot be

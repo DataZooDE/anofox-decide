@@ -118,28 +118,24 @@ string DecidePluginErrorMessage(const string &backend, const string &plugin_mess
 	const string doing = stage == DecidePluginStage::CREATE ? "could not be initialised" : "failed while scoring";
 	kind = "plugin";
 	// Memory exhaustion has no code of its own across backends: it shows up in the text.
-	if (has("out of memory") || has("outofmemory") || has("memoryallocation") || has("failed to allocate") ||
-	    has("bad_alloc")) {
+	if (has("out of memory") || has("out of device memory") || has("outofmemory") || has("memoryallocation") ||
+	    has("failed to allocate") || has("bad_alloc")) {
 		kind = "memory";
 		return DecideMsg(function, "the '" + backend + "' backend ran out of device memory (" + detail + ")",
 		                 "score fewer rows at once (SET anofox_decide_batch_tokens = 4096;), shorten the text (check "
 		                 "it with decide_token_count), or " + string(kCpuFix));
 	}
-	if (has("ep_fail") || has("execution provider")) {
-		return DecideMsg(function,
-		                 "the '" + backend + "' backend " + doing + ": the execution provider failed (" + detail + ")",
-		                 "check the driver and runtime with decide_doctor(); " + string(kCpuFix) +
-		                     " until it is fixed. If it persists, report it at "
-		                     "https://github.com/DataZooDE/anofox-decide/issues");
-	}
-	if (has("cannot open shared object") || has("libcud") || has("libmigraphx") || has("libhip") ||
-	    has("libonnxruntime") || has("libanofoxort")) {
+	if (has("cannot open shared object") || has("library not loaded") || has("libcuda") || has("libhip") ||
+	    has("librocblas") || has("libmlx")) {
+		// What each plugin links (anofox-ggml-adapter): CUDA carries its runtime and needs only the driver; ROCm links the system's
+		// HIP, hipBLAS and rocBLAS; MLX links Apple's libmlx and libmlxc from Homebrew.
+		const string install = backend == "cuda"   ? "install the NVIDIA driver (it provides libcuda.so.1)"
+		                       : backend == "mlx" ? "brew install mlx mlx-c"
+		                                          : "install ROCm (HIP, hipBLAS and rocBLAS)";
 		return DecideMsg(function,
 		                 "the '" + backend + "' backend " + doing + ": a runtime library it needs is missing (" +
 		                     detail + ")",
-		                 "install the vendor runtime (CUDA 12.8+ with cuDNN 9, ROCm MIGraphX, or Apple MLX), or "
-		                 "CALL decide_download_runtime('" + backend + "'); for the parts that are downloadable; " +
-		                     string(kCpuFix) + " in the meantime");
+		                 install + ", then CALL decide_accelerate(); again; " + string(kCpuFix) + " in the meantime");
 	}
 	return DecideMsg(function, "the '" + backend + "' backend " + doing + " (" + detail + ")",
 	                 "check decide_doctor(); " + string(kCpuFix) +

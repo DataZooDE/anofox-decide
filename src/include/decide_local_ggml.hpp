@@ -2,7 +2,7 @@
 
 // decide_local_ggml — the in-process models on the ggml engine (vendor/anofox-ggml-adapter, shared with anofox-tabfm).
 //
-// The same two load paths as ONNX Runtime: a user-registered full .onnx (weights inside the file) and a catalog model's
+// Two load paths: a user-registered full .onnx (weights inside the file) and a catalog model's
 // weight-free graph with the downloaded safetensors served by name. The engine headers stay out of every other translation unit.
 
 #include "duckdb/common/common.hpp"

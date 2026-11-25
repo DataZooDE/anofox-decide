@@ -135,10 +135,7 @@ set(DECIDE_CPP_TEST_SOURCES
     test/cpp/test_decide_calibration.cpp
     test/cpp/test_decide_catalog.cpp
     test/cpp/test_decide_plugin.cpp
-    test/cpp/test_decide_migraphx.cpp
 )
-# GPU backend plugins build from their own directories (each only where its SDK exists).
-add_subdirectory(plugins/migraphx)
 if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.19")
     # GPU plugin fixtures. The real backends need hardware CI does not have, which would leave the loader (the
     # trust boundary: a wrong ABI is undefined behaviour, not a wrong answer) and everything behind it untested.
@@ -156,11 +153,6 @@ if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.
 
     add_library(anofox_decide_unittest_tests OBJECT ${DECIDE_CPP_TEST_SOURCES})
     add_dependencies(anofox_decide_unittest_tests anofox_decide_fake_plugin anofox_decide_fake_plugin_bad_abi)
-    if(DECIDE_MIGRAPHX_PLUGIN_BUILT)
-        add_dependencies(anofox_decide_unittest_tests anofox_decide_migraphx_plugin)
-        target_compile_definitions(anofox_decide_unittest_tests PRIVATE
-            DECIDE_MIGRAPHX_PLUGIN_PATH="$<TARGET_FILE:anofox_decide_migraphx_plugin>")
-    endif()
     target_compile_definitions(anofox_decide_unittest_tests PRIVATE
         DECIDE_FAKE_PLUGIN_PATH="$<TARGET_FILE:anofox_decide_fake_plugin>"
         DECIDE_FAKE_PLUGIN_BAD_ABI_PATH="$<TARGET_FILE:anofox_decide_fake_plugin_bad_abi>")
@@ -184,11 +176,9 @@ if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.
     cmake_language(DEFER DIRECTORY ${CMAKE_SOURCE_DIR} CALL anofox_decide_register_cpp_tests)
 endif()
 
-# --- GPU backend plugins (separate shared libraries, never linked into the extension) ---
-# MLX: Apple silicon only, needs `brew install mlx mlx-c`; plugins/mlx/CMakeLists.txt skips itself cleanly elsewhere.
-if(APPLE)
-    add_subdirectory(plugins/mlx)
-endif()
+# --- GPU backend plugins ---
+# The CUDA, ROCm and MLX plugins are anofox-ggml-adapter's (vendor/anofox-ggml-adapter), built and released from its repository;
+# decide_accelerate() downloads them. Nothing here builds a plugin.
 
 # --- Installation ---
 

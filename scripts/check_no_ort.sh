@@ -20,11 +20,13 @@ allowed='deprecated|removed|no-op|no effect|ignored|formerly'
 
 code_paths=(src CMakeLists.txt cmake Makefile extension_config.cmake vcpkg.json test .github/workflows scripts tools/eval tools/bench tools/e2e)
 # -I: skip binary files (the committed graphs). Self-excluded: this script names every pattern.
-code_grep() { grep -rnIE "$1" "${code_paths[@]}" 2>/dev/null | grep -vE '^scripts/check_no_ort\.sh:'; }
+# test/sql/decide_local_engine.test tests that the removed setting is unknown, so it names it.
+code_grep() { grep -rnIE "$1" "${code_paths[@]}" 2>/dev/null | grep -vE '^scripts/check_no_ort\.sh:|^test/sql/decide_local_engine\.test:'; }
 # Drop hits whose CONTENT (not path) carries an allowed word.
 not_allowed() { awk -v re="$allowed" 'BEGIN { IGNORECASE = 1 } { line = $0; sub(/^[^:]*:[0-9]+:/, "", line); if (tolower(line) !~ re) print }'; }
 
-ort='onnxruntime|Ort::|OrtApi|ORT_LOGGING|DECIDE_ORT_|ort\.cmake|ort-vcpkg|decide_ort_errors|DecideMapOrtError|DecideOrtStage|kOrtCuda|libanofoxort|soname_patch|DecidePatchOrtSoname|ONNX Runtime'
+# Identifiers only: the prose "ONNX Runtime" stays where it names the reference the recorded expected values came from.
+ort='onnxruntime|Ort::|OrtApi|ORT_LOGGING|DECIDE_ORT_|ort\.cmake|ort-vcpkg|decide_ort_errors|DecideMapOrtError|DecideOrtStage|kOrtCuda|libanofoxort|soname_patch|DecidePatchOrtSoname'
 hits=$(code_grep "$ort" | not_allowed)
 [ -n "$hits" ] && report "ONNX Runtime is still referenced" "$hits"
 

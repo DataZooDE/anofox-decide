@@ -7,7 +7,7 @@
 // buffer (a memory mapping or a plain read) and never copies tensor data.
 //
 // Supported dtypes: F32, F16, BF16 (the upstream checkpoints are F32 and F16).
-// Floats are upcast to F32 on demand: ONNX Runtime receives F32 initializers.
+// Floats are upcast to F32 on demand: the CPU engine reads F32 initializers.
 // Adapted from anofox-tabfm's tabfm_safetensors (same format contract), with
 // F16 added.
 //===----------------------------------------------------------------------===//

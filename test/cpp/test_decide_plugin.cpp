@@ -1,7 +1,6 @@
 // The GPU infrastructure, tested without a GPU: the plugin loader against a real fake plugin (built twice, once
 // with a wrong ABI), the servability predicate and device resolution, the artifact rules (sidecars, platform
-// refusals, the release self-pin), the download and verification path against a loopback server, the SONAME
-// patch and the wheel extraction, and the SQL surface (decide_devices, decide_backends, decide_accelerate, the
+// refusals, the release self-pin), the download and verification path against a loopback server, and the SQL surface (decide_devices, decide_backends, decide_accelerate, the
 // settings) with discovery and the plugin directory pointed at the fixtures. No mocks of our own code: the
 // fake plugin is a real shared library that goes through dlopen and the ABI check.
 #include "catch.hpp"
@@ -15,7 +14,6 @@
 #include "decide_plugin_loader.hpp"
 #include "anofox_ggml_adapter/plugin_abi.h"
 #include "decide_provider.hpp"
-#include "decide_soname_patch.hpp"
 
 #include "duckdb.hpp"
 #include "duckdb_compat.hpp"
@@ -193,35 +191,6 @@ const char *kQuestion = "SELECT decide_probability('I want my money back.', 'A r
 // Pure rules
 //===----------------------------------------------------------------------===//
 
-TEST_CASE("the SONAME patch renames exactly the NUL-terminated entry, in place", "[anofox_decide][plugin]") {
-	const string old_name = DECIDE_ORT_UPSTREAM_SONAME;
-	const string new_name = DECIDE_ORT_RENAMED_SONAME;
-	REQUIRE(old_name.size() == new_name.size());
-
-	// One entry in a .dynstr-like blob: replaced, same size, neighbours untouched.
-	string blob = string("\0libc.so.6\0", 11) + old_name + string("\0GLIBC_2.17\0", 12);
-	const string before = blob;
-	REQUIRE(DecidePatchOrtSonameInPlace(&blob[0], blob.size()) == 1);
-	REQUIRE(blob.size() == before.size());
-	REQUIRE(blob.find(old_name) == string::npos);
-	REQUIRE(blob.find(new_name) != string::npos);
-	REQUIRE(blob.substr(0, 11) == before.substr(0, 11));
-
-	// A longer string the SONAME is a prefix of (a file name in a note) is not the SONAME entry.
-	string longer = old_name + ".29.0" + string(1, '\0');
-	REQUIRE(DecidePatchOrtSonameInPlace(&longer[0], longer.size()) == 0);
-	REQUIRE(longer == old_name + ".29.0" + string(1, '\0'));
-
-	// None, two, and a buffer shorter than the needle: the count is the caller's to judge.
-	string none = "nothing to rename here";
-	REQUIRE(DecidePatchOrtSonameInPlace(&none[0], none.size()) == 0);
-	string two = old_name + string(1, '\0') + "x" + old_name + string(1, '\0');
-	REQUIRE(DecidePatchOrtSonameInPlace(&two[0], two.size()) == 2);
-	REQUIRE(DecidePatchOrtSonameInPlace(nullptr, 0) == 0);
-	char tiny[3] = {'l', 'i', 'b'};
-	REQUIRE(DecidePatchOrtSonameInPlace(tiny, sizeof(tiny)) == 0);
-}
-
 TEST_CASE("plugin file names, sidecar parsing and the release URL", "[anofox_decide][plugin]") {
 	// the plugins are anofox-ggml-adapter's, shared with anofox-tabfm: the ggml plugin per vendor, and MLX
 	REQUIRE(DecidePluginFileNameFor("cuda", "linux") == "libanofox_ggml-cuda_plugin.so");
@@ -236,10 +205,10 @@ TEST_CASE("plugin file names, sidecar parsing and the release URL", "[anofox_dec
 	const string upper = "ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789";
 	// A sidecar can vouch for several files (the plugin and its private ORT core): matched by name, a path and the
 	// '*' binary marker are tolerated, CRLF too, digests come back lower-case.
-	const string sidecar = a + "  libanofox_decide_cuda_plugin.so\r\n" + b + " *build/out/libanofoxort_gpu.so\n" + upper +
+	const string sidecar = a + "  libanofox_ggml-cuda_plugin.so\r\n" + b + " *build/out/libanofox_ggml-rocm_plugin.so\n" + upper +
 	                       "  other.so\n";
-	REQUIRE(DecideSha256FromSidecar(sidecar, "libanofox_decide_cuda_plugin.so") == a);
-	REQUIRE(DecideSha256FromSidecar(sidecar, "libanofoxort_gpu.so") == b);
+	REQUIRE(DecideSha256FromSidecar(sidecar, "libanofox_ggml-cuda_plugin.so") == a);
+	REQUIRE(DecideSha256FromSidecar(sidecar, "libanofox_ggml-rocm_plugin.so") == b);
 	REQUIRE(DecideSha256FromSidecar(sidecar, "other.so") == StringUtil::Lower(upper));
 	// A file the sidecar does not list proves nothing: "" (callers refuse), never a guess at the first line.
 	REQUIRE(DecideSha256FromSidecar(sidecar, "missing.so").empty());
@@ -296,17 +265,13 @@ TEST_CASE("platform refusals name what IS published and the fix", "[anofox_decid
 	REQUIRE_FALSE(DecideResolveRuntimeArtifact("cuda", "windows", "amd64", artifact, error));
 	REQUIRE_THAT(error, Contains("linux/amd64 only"));
 	REQUIRE(DecideResolveRuntimeArtifact("cuda", "linux", "amd64", artifact, error));
-	// Every backend is its plugin alone: the ggml CUDA plugin links its runtime statically (only the NVIDIA driver is needed), so no
-	// ONNX Runtime wheel comes along any more.
-	REQUIRE(artifact.wheel_entries.empty());
-	REQUIRE(artifact.wheel_url.empty());
+	// Every backend is its plugin alone: the ggml CUDA plugin links its runtime statically (only the NVIDIA driver is needed).
 	REQUIRE_THAT(artifact.plugin_url, Contains(string("/") + DECIDE_PLUGIN_RELEASE_TAG + "/libanofox_ggml-cuda_plugin.so"));
 	REQUIRE_THAT(artifact.sidecar_url, Contains("/ggml-cuda_plugin.sha256"));
 	REQUIRE(DecideResolveRuntimeArtifact("rocm", "linux", "amd64", artifact, error));
-	REQUIRE(artifact.wheel_url.empty());
 	REQUIRE(artifact.plugin_name == "libanofox_ggml-rocm_plugin.so");
 	REQUIRE(DecideResolveRuntimeArtifact("mlx", "osx", "arm64", artifact, error));
-	REQUIRE(artifact.wheel_url.empty());
+	REQUIRE(artifact.plugin_name == "libanofox_mlx_plugin.dylib");
 }
 
 TEST_CASE("plugin failures are mapped into the project's error shape", "[anofox_decide][plugin]") {
@@ -318,16 +283,30 @@ TEST_CASE("plugin failures are mapped into the project's error shape", "[anofox_
 	REQUIRE_THAT(msg, Contains("Fix: score fewer rows at once"));
 	REQUIRE_THAT(msg, !Contains("second line"));
 
-	msg = DecidePluginErrorMessage("cuda", "[ONNXRuntimeError] : 11 : EP_FAIL : CUDA failure 700", "decide_choice",
+	// The adapter's plugins say "out of device memory" (with the engine's remedy after it).
+	msg = DecidePluginErrorMessage("rocm", "the ggml engine ran out of device memory for 'scores' (need 512 MB). Fix: score fewer rows",
+	                               "decide_probability", DecidePluginStage::RUN, kind);
+	REQUIRE(kind == "memory");
+	REQUIRE_THAT(msg, Contains("decide_probability: the 'rocm' backend ran out of device memory"));
+
+	msg = DecidePluginErrorMessage("cuda", "CUDA error: an illegal memory access was encountered", "decide_choice",
 	                               DecidePluginStage::RUN, kind);
 	REQUIRE(kind == "plugin");
-	REQUIRE_THAT(msg, Contains("decide_choice: the 'cuda' backend failed while scoring: the execution provider failed"));
-	REQUIRE_THAT(msg, Contains("Fix: check the driver and runtime with decide_doctor(); SET anofox_decide_device = 'cpu';"));
+	REQUIRE_THAT(msg, Contains("decide_choice: the 'cuda' backend failed while scoring (CUDA error: an illegal memory access"));
+	REQUIRE_THAT(msg, Contains("Fix: check decide_doctor(); SET anofox_decide_device = 'cpu';"));
 
-	msg = DecidePluginErrorMessage("cuda", "libcudnn.so.9: cannot open shared object file", "decide_probability",
+	// A missing runtime library names what that backend's plugin links: the adapter's CUDA plugin carries its CUDA runtime and needs
+	// only the driver; the ROCm plugin links the system's HIP, hipBLAS and rocBLAS; MLX Apple's libmlx and libmlxc.
+	msg = DecidePluginErrorMessage("cuda", "libcuda.so.1: cannot open shared object file", "decide_probability",
 	                               DecidePluginStage::CREATE, kind);
 	REQUIRE_THAT(msg, Contains("could not be initialised: a runtime library it needs is missing"));
-	REQUIRE_THAT(msg, Contains("Fix: install the vendor runtime"));
+	REQUIRE_THAT(msg, Contains("Fix: install the NVIDIA driver (it provides libcuda.so.1)"));
+	msg = DecidePluginErrorMessage("rocm", "libhipblas.so.3: cannot open shared object file", "decide_probability",
+	                               DecidePluginStage::CREATE, kind);
+	REQUIRE_THAT(msg, Contains("Fix: install ROCm (HIP, hipBLAS and rocBLAS)"));
+	msg = DecidePluginErrorMessage("mlx", "dlopen: Library not loaded: libmlx.dylib", "decide_probability",
+	                               DecidePluginStage::CREATE, kind);
+	REQUIRE_THAT(msg, Contains("Fix: brew install mlx mlx-c"));
 
 	msg = DecidePluginErrorMessage("mlx", "something odd", "decide_probability", DecidePluginStage::CREATE, kind);
 	REQUIRE_THAT(msg, Contains("decide_probability: the 'mlx' backend could not be initialised (something odd)"));
@@ -528,10 +507,10 @@ TEST_CASE("one predicate says whether a model can run on a device, and why not",
 
 	in = Ready();
 	in.device_usable = false;
-	in.device_reason = "MIGraphX does not support the GPU architecture gfx1010";
+	in.device_reason = "the ROCm plugin does not support the GPU architecture gfx1010";
 	v = DecideEvaluateServability(in);
 	REQUIRE_FALSE(v.supported);
-	REQUIRE(v.reason == "MIGraphX does not support the GPU architecture gfx1010");
+	REQUIRE(v.reason == "the ROCm plugin does not support the GPU architecture gfx1010");
 	in.device_reason = "";
 	REQUIRE_THAT(DecideEvaluateServability(in).reason, Contains("discovered but is not usable on this machine"));
 
@@ -563,7 +542,7 @@ TEST_CASE("one predicate says whether a model can run on a device, and why not",
 
 TEST_CASE("device resolution: cpu, auto and explicit settings", "[anofox_decide][plugin]") {
 	const vector<DecideDeviceInfo> devices = {Dev("cpu", "cpu", "", true), Dev("cuda:0", "RTX", "sm_89", true),
-	                                          Dev("rocm:0", "Radeon", "gfx1010", false, "MIGraphX does not support gfx1010"),
+	                                          Dev("rocm:0", "Radeon", "gfx1010", false, "the ROCm plugin does not support gfx1010"),
 	                                          Dev("mlx:0", "Apple M3", "Apple M3", true)};
 	auto only = [](const std::vector<string> &backends) {
 		return [backends](const DecideDeviceInfo &d) {
@@ -930,63 +909,6 @@ TEST_CASE("a plugin with a sidecar is checked against it once before it is loade
 #endif
 }
 
-TEST_CASE("the extracted runtime files are checked on every install call", "[anofox_decide][plugin][download]") {
-	auto build_zip = [](const std::vector<std::pair<string, string>> &entries) {
-		duckdb_miniz::mz_zip_archive zip {};
-		REQUIRE(duckdb_miniz::mz_zip_writer_init_heap(&zip, 0, 0));
-		for (auto &e : entries) {
-			REQUIRE(duckdb_miniz::mz_zip_writer_add_mem(&zip, e.first.c_str(), e.second.data(), e.second.size(),
-			                                            duckdb_miniz::MZ_DEFAULT_LEVEL));
-		}
-		void *buffer = nullptr;
-		size_t size = 0;
-		REQUIRE(duckdb_miniz::mz_zip_writer_finalize_heap_archive(&zip, &buffer, &size));
-		string out(static_cast<const char *>(buffer), size);
-		duckdb_miniz::mz_free(buffer);
-		duckdb_miniz::mz_zip_writer_end(&zip);
-		return out;
-	};
-	ReleaseServer server;
-	auto artifact = RocmArtifact();
-	const string provider = "provider bytes of some length";
-	const string plugin = "plugin bytes";
-	const auto wheel = build_zip({{"onnxruntime/capi/libprovider.so", provider}});
-	server.files["runtime.whl"] = wheel;
-	Publish(server, artifact, plugin, Sha256(plugin));
-	artifact.wheel_url = server.Base() + "/dl/runtime.whl";
-	artifact.wheel_bytes = (int64_t)wheel.size();
-	artifact.wheel_sha256 = Sha256(wheel);
-	artifact.wheel_entries = {{"onnxruntime/capi/libprovider.so", "libprovider.so", false, Sha256(provider)}};
-	DuckDB db(nullptr);
-	Connection con(db);
-	const auto dir = TempDir("runtimefiles") + "/plugins";
-
-	auto files = DecideInstallRuntime(*con.context, artifact, dir, 5000);
-	REQUIRE(files.size() == 2);
-	REQUIRE(ReadFile(dir + "/libprovider.so") == provider);
-	const int wheel_hits = server.Hits("runtime.whl");
-
-	// Intact: nothing is fetched again.
-	files = DecideInstallRuntime(*con.context, artifact, dir, 5000);
-	REQUIRE(files[0].status == "cached");
-	REQUIRE(server.Hits("runtime.whl") == wheel_hits);
-
-	// A truncated or replaced file is not trusted on existence: it is deleted and fetched again.
-	WriteFile(dir + "/libprovider.so", "truncat");
-	files = DecideInstallRuntime(*con.context, artifact, dir, 5000);
-	REQUIRE(files[0].status == "downloaded");
-	REQUIRE(server.Hits("runtime.whl") > wheel_hits); // fetched again (each fetch is two hits: the redirect and the asset)
-	REQUIRE(ReadFile(dir + "/libprovider.so") == provider);
-
-	// A wheel whose entry is not the pinned bytes leaves no extracted file behind.
-	fs::remove(dir + "/libprovider.so");
-	artifact.wheel_entries[0].sha256 = string(64, '1');
-	auto msg = Message([&] { DecideInstallRuntime(*con.context, artifact, dir, 5000); });
-	REQUIRE_THAT(msg, Contains("'libprovider.so' extracted from the ONNX Runtime GPU runtime does not match its pinned sha256"));
-	REQUIRE_FALSE(fs::exists(dir + "/libprovider.so"));
-	REQUIRE_FALSE(fs::exists(dir + "/.onnxruntime_gpu.whl"));
-}
-
 TEST_CASE("an unreachable release is explained with the network fix", "[anofox_decide][plugin][download]") {
 	DecideSetTestReleaseBase("http://127.0.0.1:1/dl");
 	DecideRuntimeArtifact artifact;
@@ -1000,65 +922,6 @@ TEST_CASE("an unreachable release is explained with the network fix", "[anofox_d
 	REQUIRE_THAT(msg, Contains("decide_download_runtime: could not download the 'rocm' plugin from 127.0.0.1:1"));
 	REQUIRE_THAT(msg, Contains("Fix: check the network connection"));
 }
-
-TEST_CASE("the wheel entries are extracted, the core renamed, the provider streamed untouched", "[anofox_decide][plugin][download]") {
-	const string soname = DECIDE_ORT_UPSTREAM_SONAME;
-	auto build_zip = [](const std::vector<std::pair<string, string>> &entries) {
-		duckdb_miniz::mz_zip_archive zip {};
-		REQUIRE(duckdb_miniz::mz_zip_writer_init_heap(&zip, 0, 0));
-		for (auto &e : entries) {
-			REQUIRE(duckdb_miniz::mz_zip_writer_add_mem(&zip, e.first.c_str(), e.second.data(), e.second.size(),
-			                                            duckdb_miniz::MZ_DEFAULT_LEVEL));
-		}
-		void *buffer = nullptr;
-		size_t size = 0;
-		REQUIRE(duckdb_miniz::mz_zip_writer_finalize_heap_archive(&zip, &buffer, &size));
-		string out(static_cast<const char *>(buffer), size);
-		duckdb_miniz::mz_free(buffer);
-		duckdb_miniz::mz_zip_writer_end(&zip);
-		return out;
-	};
-	const vector<DecideRuntimeEntry> entries = {{"onnxruntime/capi/libonnxruntime.so.1.29.0", DECIDE_ORT_RENAMED_SONAME, true},
-	                                            {"onnxruntime/capi/libonnxruntime_providers_cuda.so", "libonnxruntime_providers_cuda.so", false}};
-	const string core = string("head\0", 5) + soname + string(1, '\0') + "tail";
-	string provider;
-	for (int i = 0; i < 100000; i++) {
-		provider.push_back((char)('a' + i % 26));
-	}
-	const auto dir = TempDir("wheel2");
-	fs::create_directories(dir + "/out");
-
-	WriteFile(dir + "/ok.whl", build_zip({{entries[0].zip_path, core}, {entries[1].zip_path, provider}}));
-	auto written = DecideExtractWheelEntries(dir + "/ok.whl", entries, dir + "/out", "decide_download_runtime");
-	REQUIRE(written.size() == 2);
-	const auto patched = ReadFile(dir + "/out/" + DECIDE_ORT_RENAMED_SONAME);
-	REQUIRE(patched.size() == core.size());
-	REQUIRE(patched.find(soname) == string::npos);
-	REQUIRE(patched.find(DECIDE_ORT_RENAMED_SONAME) != string::npos);
-	REQUIRE(ReadFile(dir + "/out/libonnxruntime_providers_cuda.so") == provider);
-	REQUIRE_FALSE(fs::exists(dir + "/out/" + DECIDE_ORT_RENAMED_SONAME + ".part"));
-
-	// The archive changed shape: no SONAME, two SONAMEs, a missing entry, not a zip at all.
-	WriteFile(dir + "/none.whl", build_zip({{entries[0].zip_path, "no soname in here"}, {entries[1].zip_path, provider}}));
-	REQUIRE_THAT(Message([&] { DecideExtractWheelEntries(dir + "/none.whl", entries, dir + "/out", "decide_download_runtime"); }),
-	             Contains("expected exactly one SONAME string in 'onnxruntime/capi/libonnxruntime.so.1.29.0' but found 0"));
-	const string twice = soname + string(1, '\0') + soname + string(1, '\0');
-	WriteFile(dir + "/two.whl", build_zip({{entries[0].zip_path, twice}, {entries[1].zip_path, provider}}));
-	REQUIRE_THAT(Message([&] { DecideExtractWheelEntries(dir + "/two.whl", entries, dir + "/out", "decide_download_runtime"); }),
-	             Contains("but found 2"));
-	WriteFile(dir + "/missing.whl", build_zip({{entries[0].zip_path, core}}));
-	REQUIRE_THAT(Message([&] { DecideExtractWheelEntries(dir + "/missing.whl", entries, dir + "/out", "decide_download_runtime"); }),
-	             Contains("expected entry 'onnxruntime/capi/libonnxruntime_providers_cuda.so' is not in the downloaded runtime archive"));
-	WriteFile(dir + "/junk.whl", "this is not a zip");
-	REQUIRE_THAT(Message([&] { DecideExtractWheelEntries(dir + "/junk.whl", entries, dir + "/out", "decide_download_runtime"); }),
-	             Contains("is not a readable zip archive"));
-	std::error_code ec;
-	fs::remove_all(dir, ec);
-}
-
-//===----------------------------------------------------------------------===//
-// Settings
-//===----------------------------------------------------------------------===//
 
 TEST_CASE("the GPU settings validate and normalise", "[anofox_decide][plugin][settings]") {
 	DuckDB db(nullptr);
@@ -1116,7 +979,7 @@ TEST_CASE("the GPU settings validate and normalise", "[anofox_decide][plugin][se
 //===----------------------------------------------------------------------===//
 
 TEST_CASE("decide_devices and decide_backends come from discovery and one predicate", "[anofox_decide][plugin][sql]") {
-	DeviceGuard devices({Dev("cuda:0", "Fake RTX", "sm_89", true), Dev("rocm:0", "Fake Radeon", "gfx1010", false, "MIGraphX does not support the GPU architecture gfx1010"),
+	DeviceGuard devices({Dev("cuda:0", "Fake RTX", "sm_89", true), Dev("rocm:0", "Fake Radeon", "gfx1010", false, "the ROCm plugin does not support the GPU architecture gfx1010"),
 	                     Dev("mlx:0", "Fake Apple M3", "Apple M3", true)});
 	TinyCatalog catalog;
 	DuckDB db(nullptr);
@@ -1151,7 +1014,7 @@ TEST_CASE("decide_devices and decide_backends come from discovery and one predic
 	REQUIRE(duckdb_compat::ResultValue(*b, 1, 1) == Value::BOOLEAN(false)); // cuda:0
 	REQUIRE_THAT(duckdb_compat::ResultValue(*b, 2, 1).ToString(), Contains("its plugin is not installed in " + plugin_dir));
 	REQUIRE_THAT(duckdb_compat::ResultValue(*b, 2, 1).ToString(), Contains("Fix: CALL decide_accelerate();"));
-	REQUIRE_THAT(duckdb_compat::ResultValue(*b, 2, 3).ToString(), Contains("MIGraphX does not support the GPU architecture gfx1010")); // rocm:0 (an unusable device reports its own reason)
+	REQUIRE_THAT(duckdb_compat::ResultValue(*b, 2, 3).ToString(), Contains("the ROCm plugin does not support the GPU architecture gfx1010")); // rocm:0 (an unusable device reports its own reason)
 }
 
 TEST_CASE("decide_models gives the serving device only to local models", "[anofox_decide][plugin][sql]") {
@@ -1180,7 +1043,7 @@ TEST_CASE("decide_models gives the serving device only to local models", "[anofo
 #ifdef DECIDE_FAKE_PLUGIN_PATH
 
 TEST_CASE("a GPU plugin serves a catalog model through SQL, and auto never names an unsupported device", "[anofox_decide][plugin][sql]") {
-	DeviceGuard devices({Dev("cuda:1", "Fake RTX", "sm_89", true), Dev("rocm:0", "Fake Radeon", "gfx1010", false, "MIGraphX does not support the GPU architecture gfx1010"),
+	DeviceGuard devices({Dev("cuda:1", "Fake RTX", "sm_89", true), Dev("rocm:0", "Fake Radeon", "gfx1010", false, "the ROCm plugin does not support the GPU architecture gfx1010"),
 	                     Dev("mlx:0", "Fake Apple M3", "Apple M3", true)});
 	TinyCatalog catalog;
 	DuckDB db(nullptr);
@@ -1223,7 +1086,7 @@ TEST_CASE("a GPU plugin serves a catalog model through SQL, and auto never names
 	REQUIRE(supported["test-tiny/cpu"] == Value::BOOLEAN(true));
 	REQUIRE(supported["test-tiny/cuda:1"] == Value::BOOLEAN(true));
 	REQUIRE(supported["test-tiny/rocm:0"] == Value::BOOLEAN(false));
-	REQUIRE_THAT(reason["test-tiny/rocm:0"], Contains("MIGraphX does not support"));
+	REQUIRE_THAT(reason["test-tiny/rocm:0"], Contains("the ROCm plugin does not support"));
 	REQUIRE(supported["test-tiny/mlx:0"] == Value::BOOLEAN(false));
 	REQUIRE_THAT(reason["test-tiny/mlx:0"], Contains("plugin is not installed"));
 	REQUIRE(supported["tiny-local/cpu"] == Value::BOOLEAN(true));
@@ -1265,7 +1128,7 @@ TEST_CASE("a GPU plugin serves a catalog model through SQL, and auto never names
 	REQUIRE_NO_FAIL(con.Query("SET anofox_decide_device = 'rocm'"));
 	auto rocm = con.Query(kQuestion);
 	REQUIRE(rocm->HasError());
-	REQUIRE_THAT(rocm->GetError(), Contains("decide_probability: anofox_decide_device is 'rocm' but model 'test-tiny' cannot run on rocm:0: MIGraphX does not support the GPU architecture gfx1010"));
+	REQUIRE_THAT(rocm->GetError(), Contains("decide_probability: anofox_decide_device is 'rocm' but model 'test-tiny' cannot run on rocm:0: the ROCm plugin does not support the GPU architecture gfx1010"));
 	REQUIRE_THAT(rocm->GetError(), Contains("CALL decide_accelerate()"));
 	REQUIRE_NO_FAIL(con.Query("SET anofox_decide_device = 'mlx'"));
 	auto mlx = con.Query(kQuestion);
@@ -1518,11 +1381,11 @@ TEST_CASE("decide_accelerate on a machine with no usable GPU says the CPU serves
 	REQUIRE(duckdb_compat::ResultValue(*r, 1, 1).ToString() == "cpu");
 
 	// An unusable GPU is named with its reason, and still no download is attempted.
-	DeviceGuard unusable({Dev("rocm:0", "Fake Radeon", "gfx1010", false, "MIGraphX does not support the GPU architecture gfx1010")});
+	DeviceGuard unusable({Dev("rocm:0", "Fake Radeon", "gfx1010", false, "the ROCm plugin does not support the GPU architecture gfx1010")});
 	auto u = con.Query("SELECT status, detail FROM decide_accelerate() WHERE step = 'hardware'");
 	REQUIRE_NO_FAIL(*u);
 	REQUIRE(duckdb_compat::ResultValue(*u, 0, 0).ToString() == "none");
-	REQUIRE_THAT(duckdb_compat::ResultValue(*u, 1, 0).ToString(), Contains("found Fake Radeon (rocm:0) but it is not usable on this machine: MIGraphX does not support"));
+	REQUIRE_THAT(duckdb_compat::ResultValue(*u, 1, 0).ToString(), Contains("found Fake Radeon (rocm:0) but it is not usable on this machine: the ROCm plugin does not support"));
 }
 
 TEST_CASE("decide_accelerate with no checksum asset leaves nothing to load and does not probe", "[anofox_decide][plugin][sql][download]") {
@@ -1574,7 +1437,7 @@ TEST_CASE("decide_gpu_precompile warms the buckets on a compile-per-shape backen
 	auto cuda = con.Query("SELECT * FROM decide_gpu_precompile('test-tiny')");
 	REQUIRE(cuda->HasError());
 	REQUIRE_THAT(cuda->GetError(), Contains("decide_gpu_precompile: the 'cuda' backend does not compile per shape"));
-	REQUIRE_THAT(cuda->GetError(), Contains("Fix: only ROCm (MIGraphX) needs it"));
+	REQUIRE_THAT(cuda->GetError(), Contains("decide_gpu_precompile is deprecated"));
 
 	// ROCm: every bucket, or the one that holds seq.
 	REQUIRE_NO_FAIL(con.Query("SET anofox_decide_device = 'rocm'"));
@@ -1626,7 +1489,8 @@ TEST_CASE("decide_accelerate downloads, verifies and activates a plugin end to e
 	REQUIRE(status["verify"] == "ok");
 	REQUIRE(status["device"] == "ready");
 	REQUIRE_THAT(detail["device"], Contains("decide_backends()"));
-	REQUIRE(status["note"] == "first-run cost");
+	REQUIRE(status["note"] == "prerequisite"); // the ROCm plugin compiles nothing ahead; it links the system's ROCm
+	REQUIRE_THAT(detail["note"], Contains("HIP, hipBLAS and rocBLAS"));
 	// Live in this session, without reconnecting: the catalog model is now served by rocm:0.
 	auto after = con.Query("SELECT device FROM decide_models() WHERE model = 'test-tiny'");
 	REQUIRE(duckdb_compat::ResultValue(*after, 0, 0).ToString() == "rocm:0");

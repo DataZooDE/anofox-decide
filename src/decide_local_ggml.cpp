@@ -233,7 +233,7 @@ vector<vector<float>> DecideGgmlScore(DecideGgmlModel &model, const DecideLocalB
 	}
 	const auto it = out.find("scores");
 	if (it == out.end() || it->second.shape.size() != 2 || it->second.shape[0] != batch.batch || it->second.shape[1] != batch.markers) {
-		// the ONNX Runtime path's wording (decide_local_nli.cpp), naming what the graph returned
+		// name what the graph returned
 		const auto dims = it == out.end() ? std::vector<int64_t>() : it->second.shape;
 		throw InvalidInputException(DecideMsg(
 		    function,

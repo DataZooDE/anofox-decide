@@ -5,9 +5,8 @@
 // and a map "initializer name -> safetensors key" (tools/export_julia
 // --weight-free). The upstream safetensors file is downloaded by
 // decide_download. Loading maps the file, upcasts float16/bfloat16 tensors to
-// float32 into an owned arena, and lists the buffers for ONNX Runtime's
-// AddExternalInitializers. No ONNX Runtime types here: the injection itself
-// lives in decide_local_nli.cpp, the only TU that includes onnxruntime.
+// float32 into an owned arena (or keeps them 16-bit for a GPU plugin), and lists
+// the buffers the engine reads its initializers from by name.
 //===----------------------------------------------------------------------===//
 
 #pragma once
@@ -47,7 +46,7 @@ DecideTensorMap DecideParseTensorMap(const char *json, idx_t size, const string 
 
 //! Float32 buffers ready for injection. Owns the mapping and the upcast arena;
 //! the buffers stay valid for the lifetime of this object, which must therefore
-//! outlive the ONNX Runtime session that references them.
+//! outlive the engine session (or plugin) that reads them.
 struct DecideLoadedWeights {
 	vector<string> names;
 	vector<vector<int64_t>> shapes;

@@ -71,7 +71,7 @@ def main():
     ap.add_argument("--tokens", default="128,512,2048")
     ap.add_argument("--rows", type=int, default=64)
     ap.add_argument("--batch-tokens", default="0")
-    ap.add_argument("--set", default="", help="extra SET statements, e.g. \"SET anofox_decide_local_engine='ggml';\"")
+    ap.add_argument("--set", default="", help="extra SET statements, e.g. \"SET threads = 4;\"")
     ap.add_argument("--duckdb", default=str(ROOT / "build/release/duckdb"))
     ap.add_argument("--extension", default=str(ROOT / "build/release/extension/anofox_decide/anofox_decide.duckdb_extension"))
     a = ap.parse_args()

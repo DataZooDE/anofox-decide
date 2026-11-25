@@ -83,8 +83,8 @@ unique_ptr<DecidePluginSession> DecideLoadPlugin(const string &library_path, Dec
                                                  bool *graph_refused = nullptr);
 
 //! Can this library be loaded as a plugin of an ABI we speak? Loads it and checks the entry point and
-//! abi_version, and stops there: it never calls create(), which reaches the driver, can take minutes (a
-//! MIGraphX compile) and can fail on a busy card. Never throws: a missing or unreadable file is false, with the
+//! abi_version, and stops there: it never calls create(), which reaches the driver, loads the weights onto the
+//! device and can fail on a busy card. Never throws: a missing or unreadable file is false, with the
 //! loader's own text in `error` (usually the missing dependency, which is a different problem from a missing
 //! file).
 bool DecidePluginLoadable(const string &library_path, string *error = nullptr);
