@@ -241,3 +241,24 @@ The Phase 3 and Phase 4 checks again on anofox-decide 0cd7fab (ggml only), this 
 - **Phase 3 (gfx1150, ROCm):** `test/sql/decide_local_e2e_gpu.test` passes (85 assertions, every block served by `plugin:rocm`); the
   evaluation as above. gfx1201 (bigfox) and the RTX 4090 were measured on the same plugin release earlier the same day (table above),
   the M3 MLX row with the adapter's merged MLX fixes.
+
+**Local bench on the final code** (`tools/bench/local_bench.py`, fresh process per cell, CPU, 2 rounds alternating with ONNX Runtime
+from decide v2026.11.24 via `--no-engine-probe`; wall min–max, peak RSS, CPU time; two questions per row):
+
+| Cell | Model | Tokens | ggml wall | ORT wall | ggml RSS | ORT RSS | ggml CPU | ORT CPU |
+|---|---|---|---|---|---|---|---|---|
+| 32 rows | julia-1 | 128 | 2.1–2.3 s | 4.7–4.9 s | 0.39 GB | 1.44 GB | 22 s | 91 s |
+| 32 rows | julia-1 | 489 | 6.9–7.5 s | 9.7–16.5 s | 0.44 GB | 1.47 GB | 77 s | 207 s |
+| 16 rows | julia-1 | 1,951 | 18.9–19.0 s | 40.2–41.7 s | 0.78 GB | 2.58 GB | 222 s | 915 s |
+| 32 rows | laya-multilingual | 128 | 5.2–5.3 s | 6.2–10.4 s | 1.92 GB | 3.28 GB | 54 s | 110 s |
+| 32 rows | laya-multilingual | 489 | 16.2–16.5 s | 22.1–33.9 s | 1.93 GB | 3.28 GB | 182 s | 484 s |
+| 32 rows | laya-typed-decisions | 121 | 11.9–12.4 s | 15.8–22.9 s | 2.42 GB | 4.83 GB | 135 s | 315 s |
+| 32 rows | laya-typed-decisions | 470 | 38.8–39.0 s | 58.0–79.3 s | 2.43 GB | 4.83 GB | 454 s | 1,295 s |
+| 64 rows, batch 16384 | julia-1 | 127 | 4.7–4.8 s | 10.4–11.7 s | 0.69 GB | 2.27 GB | 52 s | 227 s |
+| 64 rows, batch 16384 | laya-multilingual | 127 | 11.8–12.0 s | 22.7–23.5 s | 1.93 GB | 4.82 GB | 142 s | 491 s |
+| 64 rows, batch 16384 | laya-typed-decisions | 121 | 26.4–26.6 s | 58.0–59.0 s | 2.44 GB | 5.98 GB | 305 s | 1,242 s |
+| cold, 1 row | julia-1 | 23 | 0.4–0.5 s | 0.8–0.9 s | 0.38 GB | 1.44 GB | 1 s | 3 s |
+| cold, 1 row | laya-multilingual | 23 | 1.0–1.1 s | 1.5–1.6 s | 1.92 GB | 3.23 GB | 2 s | 4 s |
+| cold, 1 row | laya-typed-decisions | 21 | 0.7–0.8 s | 2.7–2.9 s | 2.43 GB | 4.83 GB | 2 s | 7 s |
+
+In every cell the slowest ggml run is faster than the fastest ONNX Runtime run, at lower peak RSS and less CPU time.
