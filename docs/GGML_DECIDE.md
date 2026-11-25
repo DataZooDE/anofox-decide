@@ -189,3 +189,40 @@ Every suite passed and every model was served by `plugin:cuda`; laya-typed-decis
 two smaller models on 200 short tickets: their GPU time is mostly the per-length graph compile and the host-device
 round trips, not arithmetic. On a GPU the large model and long texts gain; for the small models on short texts the CPU
 is the better device. Shape bucketing (fewer distinct lengths, fewer compiles) is the lever if that matters.
+
+## The ONNX Runtime removal gate (2026-11-25)
+
+The bar before ONNX Runtime goes: the same features, the same or better speed, the same or less memory, on every platform decide
+ships and against every GPU path decide released. Every row below is the 200-ticket evaluation (two questions each, 400 answers per
+model), warm, run on one machine per row with the engines alternating; "ORT" is the released decide v2026.11.24 (official DuckDB CLI
+plus the community extension, or on the RTX 4090 the same code built on the pod with its ORT-CUDA plugin v2026.11.13). Every
+candidate row was served by the device it names (`__anofox_decide_local_sessions`).
+
+**Features:** all 352 SQL and C++ tests give identical results under both engines. **Answers:** 0 label flips in every row, metrics
+identical, largest probability difference 9e-5 (M3 CPU vs MLX), elsewhere below 4e-5.
+
+Wall time and peak RSS, julia-1 / laya-multilingual / laya-typed-decisions:
+
+| Platform | Baseline | ggml engine | Baseline wall | ggml wall | Baseline RSS | ggml RSS |
+|---|---|---|---|---|---|---|
+| Linux x64 CPU (Ryzen AI 9 HX 370) | ORT CPU | CPU | 5.4 / 13.0 / 30.8 s | 4.7 / 10.7 / 25.9 s | 1.45 / 3.13 / 4.89 GB | 0.49 / 1.94 / 2.44 GB |
+| macOS arm64 CPU (M3) | ORT CPU | CPU (P-cores, Accelerate) | 11 / 34 / 88 s | 5 / 13 / 35 s | 1.49 / 3.12 / 4.91 GB | 0.39 / 2.00 / 2.42 GB |
+| NVIDIA RTX 4090 | ORT CUDA | ggml-CUDA plugin | 11 / 15 / 18 s | 4 / 6 / 7 s | 1.78 / 4.02 / 6.05 GB | 1.04 / 1.21 / 1.35 GB |
+| AMD gfx1201 (RX 9070) | ORT MIGraphX | ggml-ROCm plugin | 16 / 26 / 43 s | 6 / 7 / 11 s | 2.59 / 4.61 / 5.74 GB | 0.98 / 1.09 / 1.21 GB |
+| Apple M3 GPU | decide's MLX plugin | adapter MLX plugin | 8 / 11 / 17 s | 6 / 8 / 14 s | 1.30 / 1.27 / 1.28 GB | 1.29 / 1.27 / 1.27 GB |
+
+Notes:
+
+- **AMD gfx1150** (Radeon 890M): the released MIGraphX path does not support it; the ggml-ROCm plugin serves it. A new capability, no
+  baseline.
+- **Host CPU time on a GPU.** The ggml GPU plugins spend more host CPU time than ORT: on the RTX 4090 16 / 23 / 37 s against
+  12 / 16 / 20 s, on gfx1201 about 1.6x MIGraphX's. Wall time and memory are better in every row; the extra CPU is the per-op
+  launch work on the host.
+- **`SET threads` now limits the local models.** The CPU engine runs `min(DuckDB threads, physical cores)` threads, so `SET threads = 1`
+  or `4` is slower than ORT was at those settings (ORT ignored the setting). Accepted: honouring the setting is the behaviour.
+- **MLX.** The three fixes that closed the gap against decide's own plugin (adapter PR #5): shape arithmetic on MLX's CPU stream
+  (the GPU-stream read-backs were 58% of the time), 16-bit weights widened on the GPU, the buffer cache released after load and after
+  each run. With decide 0b2279b the host also drops its mapped checkpoint from the resident set once a plugin has the weights.
+  Physical footprint, laya-typed-decisions: 1.73 GB against the old plugin's 1.79 GB.
+- **The released v2026.11.24 has no working ORT-CUDA download** (its release carries no CUDA plugin); the RTX 4090 baseline used the
+  v2026.11.13 plugin, the last that was released.
