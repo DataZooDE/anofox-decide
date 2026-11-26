@@ -240,7 +240,8 @@ The Phase 3 and Phase 4 checks again on anofox-decide 0cd7fab (ggml only), this 
   8-token steps (measured the same as exact lengths); the GPU plugins keep 32-token steps, MLX exact lengths.
 - **Phase 3 (gfx1150, ROCm):** `test/sql/decide_local_e2e_gpu.test` passes (85 assertions, every block served by `plugin:rocm`); the
   evaluation as above. gfx1201 (bigfox) and the RTX 4090 were measured on the same plugin release earlier the same day (table above),
-  the M3 MLX row with the adapter's merged MLX fixes.
+  the M3 MLX row with the adapter's merged MLX fixes. gfx1201 was not re-run on the final code (bigfox unreachable); the maintainer
+  accepted its earlier run (same plugin v2026.11.25, code before the ONNX Runtime removal) as closing Phase 3 on 2026-11-26.
 
 **Local bench on the final code** (`tools/bench/local_bench.py`, fresh process per cell, CPU, 2 rounds alternating with ONNX Runtime
 from decide v2026.11.24 via `--no-engine-probe`; wall min–max, peak RSS, CPU time; two questions per row):
