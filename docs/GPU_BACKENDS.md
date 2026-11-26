@@ -116,9 +116,8 @@ The full gate, the CPU rows included, is in [GGML_DECIDE.md](GGML_DECIDE.md).
 probability moved by more than 4e-5 (MLX: bit-identical to the previous MLX plugin). The ggml plugins use more host CPU time than the
 previous ones (on the RTX 4090 16 / 23 / 37 s against 12 / 16 / 20 s): the per-op launch work runs on the host.
 
-The MLX row is measured with the plugin of the next anofox-ggml-adapter release (its pull request #5: shape arithmetic on MLX's CPU
-stream, 16-bit weights widened on the GPU, the buffer cache released); with the plugin of v2026.11.25 the same run takes 13 / 15 /
-23 s at 1.3 / 2.4 / 2.6 GB.
+The MLX row is measured with the MLX fixes of anofox-ggml-adapter v2026.11.26 (shape arithmetic on MLX's CPU stream, 16-bit weights
+widened on the GPU, the buffer cache released); with the plugin of v2026.11.25 the same run took 13 / 15 / 23 s at 1.3 / 2.4 / 2.6 GB.
 
 Test conditions: CUDA on an RTX 4090 (RunPod), the ggml-CUDA plugin of anofox-ggml-adapter v2026.11.25 against the previous ONNX Runtime 1.29
 CUDA plugin of decide v2026.11.13 (the last release that shipped one). ROCm on gfx1201 with ROCm 7.2, against the previous MIGraphX 2.15 plugin. MLX 0.32
@@ -190,7 +189,7 @@ reference and the labels to match where the reference is not a near tie, and che
 The plugins are released by [anofox-ggml-adapter](https://github.com/DataZooDE/anofox-ggml-adapter/releases), not
 by this repository: `decide_download_runtime` fetches from the adapter release that `DECIDE_PLUGIN_RELEASE_TAG`
 (`src/include/decide_plugin_artifacts.hpp`) names, which is the adapter's `ANOFOX_GGML_PLUGIN_RELEASE_TAG`
-(currently `v2026.11.25`). A stale pin is safe: the loader refuses a plugin of another ABI version or struct layout.
+(currently `v2026.11.26`). A stale pin is safe: the loader refuses a plugin of another ABI version or struct layout.
 Checklist for a release:
 
 1. **Bump the adapter submodule** (`vendor/anofox-ggml-adapter`) when a new plugin release is wanted; the pin moves
