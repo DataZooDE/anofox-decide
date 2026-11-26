@@ -207,7 +207,7 @@ Wall time and peak RSS, julia-1 / laya-multilingual / laya-typed-decisions:
 | Linux x64 CPU (Ryzen AI 9 HX 370) | ORT CPU | CPU | 5.6 / 12.5 / 32.2 s | 4.5 / 10.2 / 25.9 s | 1.42 / 3.24 / 4.84 GB | 0.41 / 1.93 / 2.44 GB |
 | macOS arm64 CPU (M3) | ORT CPU | CPU (P-cores, Accelerate) | 11 / 34 / 88 s | 5 / 13 / 35 s | 1.49 / 3.12 / 4.91 GB | 0.39 / 2.00 / 2.42 GB |
 | NVIDIA RTX 4090 | ORT CUDA | ggml-CUDA plugin | 11 / 15 / 18 s | 4 / 6 / 7 s | 1.78 / 4.02 / 6.05 GB | 1.04 / 1.21 / 1.35 GB |
-| AMD gfx1201 (RX 9070) | ORT MIGraphX | ggml-ROCm plugin | 16 / 26 / 43 s | 6 / 7 / 11 s | 2.59 / 4.61 / 5.74 GB | 0.98 / 1.09 / 1.21 GB |
+| AMD gfx1201 (RX 9070) | ORT MIGraphX | ggml-ROCm plugin | 16 / 26 / 43 s | 4 / 5 / 9 s | 2.59 / 4.61 / 5.74 GB | 1.01 / 1.06 / 1.20 GB |
 | Apple M3 GPU | decide's MLX plugin | adapter MLX plugin | 8 / 11 / 17 s | 6 / 8 / 14 s | 1.30 / 1.27 / 1.28 GB | 1.29 / 1.27 / 1.27 GB |
 
 Notes:
@@ -239,9 +239,12 @@ The Phase 3 and Phase 4 checks again on anofox-decide 0cd7fab (ggml only), this 
   tickets padded by up to 31 tokens, against a ~7 ms compile per shape), so ggml merely tied ONNX Runtime. The CPU now pads to
   8-token steps (measured the same as exact lengths); the GPU plugins keep 32-token steps, MLX exact lengths.
 - **Phase 3 (gfx1150, ROCm):** `test/sql/decide_local_e2e_gpu.test` passes (85 assertions, every block served by `plugin:rocm`); the
-  evaluation as above. gfx1201 (bigfox) and the RTX 4090 were measured on the same plugin release earlier the same day (table above),
-  the M3 MLX row with the adapter's merged MLX fixes. gfx1201 was not re-run on the final code (bigfox unreachable); the maintainer
-  accepted its earlier run (same plugin v2026.11.25, code before the ONNX Runtime removal) as closing Phase 3 on 2026-11-26.
+  evaluation as above. The RTX 4090 was measured on the same plugin release earlier the same day (table above), the M3 MLX row with
+  the adapter's merged MLX fixes.
+- **Phase 3 (gfx1201, bigfox, ROCm 7.2), decide 4e3e699, released plugin v2026.11.25:** `test/sql/decide_local_e2e_gpu.test` passes
+  (85 assertions, every block served by `plugin:rocm`). The evaluation, warm: 4 / 5 / 9 s at 1.01 / 1.06 / 1.20 GB (cold 6 / 7 / 10 s);
+  0 flips against the ggml CPU on the same machine (7 / 15 / 33 s) and against the earlier ORT-MIGraphX baseline (16 / 26 / 43 s at
+  2.59 / 4.61 / 5.74 GB), max |dp| 5.2e-5. The gate table's gfx1201 row shows these numbers.
 
 **Local bench on the final code** (`tools/bench/local_bench.py`, fresh process per cell, CPU, 2 rounds alternating with ONNX Runtime
 from decide v2026.11.24 via `--no-engine-probe`; wall min–max, peak RSS, CPU time; two questions per row):
