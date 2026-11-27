@@ -106,7 +106,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 #ifdef EXT_VERSION_ANOFOX_DECIDE
 	version = EXT_VERSION_ANOFOX_DECIDE;
 #else
-	version = "2026.11.24"; // builds without a version tag (EXT_VERSION_ANOFOX_DECIDE) report the release they come from
+	version = "2026.11.27"; // builds without a version tag (EXT_VERSION_ANOFOX_DECIDE) report the release they come from
 #endif
 	if (telemetry_enabled) {
 		Value key_value;
@@ -135,6 +135,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	anofox::RegisterDecideGpuPrecompile(loader);
 	anofox::RegisterDecideContract(loader);
 	anofox::ApplyDecideContractTags(loader, preexisting);
+	anofox::RegisterDecideLocalDiagnostics(loader);
 
 	datazoo::RegisterBannerOption(loader);
 	// Last, so a load that fails earlier never advertises itself. Silent unless

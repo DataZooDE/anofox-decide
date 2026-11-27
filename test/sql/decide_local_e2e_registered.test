@@ -1,0 +1,108 @@
+# name: test/sql/decide_local_e2e_registered.test
+# description: A user-registered model (a full .onnx with its weights inside, exported by tools/export_julia) answers
+#              the support-ticket questions exactly like the catalog model it was exported from. Same weights (the
+#              snapshot's model.safetensors is byte-identical to the catalog download), two load paths: the embedded
+#              weight-free graph with injected safetensors, and the user's own graph file.
+#
+#              Needs the catalog models downloaded and the three exports under DECIDE_EXPORTS_DIR:
+#                <dir>/out/<model>/julia1.onnx (+ rl_agent_config.json for Laya), <dir>/weights/... tokenizers
+#                (tools/export_julia/README.md, "Export"; docs/GGML_DECIDE.md lists the exact commands).
+#                DECIDE_REAL_WEIGHTS=1 DECIDE_EXPORTS_DIR=<dir> \
+#                  ./build/release/test/unittest test/sql/decide_local_e2e_registered.test
+# group: [anofox_decide]
+
+require anofox_decide
+
+require-env DECIDE_REAL_WEIGHTS
+
+require-env DECIDE_EXPORTS_DIR
+
+require-env DECIDE_CACHE_DIR
+
+statement ok
+LOAD anofox_decide
+
+statement ok
+SET anofox_decide_device = 'cpu';
+
+# DuckDB's unittest gives every test its own HOME, so the downloaded models are found through DECIDE_CACHE_DIR
+# (scripts/e2e_local.sh sets it to ~/.cache/anofox-decide)
+statement ok
+SET anofox_decide_cache_dir = '${DECIDE_CACHE_DIR}';
+
+query I
+SELECT decide_register_model('my-julia', 'local', '${DECIDE_EXPORTS_DIR}/out/julia-1/julia1.onnx',
+                             '${DECIDE_EXPORTS_DIR}/weights/julia-1/tokenizer/tokenizer.json')
+----
+1
+
+query I
+SELECT decide_register_model('my-laya-ml', 'local', '${DECIDE_EXPORTS_DIR}/out/laya-multilingual/julia1.onnx',
+                             '${DECIDE_EXPORTS_DIR}/weights/laya/multilingual/tokenizer/tokenizer.json', 'laya')
+----
+1
+
+query I
+SELECT decide_register_model('my-laya-td', 'local', '${DECIDE_EXPORTS_DIR}/out/laya-typed-decisions/julia1.onnx',
+                             '${DECIDE_EXPORTS_DIR}/weights/laya/typed-decisions/tokenizer/tokenizer.json', 'laya',
+                             MAP {'calibration': 'platt:1.1,-0.3'})
+----
+1
+
+statement ok
+CREATE TABLE tickets AS SELECT * FROM (VALUES
+  (1, 'I was charged twice for my March invoice, please refund the extra 49 EUR.'),
+  (2, 'The app crashes every time I open the export dialog on version 3.2.'),
+  (3, 'Thanks for the quick help yesterday, everything works now!'),
+  (4, 'I want my money back, this product does not do what was advertised.'),
+  (9, 'My parcel was supposed to arrive on Monday and the tracking has not moved for a week.'),
+  (12, 'I cannot reset my password, the reset email never arrives.'),
+  (13, 'This is the third time I am writing. Nobody answers. Refund me now or I will dispute the charge.'),
+  (33, 'Ich wurde zweimal belastet, bitte erstatten Sie mir den doppelten Betrag zurück.'),
+  (36, 'Je veux être remboursé, le produit ne correspond pas à la description.'),
+  (39, 'Il pacco è arrivato danneggiato, voglio il rimborso completo.')
+) t(id, text);
+
+# each registered model against its catalog twin: refund probability, routing, frustration score
+query III
+SELECT count(*) FILTER (NOT coalesce(abs(decide_probability(text, 'A refund is requested.', model := 'my-julia')
+                            - decide_probability(text, 'A refund is requested.', model := 'julia-1')) <= 1e-5, false)),
+       count(*) FILTER (NOT coalesce(decide_choice(text, 'Which team owns this?', ['billing', 'defect', 'account', 'shipping', 'other'], model := 'my-julia')
+                        = decide_choice(text, 'Which team owns this?', ['billing', 'defect', 'account', 'shipping', 'other'], model := 'julia-1'), false)),
+       count(*) FILTER (NOT coalesce(abs(decide_score(text, 'How frustrated is the writer?', ['calm', 'frustrated', 'angry'], model := 'my-julia')
+                            - decide_score(text, 'How frustrated is the writer?', ['calm', 'frustrated', 'angry'], model := 'julia-1')) <= 1e-5, false))
+FROM tickets
+----
+0	0	0
+
+query III
+SELECT count(*) FILTER (NOT coalesce(abs(decide_probability(text, 'A refund is requested.', model := 'my-laya-ml')
+                            - decide_probability(text, 'A refund is requested.', model := 'laya-multilingual')) <= 1e-5, false)),
+       count(*) FILTER (NOT coalesce(decide_choice(text, 'Which team owns this?', ['billing', 'defect', 'account', 'shipping', 'other'], model := 'my-laya-ml')
+                        = decide_choice(text, 'Which team owns this?', ['billing', 'defect', 'account', 'shipping', 'other'], model := 'laya-multilingual'), false)),
+       count(*) FILTER (NOT coalesce(abs(decide_score(text, 'How frustrated is the writer?', ['calm', 'frustrated', 'angry'], model := 'my-laya-ml')
+                            - decide_score(text, 'How frustrated is the writer?', ['calm', 'frustrated', 'angry'], model := 'laya-multilingual')) <= 1e-5, false))
+FROM tickets
+----
+0	0	0
+
+# typed-decisions registered WITH a Platt calibration: yes/no answers are calibrated (p' = sigmoid(1.1 logit(p) - 0.3)),
+# choice and score answers are untouched
+query III
+SELECT count(*) FILTER (NOT coalesce(abs(decide_probability(text, 'A refund is requested.', model := 'my-laya-td')
+                            - 1 / (1 + exp(-(1.1 * ln(pc / (1 - pc)) - 0.3)))) <= 1e-5, false)),
+       count(*) FILTER (NOT coalesce(decide_choice(text, 'Which team owns this?', ['billing', 'defect', 'account', 'shipping', 'other'], model := 'my-laya-td')
+                        = decide_choice(text, 'Which team owns this?', ['billing', 'defect', 'account', 'shipping', 'other'], model := 'laya-typed-decisions'), false)),
+       count(*) FILTER (NOT coalesce(abs(decide_score(text, 'How frustrated is the writer?', ['calm', 'frustrated', 'angry'], model := 'my-laya-td')
+                            - decide_score(text, 'How frustrated is the writer?', ['calm', 'frustrated', 'angry'], model := 'laya-typed-decisions')) <= 1e-5, false))
+FROM (SELECT *, greatest(least(decide_probability(text, 'A refund is requested.', model := 'laya-typed-decisions'), 1 - 1e-6), 1e-6) AS pc
+      FROM tickets)  -- clamped like the implementation
+----
+0	0	0
+
+# both load paths ran on the ggml engine, and nothing elsewhere
+query II
+SELECT count(*) FILTER (engine = 'ggml' AND runs > 0), count(*) FILTER (engine <> 'ggml')
+FROM __anofox_decide_local_sessions()
+----
+6	0

@@ -16,14 +16,6 @@ EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 DUCKDB_VER ?= v2.0.1
 CI_TOOLS_BRANCH ?= v2.0-cyanoptera
 
-# Release/distribution builds link ONNX Runtime statically via the vcpkg
-# "ort-vcpkg" manifest feature (single self-contained loadable extension).
-# Local dev against a prebuilt/system ORT: `make release DECIDE_ORT_VCPKG=0`.
-DECIDE_ORT_VCPKG ?= 1
-ifeq ($(DECIDE_ORT_VCPKG),1)
-EXT_RELEASE_FLAGS += -DVCPKG_MANIFEST_FEATURES=ort-vcpkg
-endif
-
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
 # `make test_release` (what CI runs) must run OUR suite below on every extension-ci-tools line. v1.5-variegata
@@ -47,6 +39,11 @@ DECIDE_TEST_ENV = DATAZOO_DISABLE_TELEMETRY=1
 # missing-key and secret-lookup bugs): unset them for everything except test-live.
 DECIDE_OFFLINE_ENV = env -u TYPESAFE_API_KEY -u LIQUID_API_KEY -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_ACCOUNT_ID -u OPENAI_API_KEY -u GEMINI_API_KEY -u HF_TOKEN DATAZOO_DISABLE_TELEMETRY=1
 
+# The real-weight end-to-end suite for the in-process models; fails when weights, exports or the engine are missing
+# (docs/GGML_DECIDE.md): make e2e_local
+e2e_local:
+	scripts/e2e_local.sh $(BUILD_ROOT)
+
 # Default suite is offline-only: the live TypeSafe test runs exclusively via
 # `make test-live` (it needs TYPESAFE_API_KEY + HTTPS egress).
 test_release_internal:
@@ -54,6 +51,7 @@ test_release_internal:
 	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/release/test/unittest "test/sql/decide_registry.test"
 	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/release/test/unittest "test/sql/decide_catalog.test"
 	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/release/test/unittest "test/sql/decide_local.test"
+	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/release/test/unittest "test/sql/decide_local_engine.test"
 	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/release/test/unittest "test/sql/decide_batching.test"
 	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/release/test/unittest "test/sql/decide_devices.test"
 	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/release/test/unittest "test/sql/decide_local_access.test"
@@ -78,6 +76,7 @@ test_debug_internal:
 	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/debug/test/unittest "test/sql/decide_registry.test"
 	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/debug/test/unittest "test/sql/decide_catalog.test"
 	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/debug/test/unittest "test/sql/decide_local.test"
+	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/debug/test/unittest "test/sql/decide_local_engine.test"
 	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/debug/test/unittest "test/sql/decide_batching.test"
 	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/debug/test/unittest "test/sql/decide_devices.test"
 	$(DECIDE_OFFLINE_ENV) ./$(BUILD_ROOT)/debug/test/unittest "test/sql/decide_local_access.test"

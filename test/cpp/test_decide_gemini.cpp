@@ -4,6 +4,8 @@
 // back), a safety block as a whole-request HTTP 400, and a bad key as HTTP 400 too. Keys, secrets, the gate,
 // retries and limits are the shared remote path. The fixtures were recorded live on 12 Nov 2026.
 #include "catch.hpp"
+
+#include <initializer_list>
 #include "anofox_decide_extension.hpp"
 #include "decide_errors.hpp"
 #include "decide_remote.hpp"
@@ -40,6 +42,9 @@ void SetEnv(const char *name, const char *value) {
 }
 
 struct EnvGuard {
+	// an initializer list too: a braced single pair, EnvGuard({{"K", "v"}}), is ambiguous on GCC 11/12 with the vector alone
+	EnvGuard(std::initializer_list<std::pair<const char *, const char *>> list) : EnvGuard(std::vector<std::pair<const char *, const char *>>(list)) {
+	}
 	explicit EnvGuard(std::vector<std::pair<const char *, const char *>> vars) : vars(std::move(vars)) {
 		for (auto &kv : this->vars) {
 			const char *old = std::getenv(kv.first);

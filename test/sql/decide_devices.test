@@ -135,7 +135,7 @@ SELECT count(*) FROM decide_backends() WHERE model = 'stub'
 ----
 0
 
-# A model registered with its own graph can only run on the CPU: every GPU row says so (or that the device is unusable).
+# No plugin is installed in this test's cache, so the model registered with its own graph is supported on the CPU only.
 query I
 SELECT count(*) FROM decide_backends() WHERE model = 'tiny-local' AND device <> 'cpu' AND supported
 ----

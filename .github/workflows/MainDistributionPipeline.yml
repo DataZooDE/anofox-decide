@@ -32,11 +32,10 @@ jobs:
       duckdb_version: v1.5.6
       ci_tools_version: v1.5-variegata
       extension_name: anofox_decide
-      # ONNX Runtime is linked statically from the vcpkg overlay port (the
-      # "ort-vcpkg" manifest feature, on by default in the Makefile), so the
-      # loadable extension is one self-contained file.
-      # Excluded: WASM/musl (ORT), MinGW (vcpkg OpenSSL, house pattern), and
-      # osx_amd64 (ONNX Runtime ships no macOS x86_64 archive after v1.23.2).
+      # The in-process models run on the vendored ggml engine, so the loadable
+      # extension is one self-contained file. Excluded, unchanged when ONNX
+      # Runtime was removed (formerly the reason for WASM, musl and osx_amd64):
+      # WASM/musl, MinGW (vcpkg OpenSSL, house pattern) and osx_amd64.
       exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;osx_amd64
 
   duckdb-v1_5_5-smoke-test:

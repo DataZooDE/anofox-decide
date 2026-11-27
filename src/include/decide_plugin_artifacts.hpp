@@ -10,6 +10,8 @@
 
 #include "decide_errors.hpp"
 
+#include "anofox_ggml_adapter/plugin_artifacts.hpp"
+
 #include "duckdb/common/string.hpp"
 #include "duckdb/common/string_util.hpp"
 
@@ -18,62 +20,35 @@
 namespace duckdb {
 namespace anofox {
 
-//! The release whose assets carry the built plugins. ONE definition, bumped by hand when a release is cut:
-//! the release commit also bumps the version strings, and test_decide_plugin.cpp fails when the two disagree,
-//! so a release always contains code that points at itself (never at the previous release's plugins). The CI
-//! workflow that attaches the plugins to a release checks the same pin.
-//!
-//! A stale tag is NOT made safe by the loader: its abi_version check refuses only a plugin of a DIFFERENT ABI
-//! version, so an older plugin of the same ABI loads and runs (and a release without plugin assets 404s for
-//! decide_accelerate()). What prevents a stale pin is the release gate (tools/ci/check_plugin_pin.sh, run by
-//! gpu_release_gate.yml), which fails any tag that does not equal this constant.
-static constexpr const char *DECIDE_PLUGIN_RELEASE_TAG = "v2026.11.24";
+//! The release whose assets carry the GPU plugins: anofox-ggml-adapter's (the plugins are shared with anofox-tabfm and built, released
+//! and pinned there: ANOFOX_GGML_PLUGIN_RELEASE_TAG). A stale pin is safe: the loader refuses a plugin of another ABI version or struct
+//! layout.
+static constexpr const char *DECIDE_PLUGIN_RELEASE_TAG = ::anofox::ggml_adapter::ANOFOX_GGML_PLUGIN_RELEASE_TAG;
 
 //! Shared-library suffix for plugins on the platform being asked about.
 inline string DecidePluginLibrarySuffix(const string &os) {
-	if (os == "windows") {
-		return ".dll";
-	}
-	if (os == "osx") {
-		return ".dylib";
-	}
-	return ".so";
+	return ::anofox::ggml_adapter::PluginLibrarySuffix(os);
 }
 
-//! The plugin's own name for a device. 'rocm' is driven by MIGraphX, and the artifact is named for the library.
+//! The plugin's own name for a device: 'cuda' and 'rocm' are the ggml plugin per vendor (ggml-cuda, ggml-rocm), Apple GPUs use mlx.
+//! The removed MIGraphX plugin's name, 'migraphx', is the ROCm plugin. [removed]
 inline string DecidePluginBaseName(const string &backend) {
-	if (backend == "rocm" || backend == "migraphx") {
-		return "migraphx";
-	}
-	return backend;
+	return ::anofox::ggml_adapter::PluginBaseName(backend);
 }
 
 //! Plugin filename for a backend on a given platform. Windows drops the 'lib' prefix, as CMake does there.
 inline string DecidePluginFileNameFor(const string &backend, const string &os) {
-	const string prefix = os == "windows" ? "" : "lib";
-	return prefix + "anofox_decide_" + DecidePluginBaseName(backend) + "_plugin" + DecidePluginLibrarySuffix(os);
+	return ::anofox::ggml_adapter::PluginFileNameFor(backend, os);
 }
 
 //! Host OS as this header names them: "linux" | "osx" | "windows".
 inline string DecideHostPluginOs() {
-#if defined(_WIN32)
-	return "windows";
-#elif defined(__APPLE__)
-	return "osx";
-#else
-	return "linux";
-#endif
+	return ::anofox::ggml_adapter::HostPluginOs();
 }
 
 //! Host architecture: "amd64" | "arm64" | "" when neither.
 inline string DecideHostPluginArch() {
-#if defined(__aarch64__) || defined(_M_ARM64)
-	return "arm64";
-#elif defined(__x86_64__) || defined(_M_X64)
-	return "amd64";
-#else
-	return "";
-#endif
+	return ::anofox::ggml_adapter::HostPluginArch();
 }
 
 //! Plugin filename for a backend on THIS machine.
@@ -94,7 +69,7 @@ inline string DecideUnsupportedPluginPlatform(const string &backend, const strin
 		}
 		return DecideMsg(function,
 		                 "no CUDA plugin is published for " + where +
-		                     ": the CUDA backend is built and verified for linux/amd64 only (Windows is planned)",
+		                     ": the ggml CUDA backend is built and verified for linux/amd64 only (Windows is planned)",
 		                 os == "osx" ? "on Apple Silicon use the MLX backend: CALL decide_download_runtime('mlx');"
 		                             : "SET anofox_decide_device = 'cpu'; to score on the CPU");
 	}
@@ -104,7 +79,8 @@ inline string DecideUnsupportedPluginPlatform(const string &backend, const strin
 		}
 		return DecideMsg(function,
 		                 "no ROCm plugin is published for " + where +
-		                     ": MIGraphX runs on linux/amd64 only, and the AMD compute stack has no build for " + os,
+		                     ": the ggml HIP backend is built and verified for linux/amd64 only, and the AMD compute stack has no build "
+		                     "for " + os,
 		                 "SET anofox_decide_device = 'cpu'; to score on the CPU");
 	}
 	if (backend == "mlx") {
@@ -123,11 +99,10 @@ inline string DecideUnsupportedPluginPlatform(const string &backend, const strin
 //! The release asset carrying a backend's sha256 sidecar. CI writes these with
 //! `sha256sum <files> | tee <base>_plugin.sha256`, so the name is keyed to the plugin's base name.
 inline string DecidePluginSha256AssetName(const string &backend) {
-	return DecidePluginBaseName(backend) + "_plugin.sha256";
+	return ::anofox::ggml_adapter::PluginSha256AssetName(backend);
 }
 
-//! Pull one file's digest out of a `sha256sum` sidecar. The sidecar may cover several files (the plugin and its
-//! private ORT core), so the line is matched by filename rather than assumed to be the first.
+//! Pull one file's digest out of a `sha256sum` sidecar. The sidecar may cover several files, so the line is matched by filename rather than assumed to be the first.
 //!
 //! Returns "" when the file is not listed, which callers must treat as a failure, not as "nothing to check": a
 //! sidecar that does not mention the file it is supposed to vouch for proves nothing about it.
@@ -170,7 +145,7 @@ inline string DecideSha256FromSidecar(const string &sidecar, const string &file_
 //! Download URL for one of the pinned release's assets. `base` is the release download root; tests point it
 //! at a loopback server.
 inline string DecidePluginReleaseAssetUrl(const string &asset, const string &release_tag,
-                                          const string &base = "https://github.com/DataZooDE/anofox-decide/releases/download") {
+                                          const string &base = "https://github.com/DataZooDE/anofox-ggml-adapter/releases/download") {
 	if (release_tag.empty()) {
 		return "";
 	}

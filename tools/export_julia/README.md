@@ -91,6 +91,8 @@ JULIA_WEIGHTS_DIR=./weights/julia-1 JULIA_SRC_MODEL=<upstream julia/model.py> uv
 JULIA_WEIGHTS_DIR=./weights/julia-1 JULIA_ONNX=./out/julia1.onnx uv run pytest                # torch against ONNX Runtime, fp32 1e-4
 ```
 
+ONNX Runtime is only this exporter's reference for the graph it writes; the extension runs the graph on its own engine (ggml).
+
 `scripts/compare_upstream.py` compares the DuckDB output with the upstream Python implementation on the
 example tickets (`test/fixtures/support_tickets.csv`); each local ONNX model reproduces its upstream
 reference to within 5e-5 in probability on a small check set.

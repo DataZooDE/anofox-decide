@@ -1,0 +1,258 @@
+# name: test/sql/decide_local_e2e_registered_gpu.test
+# description: A model registered with its own .onnx (a full export with its weights inside, tools/export_julia) runs on a
+#              GPU plugin (DECIDE_E2E_DEVICE = cuda | rocm | mlx, the plugin in DECIDE_E2E_EP_PATH) and answers the
+#              support-ticket questions like its catalog twin on the same plugin: probabilities and scores within 1e-4,
+#              labels exact. Each answer set is proved served by plugin:<device>. The database is restarted between the
+#              two load paths of a model, so only one model's GPU session is alive at a time: on a GPU that shares the
+#              host's memory every session holds its weights twice.
+#
+#              Needs the catalog models downloaded and the three exports under DECIDE_EXPORTS_DIR (see
+#              decide_local_e2e_registered.test):
+#                DECIDE_REAL_WEIGHTS=1 DECIDE_EXPORTS_DIR=<dir> DECIDE_CACHE_DIR=~/.cache/anofox-decide DECIDE_E2E_DEVICE=rocm \
+#                  DECIDE_E2E_EP_PATH=<plugin dir> ./build/release/test/unittest test/sql/decide_local_e2e_registered_gpu.test
+# group: [anofox_decide]
+
+require anofox_decide
+
+require-env DECIDE_REAL_WEIGHTS
+
+require-env DECIDE_EXPORTS_DIR
+
+require-env DECIDE_E2E_DEVICE
+
+require-env DECIDE_E2E_EP_PATH
+
+require-env DECIDE_CACHE_DIR
+
+# an on-disk database, so the catalog answers survive the restarts
+load __TEST_DIR__/decide_registered_gpu.db
+
+statement ok
+LOAD anofox_decide
+
+statement ok
+SET anofox_decide_device = '${DECIDE_E2E_DEVICE}';
+
+statement ok
+SET anofox_decide_ep_path = '${DECIDE_E2E_EP_PATH}';
+
+statement ok
+SET anofox_decide_cache_dir = '${DECIDE_CACHE_DIR}';
+
+statement ok
+CREATE TABLE tickets AS SELECT * FROM (VALUES
+  (1, 'I was charged twice for my March invoice, please refund the extra 49 EUR.'),
+  (2, 'The app crashes every time I open the export dialog on version 3.2.'),
+  (3, 'Thanks for the quick help yesterday, everything works now!'),
+  (4, 'I want my money back, this product does not do what was advertised.'),
+  (9, 'My parcel was supposed to arrive on Monday and the tracking has not moved for a week.'),
+  (12, 'I cannot reset my password, the reset email never arrives.'),
+  (13, 'This is the third time I am writing. Nobody answers. Refund me now or I will dispute the charge.'),
+  (33, 'Ich wurde zweimal belastet, bitte erstatten Sie mir den doppelten Betrag zurück.'),
+  (36, 'Je veux être remboursé, le produit ne correspond pas à la description.'),
+  (39, 'Il pacco è arrivato danneggiato, voglio il rimborso completo.')
+) t(id, text);
+# ---------------------------------------------------------------------------
+# julia-1: the catalog model on the plugin, then (after a restart) the registered export of it
+
+statement ok
+CREATE TABLE cat_julia_1 AS SELECT id,
+  decide_probability(text, 'A refund is requested.', model := 'julia-1') AS p,
+  decide_choice(text, 'Which team owns this?', ['billing', 'defect', 'account', 'shipping', 'other'], model := 'julia-1') AS team,
+  decide_score(text, 'How frustrated is the writer?', ['calm', 'frustrated', 'angry'], model := 'julia-1') AS mood
+FROM tickets;
+
+query I
+SELECT count(*) FROM __anofox_decide_local_sessions() WHERE engine = 'plugin:${DECIDE_E2E_DEVICE}' AND runs > 0
+----
+1
+
+restart
+
+statement ok
+LOAD anofox_decide
+
+statement ok
+SET anofox_decide_device = '${DECIDE_E2E_DEVICE}';
+
+statement ok
+SET anofox_decide_ep_path = '${DECIDE_E2E_EP_PATH}';
+
+statement ok
+SET anofox_decide_cache_dir = '${DECIDE_CACHE_DIR}';
+
+query I
+SELECT decide_register_model('my-julia', 'local', '${DECIDE_EXPORTS_DIR}/out/julia-1/julia1.onnx',
+                             '${DECIDE_EXPORTS_DIR}/weights/julia-1/tokenizer/tokenizer.json')
+----
+1
+
+statement ok
+CREATE TABLE reg_julia_1 AS SELECT id,
+  decide_probability(text, 'A refund is requested.', model := 'my-julia') AS p,
+  decide_choice(text, 'Which team owns this?', ['billing', 'defect', 'account', 'shipping', 'other'], model := 'my-julia') AS team,
+  decide_score(text, 'How frustrated is the writer?', ['calm', 'frustrated', 'angry'], model := 'my-julia') AS mood
+FROM tickets;
+
+query I
+SELECT count(*) FROM __anofox_decide_local_sessions() WHERE engine = 'plugin:${DECIDE_E2E_DEVICE}' AND runs > 0
+----
+1
+
+query III
+SELECT count(*) FILTER (NOT coalesce(abs(r.p - c.p) <= 1e-4, false)), count(*) FILTER (NOT coalesce(r.team = c.team, false)),
+       count(*) FILTER (NOT coalesce(abs(r.mood - c.mood) <= 1e-4, false))
+FROM reg_julia_1 r JOIN cat_julia_1 c USING (id)
+----
+0	0	0
+
+restart
+
+statement ok
+LOAD anofox_decide
+
+statement ok
+SET anofox_decide_device = '${DECIDE_E2E_DEVICE}';
+
+statement ok
+SET anofox_decide_ep_path = '${DECIDE_E2E_EP_PATH}';
+
+statement ok
+SET anofox_decide_cache_dir = '${DECIDE_CACHE_DIR}';
+
+# ---------------------------------------------------------------------------
+# laya-multilingual: the catalog model on the plugin, then (after a restart) the registered export of it
+
+statement ok
+CREATE TABLE cat_laya_multilingual AS SELECT id,
+  decide_probability(text, 'A refund is requested.', model := 'laya-multilingual') AS p,
+  decide_choice(text, 'Which team owns this?', ['billing', 'defect', 'account', 'shipping', 'other'], model := 'laya-multilingual') AS team,
+  decide_score(text, 'How frustrated is the writer?', ['calm', 'frustrated', 'angry'], model := 'laya-multilingual') AS mood
+FROM tickets;
+
+query I
+SELECT count(*) FROM __anofox_decide_local_sessions() WHERE engine = 'plugin:${DECIDE_E2E_DEVICE}' AND runs > 0
+----
+1
+
+restart
+
+statement ok
+LOAD anofox_decide
+
+statement ok
+SET anofox_decide_device = '${DECIDE_E2E_DEVICE}';
+
+statement ok
+SET anofox_decide_ep_path = '${DECIDE_E2E_EP_PATH}';
+
+statement ok
+SET anofox_decide_cache_dir = '${DECIDE_CACHE_DIR}';
+
+query I
+SELECT decide_register_model('my-laya-ml', 'local', '${DECIDE_EXPORTS_DIR}/out/laya-multilingual/julia1.onnx',
+                             '${DECIDE_EXPORTS_DIR}/weights/laya/multilingual/tokenizer/tokenizer.json', 'laya')
+----
+1
+
+statement ok
+CREATE TABLE reg_laya_multilingual AS SELECT id,
+  decide_probability(text, 'A refund is requested.', model := 'my-laya-ml') AS p,
+  decide_choice(text, 'Which team owns this?', ['billing', 'defect', 'account', 'shipping', 'other'], model := 'my-laya-ml') AS team,
+  decide_score(text, 'How frustrated is the writer?', ['calm', 'frustrated', 'angry'], model := 'my-laya-ml') AS mood
+FROM tickets;
+
+query I
+SELECT count(*) FROM __anofox_decide_local_sessions() WHERE engine = 'plugin:${DECIDE_E2E_DEVICE}' AND runs > 0
+----
+1
+
+query III
+SELECT count(*) FILTER (NOT coalesce(abs(r.p - c.p) <= 1e-4, false)), count(*) FILTER (NOT coalesce(r.team = c.team, false)),
+       count(*) FILTER (NOT coalesce(abs(r.mood - c.mood) <= 1e-4, false))
+FROM reg_laya_multilingual r JOIN cat_laya_multilingual c USING (id)
+----
+0	0	0
+
+restart
+
+statement ok
+LOAD anofox_decide
+
+statement ok
+SET anofox_decide_device = '${DECIDE_E2E_DEVICE}';
+
+statement ok
+SET anofox_decide_ep_path = '${DECIDE_E2E_EP_PATH}';
+
+statement ok
+SET anofox_decide_cache_dir = '${DECIDE_CACHE_DIR}';
+
+# ---------------------------------------------------------------------------
+# laya-typed-decisions: the catalog model on the plugin, then (after a restart) the registered export of it
+
+statement ok
+CREATE TABLE cat_laya_typed_decisions AS SELECT id,
+  decide_probability(text, 'A refund is requested.', model := 'laya-typed-decisions') AS p,
+  decide_choice(text, 'Which team owns this?', ['billing', 'defect', 'account', 'shipping', 'other'], model := 'laya-typed-decisions') AS team,
+  decide_score(text, 'How frustrated is the writer?', ['calm', 'frustrated', 'angry'], model := 'laya-typed-decisions') AS mood
+FROM tickets;
+
+query I
+SELECT count(*) FROM __anofox_decide_local_sessions() WHERE engine = 'plugin:${DECIDE_E2E_DEVICE}' AND runs > 0
+----
+1
+
+restart
+
+statement ok
+LOAD anofox_decide
+
+statement ok
+SET anofox_decide_device = '${DECIDE_E2E_DEVICE}';
+
+statement ok
+SET anofox_decide_ep_path = '${DECIDE_E2E_EP_PATH}';
+
+statement ok
+SET anofox_decide_cache_dir = '${DECIDE_CACHE_DIR}';
+
+query I
+SELECT decide_register_model('my-laya-td', 'local', '${DECIDE_EXPORTS_DIR}/out/laya-typed-decisions/julia1.onnx',
+                             '${DECIDE_EXPORTS_DIR}/weights/laya/typed-decisions/tokenizer/tokenizer.json', 'laya')
+----
+1
+
+statement ok
+CREATE TABLE reg_laya_typed_decisions AS SELECT id,
+  decide_probability(text, 'A refund is requested.', model := 'my-laya-td') AS p,
+  decide_choice(text, 'Which team owns this?', ['billing', 'defect', 'account', 'shipping', 'other'], model := 'my-laya-td') AS team,
+  decide_score(text, 'How frustrated is the writer?', ['calm', 'frustrated', 'angry'], model := 'my-laya-td') AS mood
+FROM tickets;
+
+query I
+SELECT count(*) FROM __anofox_decide_local_sessions() WHERE engine = 'plugin:${DECIDE_E2E_DEVICE}' AND runs > 0
+----
+1
+
+query III
+SELECT count(*) FILTER (NOT coalesce(abs(r.p - c.p) <= 1e-4, false)), count(*) FILTER (NOT coalesce(r.team = c.team, false)),
+       count(*) FILTER (NOT coalesce(abs(r.mood - c.mood) <= 1e-4, false))
+FROM reg_laya_typed_decisions r JOIN cat_laya_typed_decisions c USING (id)
+----
+0	0	0
+
+restart
+
+statement ok
+LOAD anofox_decide
+
+statement ok
+SET anofox_decide_device = '${DECIDE_E2E_DEVICE}';
+
+statement ok
+SET anofox_decide_ep_path = '${DECIDE_E2E_EP_PATH}';
+
+statement ok
+SET anofox_decide_cache_dir = '${DECIDE_CACHE_DIR}';
+

@@ -1,0 +1,37 @@
+# name: test/sql/decide_local_engine.test
+# description: The in-process models run on the ggml engine (vendor/anofox-ggml-adapter). The development switch that chose between
+#              the two engines during the move (anofox_decide_local_engine) is removed.
+# group: [anofox_decide]
+
+require anofox_decide
+
+statement ok
+LOAD anofox_decide
+
+# removed: the setting is unknown
+statement error
+SET anofox_decide_local_engine = 'ggml';
+----
+<REGEX>:.*anofox_decide_local_engine.*
+
+# the tiny fixture model answers on the CPU (a plugin in the default folder must not serve this test)
+statement ok
+SET anofox_decide_device = 'cpu';
+
+query I
+SELECT decide_register_model('tiny-local', 'local', 'test/fixtures/julia1_tiny.onnx', 'test/fixtures/tiny_tokenizer.json')
+----
+1
+
+query III
+SELECT decide_probability('The bill is wrong.', 'A refund is requested.', model := 'tiny-local') BETWEEN 0 AND 1,
+       decide_choice('The bill is wrong.', 'Primary issue?', ['billing', 'defect', 'other'], model := 'tiny-local') IN ('billing', 'defect', 'other'),
+       decide_score('Help! My payouts are failing.', 'How frustrated is the writer?', ['calm', 'frustrated', 'angry'], model := 'tiny-local') BETWEEN 0 AND 2
+----
+true	true	true
+
+# which engine served, and how often: one session for the model, with its forward passes counted
+query II
+SELECT engine, runs >= 1 FROM __anofox_decide_local_sessions() WHERE model LIKE '%julia1_tiny.onnx'
+----
+ggml	true

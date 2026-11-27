@@ -8,6 +8,10 @@ require anofox_decide
 statement ok
 LOAD anofox_decide
 
+# an empty cache, so the answer does not depend on which models this machine has downloaded
+statement ok
+SET anofox_decide_cache_dir = '__TEST_DIR__/decide_registry_empty_cache'
+
 # Builtin stub model is pre-registered by the extension load; the catalog models (not downloaded) are listed too.
 query I
 SELECT count(*) FROM decide_models() WHERE ready

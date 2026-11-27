@@ -1,6 +1,7 @@
 # Local models
 
-A local model runs inside DuckDB on ONNX Runtime, on the CPU and fully offline once its weights are on disk.
+A local model runs inside DuckDB on a built-in engine (ggml, vendored from anofox-ggml-adapter), on the CPU and fully offline
+once its weights are on disk.
 For a GPU, see [GPU acceleration](04-gpu.md).
 
 - [The built-in catalog: Julia-1 and Laya](#the-built-in-catalog-julia-1-and-laya)
@@ -15,9 +16,9 @@ Three models work out of the box:
 
 | Model | Download | Peak memory | Notes |
 |---|---|---|---|
-| `laya-multilingual` | 0.68 GB | 3.4 GB | multilingual (mmBERT-base encoder); the recommended start |
-| `laya-typed-decisions` | 0.85 GB | 5.1 GB | English (ModernBERT-large encoder); the best router in our evaluation |
-| `julia-1` | 0.61 GB | 1.5 GB | smallest and fastest, but the weakest in our evaluation |
+| `laya-multilingual` | 0.68 GB | 1.9 GB | multilingual (mmBERT-base encoder); the recommended start |
+| `laya-typed-decisions` | 0.85 GB | 2.4 GB | English (ModernBERT-large encoder); the best router in our evaluation |
+| `julia-1` | 0.61 GB | 0.4 GB | smallest and fastest, but the weakest in our evaluation |
 
 ```sql
 CALL decide_download('laya-multilingual');           -- once: fetches and verifies the files (8 to 11 seconds on the test machine's connection)
@@ -33,10 +34,11 @@ call to run until they are downloaded, `decide_doctor()` reports them, and namin
 downloaded fails with `model 'laya-multilingual' is not downloaded. Fix: CALL decide_download('laya-multilingual');`.
 Behind a proxy, set `HTTPS_PROXY` as for the hosted models ([Environment variables](05-settings.md#environment-variables)).
 
-The first call in a session loads the model (4.0 s for `laya-multilingual`, 5.5 s for
-`laya-typed-decisions`, 1.4 s for `julia-1` on the test machine, files in the page cache); later calls reuse it.
-Peak resident memory is the table above (measured with `getrusage` over a whole DuckDB process): the Laya
-checkpoints are float16 and ONNX Runtime computes in float32.
+The first call in a session loads the model (0.7 s for `laya-multilingual` and `laya-typed-decisions`, 0.3 s for
+`julia-1` on the test machine, files in the page cache); later calls reuse it. Peak resident memory is the table
+above (the 200-ticket evaluation, measured with `getrusage` over a whole DuckDB process): the Laya checkpoints are
+float16 and the engine computes in float32. DuckDB's own `threads` setting also sets the local models' CPU threads: they run on `min(threads, physical cores)` (a second
+thread per core adds no arithmetic and slows every step), so `SET threads = 1` makes them slower; the default needs no change.
 
 ## Your own exported model
 
@@ -65,7 +67,7 @@ Both SentencePiece-style tokenizers (Julia-1, Laya multilingual) and ByteLevel B
 typed-decisions) are supported. Registration checks the files, not only that they exist: a weights file
 (`.safetensors`), a text file or a zip as the graph, a tokenizer that is not BPE, and a Laya config
 without its keys are rejected with a message that says what the file is. `decide_models()` and
-`decide_doctor()` run the same checks. A model registered with its own `.onnx` graph stays on the CPU
+`decide_doctor()` run the same checks. A model registered with its own `.onnx` graph runs on a GPU as well
 ([GPU acceleration](04-gpu.md)).
 
 ## Long text

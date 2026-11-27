@@ -190,7 +190,7 @@ vector<vector<DecideAnswer>> DecideEvaluateBatch(ClientContext &context, const v
 // Rejects entries with an unknown provider (names decide_models() as the fix).
 void RequireKnownProvider(const DecideModelEntry &entry);
 // One entry point for scoring questions against state: remote providers go over HTTP,
-// local goes to ORT, stub answers deterministically (0.5 binary, first
+// local goes to the in-process engine or a GPU plugin, stub answers deterministically (0.5 binary, first
 // option with a one-hot distribution and top-option probability 1.0).
 vector<DecideAnswer> DecideEvaluate(ClientContext &context, const DecideModelEntry &entry, const string &state,
                                     const vector<DecideQuestion> &questions, const char *function = "decide");

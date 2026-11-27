@@ -53,8 +53,8 @@ vector<DecideDeviceInfo> DecideDiscoverDevices();
 void DecideSetTestDevices(vector<DecideDeviceInfo> devices);
 void DecideClearTestDevices();
 
-//! MIGraphX coverage by gfx arch (kept explicit: an unsupported arch is reported unusable with the arch named).
-bool DecideMIGraphXClaimsArch(const string &gfx);
+//! The gfx architectures the released ggml ROCm plugin carries code objects for (an unsupported arch is reported unusable, named).
+bool DecideRocmArchUsable(const string &gfx);
 //! "gfx%d%x%x" from the KFD gfx_target_version (major*10000 + minor*100 + step).
 string DecideGfxArchFromTargetVersion(uint64_t version);
 
@@ -65,9 +65,8 @@ string DecideGfxArchFromTargetVersion(uint64_t version);
 struct DecideServabilityInputs {
 	string backend; // "cuda" | "rocm" | "mlx"
 	string model;
-	//! A catalog model (decide_download): embedded weight-free graph + tensor map + a safetensors file, the only
-	//! shape a plugin can be handed. A model registered with its own .onnx graph keeps its weights inside the
-	//! graph and can only run on the CPU.
+	//! A catalog model (decide_download): embedded weight-free graph + tensor map + a safetensors file. A model registered with
+	//! its own .onnx graph keeps its weights inside the graph; the plugin gets that whole graph.
 	bool catalog_model = false;
 	bool weights_present = false;
 	string precision = "fp32";
@@ -76,7 +75,14 @@ struct DecideServabilityInputs {
 	bool plugin_installed = false;
 	string plugin_dir;
 	string plugin_problem; // set when the plugin file exists but cannot be used (wrong ABI, missing runtime)
+	string plugin_refused; // set when this plugin already refused to create a session for this model (DecideRememberPluginRefusal)
 };
+
+//! Remember that the plugin at `plugin_path` refused to create a session for the graph `graph_key` (an op it lacks, external
+//! data, ...): from then on the model is not servable there, so 'auto' scores it on the CPU and every surface says why.
+void DecideRememberPluginRefusal(const string &plugin_path, const string &graph_key, const string &reason);
+//! The remembered refusal for (plugin, graph), or "".
+string DecidePluginRefusal(const string &plugin_path, const string &graph_key);
 
 struct DecideServability {
 	bool supported = false;
@@ -123,7 +129,7 @@ DecideDeviceChoice DecideResolveDevice(ClientContext &context, const DecideModel
 //! The device the setting names ('auto' when unset) and the validated precision ("fp32").
 string DecideDeviceSetting(ClientContext &context);
 string DecideGpuPrecision(ClientContext &context);
-//! anofox_decide_plugin_dir, else <cache dir>/plugins. "" when neither can be determined (no HOME).
+//! anofox_decide_ep_path, else <cache dir>/plugins. "" when neither can be determined (no HOME).
 string DecidePluginDir(ClientContext &context);
 //! Full path of a backend's plugin inside `plugin_dir`.
 string DecidePluginPath(const string &plugin_dir, const string &backend);

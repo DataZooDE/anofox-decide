@@ -15,10 +15,7 @@
 #include "decide_plugin_artifacts.hpp"
 #include "decide_registration.hpp"
 #include "decide_remote.hpp"
-#include "decide_soname_patch.hpp"
 #include "telemetry.hpp"
-
-#include "miniz.hpp"
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/function/table_function.hpp"
@@ -42,17 +39,6 @@ namespace anofox {
 namespace fs = std::filesystem;
 
 namespace {
-
-//! Microsoft's CUDA-12 build of onnxruntime-gpu 1.29.0 (cp312 tag: the C++ payload is identical across cp3xx
-//! tags, only the Python bindings differ and are discarded). It lives on a separate Azure Artifacts feed, not
-//! on PyPI proper, whose plain wheel targets CUDA 13. The link is a pip-index redirect to a time-limited
-//! signed URL; the fetch follows it. Pinned by size AND sha256, so what is extracted is deterministic.
-const char *kOrtCudaWheelUrl =
-    "https://aiinfra.pkgs.visualstudio.com/2692857e-05ef-43b4-ba9c-ccf1c22c437c/_packaging/"
-    "9387c3aa-d9ad-4513-968c-383f6f7f53b8/pypi/download/onnxruntime-gpu/1.29/"
-    "onnxruntime_gpu-1.29.0-cp312-cp312-manylinux_2_28_x86_64.whl";
-const int64_t kOrtCudaWheelBytes = 475434900;
-const char *kOrtCudaWheelSha256 = "3338e3a5ad27ca5afd93c60732fa6fde308971cf424517817f3138fa7c5fcdb9";
 
 std::mutex release_base_lock;
 string release_base_override;
@@ -95,8 +81,7 @@ string Scheme(const string &url) {
 
 //! Is it acceptable to follow a redirect from `from` to `to`, given the URL the fetch started at? Never from
 //! https to anything else (a downgrade would hand the bytes to a network attacker), and a release asset on
-//! github.com may only be redirected within GitHub's own hosts. Other origins (the ONNX Runtime wheel's feed
-//! signs a link on a storage host of its own) are held to https only.
+//! github.com may only be redirected within GitHub's own hosts. Other origins are held to https only.
 bool RedirectAllowed(const string &start, const string &from, const string &to) {
 	const auto target = Scheme(to);
 	if (target != "https" && target != "http") {
@@ -115,56 +100,22 @@ bool RedirectAllowed(const string &start, const string &from, const string &to) 
 	return true;
 }
 
-//! Atomic .part-then-rename fetch. With a known size a partial file resumes with a Range request and the result
-//! must have exactly that many bytes; with -1 the file is fetched whole. Redirects are followed (a release
-//! asset is a 302 to a signed CDN URL, sent byte for byte). `not_found` is the message for a 404.
-//!
-//! Only the large known-size download (the ONNX Runtime wheel) keeps a fixed .part name, because resuming it
-//! across sessions is the point; its sha256 is checked afterwards, so two sessions racing on it can only fail an
-//! attempt. Everything else is written to a name private to this process.
-void FetchFileImpl(const string &url0, const string &dest, int64_t expected_size, int timeout_ms, const string &function,
+//! Atomic .part-then-rename fetch of a whole file (a plugin or its sidecar; the sha256 check afterwards is what vouches for the
+//! bytes). Redirects are followed (a release asset is a 302 to a signed CDN URL, sent byte for byte). `not_found` is the message
+//! for a 404. The partial file has a name private to this process and is removed on every failure.
+void FetchFileImpl(const string &url0, const string &dest, const fs::path &part, int timeout_ms, const string &function,
                    const string &what, const string &not_found, const string &not_found_fix) {
-	const fs::path part = expected_size > 0 ? dest + ".part" : dest + ".part." + ProcessSuffix();
 	std::error_code ec;
-	const string retry = "CALL " + function + "(...); again (a partial download resumes where it stopped)";
-	idx_t have = 0;
-	if (fs::exists(part, ec)) {
-		have = fs::file_size(part, ec);
-		if (ec || expected_size < 0 || have > (idx_t)expected_size) {
-			fs::remove(part, ec);
-			have = 0;
-		}
-	}
-	if (expected_size > 0) {
-		const auto space = fs::space(fs::path(dest).parent_path(), ec);
-		if (!ec && space.available < ((idx_t)expected_size - have) + (64ull << 20)) {
-			Fail(function,
-			     "not enough free disk space for " + what + ": " + DecideFormatBytes((idx_t)expected_size - have) +
-			         " are needed and " + DecideFormatBytes(space.available) + " are free",
-			     "free some space or SET anofox_decide_plugin_dir = '<directory on a larger disk>';");
-		}
-	}
+	const string retry = "CALL " + function + "(...); again";
 	string url = url0;
 	int redirects = 0;
-	bool restarted = false;
-	idx_t offset = have;
 	while (true) {
 		std::ofstream out;
 		bool writing = false;
 		bool write_failed = false;
-		auto on_headers = [&](int status, const string &content_range) {
+		auto on_headers = [&](int status, const string &) {
 			writing = false;
-			if (status == 206) {
-				const string want = "bytes " + std::to_string(offset) + "-";
-				if (offset == 0 || content_range.compare(0, want.size(), want) != 0) {
-					return false; // the server answered a different range than asked for
-				}
-				out.open(part, std::ios::binary | std::ios::app);
-				writing = (bool)out;
-				return writing;
-			}
 			if (status == 200) {
-				offset = 0; // a full answer replaces any partial file
 				out.open(part, std::ios::binary | std::ios::trunc);
 				writing = (bool)out;
 				return writing;
@@ -180,22 +131,15 @@ void FetchFileImpl(const string &url0, const string &dest, int64_t expected_size
 				write_failed = true;
 				return false;
 			}
-			offset += n;
 			return true;
 		};
-		auto res = DecideHttpGet(url, (int64_t)offset, timeout_ms, on_headers, on_data);
+		auto res = DecideHttpGet(url, 0, timeout_ms, on_headers, on_data);
 		out.close();
 		if (write_failed) {
 			Fail(function, "cannot write to '" + part.string() + "' (disk full or not writable)",
-			     "free some space or SET anofox_decide_plugin_dir = '<another directory>'; then " + retry);
+			     "free some space or SET anofox_decide_ep_path = '<another directory>'; then " + retry);
 		}
 		if (!res.transport_ok) {
-			if (res.error_kind == "refused" && offset > 0 && !restarted) {
-				restarted = true; // unexpected Range answer: discard the partial file and start over
-				fs::remove(part, ec);
-				offset = 0;
-				continue;
-			}
 			string fix = "check the network connection (behind a proxy, set HTTPS_PROXY); " + retry;
 			if (res.error_kind == "tls") {
 				fix = "the TLS certificate of " + HostOf(url) +
@@ -210,7 +154,6 @@ void FetchFileImpl(const string &url0, const string &dest, int64_t expected_size
 			}
 			const auto next = res.location[0] == '/' ? Origin(url) + res.location : res.location;
 			if (!RedirectAllowed(url0, url, next)) {
-				fs::remove(part, ec);
 				Fail(function,
 				     "refusing to follow a redirect from " + HostOf(url) + " to " + HostOf(next) + " while fetching " + what +
 				         (Scheme(next) != "https" ? " (not https)" : " (not a GitHub host)"),
@@ -219,52 +162,33 @@ void FetchFileImpl(const string &url0, const string &dest, int64_t expected_size
 			url = next;
 			continue;
 		}
-		if (res.status == 416 && !restarted) {
-			restarted = true;
-			fs::remove(part, ec);
-			offset = 0;
-			continue;
-		}
 		if (res.status == 404) {
 			Fail(function, not_found, not_found_fix);
 		}
-		if (res.status != 200 && res.status != 206) {
+		if (res.status != 200) {
 			Fail(function, "HTTP " + std::to_string(res.status) + " from " + HostOf(url) + " for " + what,
 			     res.status == 401 || res.status == 403 ? string("check the network or proxy; the files are public, no login is needed")
 			                                            : retry);
 		}
-		if (expected_size >= 0 && offset < (idx_t)expected_size) {
-			Fail(function, "the download of " + what + " stopped at " + DecideFormatBytes(offset) + " of " +
-			                   DecideFormatBytes((idx_t)expected_size),
-			     retry);
-		}
 		break;
-	}
-	if (expected_size >= 0 && offset != (idx_t)expected_size) {
-		fs::remove(part, ec);
-		Fail(function, what + " has " + std::to_string(offset) + " bytes, expected " + std::to_string(expected_size) +
-		                   "; the partial file was removed",
-		     "retry the call");
 	}
 	fs::remove(dest, ec);
 	fs::rename(part, dest, ec);
 	if (ec) {
 		Fail(function, "cannot move '" + part.string() + "' to '" + dest + "' (" + ec.message() + ")",
-		     "check the permissions of the plugin directory (anofox_decide_plugin_dir)");
+		     "check the permissions of the plugin directory (anofox_decide_ep_path)");
 	}
 }
 
-//! FetchFileImpl, minus the leftovers: a failed fetch that wrote to a name private to this process (everything
-//! but the resumable wheel) removes it, so a failure leaves no junk next to the plugins.
-void FetchFile(const string &url0, const string &dest, int64_t expected_size, int timeout_ms, const string &function,
-               const string &what, const string &not_found, const string &not_found_fix) {
+//! FetchFileImpl, minus the leftovers: a failed fetch removes its partial file, so a failure leaves no junk next to the plugins.
+void FetchFile(const string &url0, const string &dest, int timeout_ms, const string &function, const string &what,
+               const string &not_found, const string &not_found_fix) {
+	const fs::path part = dest + ".part." + ProcessSuffix();
 	try {
-		FetchFileImpl(url0, dest, expected_size, timeout_ms, function, what, not_found, not_found_fix);
+		FetchFileImpl(url0, dest, part, timeout_ms, function, what, not_found, not_found_fix);
 	} catch (...) {
-		if (expected_size <= 0) {
-			std::error_code ec;
-			fs::remove(dest + ".part." + ProcessSuffix(), ec);
-		}
+		std::error_code ec;
+		fs::remove(part, ec);
 		throw;
 	}
 }
@@ -300,137 +224,9 @@ bool DecideResolveRuntimeArtifact(const string &backend, const string &os, const
 	const auto sidecar = DecidePluginSha256AssetName(out.backend);
 	out.sidecar_url = base.empty() ? DecidePluginReleaseAssetUrl(sidecar, DECIDE_PLUGIN_RELEASE_TAG)
 	                               : DecidePluginReleaseAssetUrl(sidecar, DECIDE_PLUGIN_RELEASE_TAG, base);
-	if (out.backend == "cuda") {
-		// The ORT core comes along, not just the providers: the CUDA plugin is a standalone library with its
-		// own shared runtime, because this extension's statically linked ORT cannot host provider libraries.
-		// Core and providers must come from one distribution (a CPU core with a GPU provider crashes).
-		out.wheel_url = kOrtCudaWheelUrl;
-		out.wheel_bytes = kOrtCudaWheelBytes;
-		out.wheel_sha256 = kOrtCudaWheelSha256;
-		// The digests are of the files as written (the core after its SONAME rename), which is deterministic for
-		// the pinned wheel: they are checked on every install call, not just at extraction.
-		out.wheel_entries = {{"onnxruntime/capi/libonnxruntime.so.1.29.0", DECIDE_ORT_RENAMED_SONAME, true,
-		                      "62463add533442416078f7d96223d0acb562bfbc1fa16b9d7a32e6dfe458e9ef"},
-		                     {"onnxruntime/capi/libonnxruntime_providers_cuda.so", "libonnxruntime_providers_cuda.so", false,
-		                      "a4d61cc78e6d8f78c0c7fca09de7af7cd2f5f97b0db8defe64f13e8164a9534c"},
-		                     {"onnxruntime/capi/libonnxruntime_providers_shared.so", "libonnxruntime_providers_shared.so", false,
-		                      "086ec1d5388f64153d9c63470d126693db9a182c8ce236d3a1119068471b8a0d"}};
-	}
-	// ROCm ships only its plugin (it drives libmigraphx_c from the user's ROCm install); MLX only its plugin
-	// (it links the Apple libmlx/libmlxc installed on the machine and needs no ORT).
+	// Every backend is its plugin alone (anofox-ggml-adapter's): CUDA links its runtime statically and needs only the NVIDIA driver,
+	// ROCm links the user's HIP install, MLX the Apple libmlx/libmlxc on the machine.
 	return true;
-}
-
-vector<string> DecideExtractWheelEntries(const string &wheel_path, const vector<DecideRuntimeEntry> &entries,
-                                         const string &dest_dir, const string &function) {
-	std::ifstream wheel(wheel_path, std::ios::binary);
-	if (!wheel) {
-		Fail(function, "cannot open the downloaded runtime archive '" + wheel_path + "'", "retry the call");
-	}
-	wheel.seekg(0, std::ios::end);
-	const auto size = (duckdb_miniz::mz_uint64)wheel.tellg();
-	// Read entries on demand instead of holding the whole archive (hundreds of MB) in memory.
-	duckdb_miniz::mz_zip_archive zip {};
-	zip.m_pRead = [](void *opaque, duckdb_miniz::mz_uint64 offset, void *buffer, size_t n) -> size_t {
-		auto *in = static_cast<std::ifstream *>(opaque);
-		in->clear();
-		in->seekg((std::streamoff)offset);
-		in->read(static_cast<char *>(buffer), (std::streamsize)n);
-		return (size_t)in->gcount();
-	};
-	zip.m_pIO_opaque = &wheel;
-	if (!duckdb_miniz::mz_zip_reader_init(&zip, size, 0)) {
-		Fail(function, "'" + wheel_path + "' downloaded but is not a readable zip archive: the source may have changed shape",
-		     "report it at https://github.com/DataZooDE/anofox-decide/issues");
-	}
-	struct ZipEnd {
-		duckdb_miniz::mz_zip_archive *z;
-		~ZipEnd() {
-			duckdb_miniz::mz_zip_reader_end(z);
-		}
-	} zip_end {&zip};
-	vector<string> written;
-	for (auto &entry : entries) {
-		const int index = duckdb_miniz::mz_zip_reader_locate_file(&zip, entry.zip_path.c_str(), nullptr, 0);
-		if (index < 0) {
-			Fail(function, "expected entry '" + entry.zip_path + "' is not in the downloaded runtime archive: the source may have changed shape",
-			     "report it at https://github.com/DataZooDE/anofox-decide/issues");
-		}
-		if (!entry.patch_soname) {
-			// The CUDA provider library is hundreds of MB: stream it to disk instead of holding it in memory.
-			const auto target = (fs::path(dest_dir) / entry.dest_name).string();
-			const auto tmp = target + ".part." + ProcessSuffix();
-			std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-			auto sink = [](void *opaque, duckdb_miniz::mz_uint64, const void *buffer, size_t n) -> size_t {
-				auto *o = static_cast<std::ofstream *>(opaque);
-				o->write(static_cast<const char *>(buffer), (std::streamsize)n);
-				return *o ? n : 0;
-			};
-			const bool streamed =
-			    duckdb_miniz::mz_zip_reader_extract_to_callback(&zip, (duckdb_miniz::mz_uint)index, sink, &out, 0);
-			out.close();
-			std::error_code ec;
-			if (!streamed || out.fail()) {
-				fs::remove(tmp, ec);
-				Fail(function, "cannot extract '" + entry.zip_path + "' to '" + tmp + "' (disk full, not writable, or a damaged archive)",
-				     "free some space or SET anofox_decide_plugin_dir = '<another directory>'; and retry");
-			}
-			fs::remove(target, ec);
-			fs::rename(tmp, target, ec); // atomic publish
-			if (ec) {
-				Fail(function, "cannot move '" + tmp + "' to '" + target + "' (" + ec.message() + ")",
-				     "check the permissions of the plugin directory (anofox_decide_plugin_dir)");
-			}
-			written.push_back(target);
-			continue;
-		}
-		size_t extracted_size = 0;
-		void *extracted = duckdb_miniz::mz_zip_reader_extract_to_heap(&zip, (duckdb_miniz::mz_uint)index, &extracted_size, 0);
-		if (!extracted) {
-			Fail(function, "failed to extract '" + entry.zip_path + "' from the downloaded runtime archive",
-			     "retry the call; if it persists the archive is damaged: delete the plugin directory's .part files");
-		}
-		struct Heap {
-			void *p;
-			~Heap() {
-				duckdb_miniz::mz_free(p);
-			}
-		} heap {extracted};
-		if (entry.patch_soname) {
-			// Exactly one occurrence or refuse: zero means the wheel changed shape, several means the
-			// only-the-.dynstr-entry assumption broke. Either way a half-renamed core fails HERE, not later as a
-			// plugin that quietly binds to the host's ORT.
-			const auto replaced = DecidePatchOrtSonameInPlace(static_cast<char *>(extracted), extracted_size);
-			if (replaced != 1) {
-				Fail(function,
-				     "expected exactly one SONAME string in '" + entry.zip_path + "' but found " + std::to_string(replaced) +
-				         ": the runtime archive changed shape",
-				     "report it at https://github.com/DataZooDE/anofox-decide/issues");
-			}
-		}
-		const auto target = (fs::path(dest_dir) / entry.dest_name).string();
-		const auto tmp = target + ".part." + ProcessSuffix();
-		{
-			std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-			out.write(static_cast<const char *>(extracted), (std::streamsize)extracted_size);
-			out.flush();
-			if (!out) {
-				std::error_code ec;
-				fs::remove(tmp, ec);
-				Fail(function, "cannot write '" + tmp + "' (disk full or not writable)",
-				     "free some space or SET anofox_decide_plugin_dir = '<another directory>';");
-			}
-		}
-		std::error_code ec;
-		fs::remove(target, ec);
-		fs::rename(tmp, target, ec); // atomic publish
-		if (ec) {
-			Fail(function, "cannot move '" + tmp + "' to '" + target + "' (" + ec.message() + ")",
-			     "check the permissions of the plugin directory (anofox_decide_plugin_dir)");
-		}
-		written.push_back(target);
-	}
-	return written;
 }
 
 namespace {
@@ -453,7 +249,7 @@ void VerifyAgainstSidecar(const DecideRuntimeArtifact &artifact, const string &c
 		const bool cached = attempt == 0 && fs::exists(sidecar_path, ec);
 		if (!cached) {
 			try {
-				FetchFile(artifact.sidecar_url, sidecar_path, -1, timeout_ms, function,
+				FetchFile(artifact.sidecar_url, sidecar_path, timeout_ms, function,
 				          "the checksum of the '" + artifact.backend + "' plugin",
 				          "the release " + string(DECIDE_PLUGIN_RELEASE_TAG) + " has no checksum file '" +
 				              DecidePluginSha256AssetName(artifact.backend) + "' for the '" + artifact.backend + "' plugin",
@@ -503,15 +299,6 @@ void VerifyAgainstSidecar(const DecideRuntimeArtifact &artifact, const string &c
 	}
 }
 
-//! Is the extracted file there and, when its digest is pinned, the one that was pinned?
-bool EntryIntact(const DecideRuntimeEntry &entry, const string &path) {
-	std::error_code ec;
-	if (!fs::exists(path, ec)) {
-		return false;
-	}
-	return entry.sha256.empty() || DecideSha256FileHex(path) == entry.sha256;
-}
-
 } // namespace
 
 void DecideVerifyPluginDigest(const DecideRuntimeArtifact &artifact, const string &plugin_path, int timeout_ms) {
@@ -540,7 +327,7 @@ vector<DecideRuntimeFile> DecideInstallRuntime(ClientContext &context, const Dec
 	fs::create_directories(plugin_dir, ec);
 	if (ec) {
 		Fail(function, "cannot create the plugin directory '" + plugin_dir + "' (" + ec.message() + ")",
-		     "SET anofox_decide_plugin_dir = '<a writable directory>';");
+		     "SET anofox_decide_ep_path = '<a writable directory>';");
 	}
 #ifndef _WIN32
 	if (!dir_existed) {
@@ -553,7 +340,7 @@ vector<DecideRuntimeFile> DecideInstallRuntime(ClientContext &context, const Dec
 	struct stat dir_stat;
 	if (stat(plugin_dir.c_str(), &dir_stat) == 0 && (dir_stat.st_mode & (S_IWGRP | S_IWOTH))) {
 		Fail(function, "the plugin directory '" + plugin_dir + "' is writable by other users, who could replace the plugins in it",
-		     "chmod go-w '" + plugin_dir + "'; or SET anofox_decide_plugin_dir = '<a directory only you can write>';");
+		     "chmod go-w '" + plugin_dir + "'; or SET anofox_decide_ep_path = '<a directory only you can write>';");
 	}
 #else
 	(void)dir_existed;
@@ -563,57 +350,10 @@ vector<DecideRuntimeFile> DecideInstallRuntime(ClientContext &context, const Dec
 		bool present;
 	};
 	vector<Target> targets;
-	bool wheel_needed = false;
-	for (auto &entry : artifact.wheel_entries) {
-		const auto path = (fs::path(plugin_dir) / entry.dest_name).string();
-		// Existence is not enough: a truncated or replaced runtime file would be loaded by the plugin's
-		// DT_NEEDED without any other check, so a pinned digest is compared on every call and a mismatch deletes.
-		const bool present = EntryIntact(entry, path);
-		if (!present) {
-			fs::remove(path, ec);
-		}
-		wheel_needed = wheel_needed || !present;
-		targets.push_back({path, present});
-	}
 	const auto plugin_path = (fs::path(plugin_dir) / artifact.plugin_name).string();
 	const bool plugin_present = fs::exists(plugin_path, ec);
 	targets.push_back({plugin_path, plugin_present});
 
-	if (wheel_needed && !artifact.wheel_url.empty()) {
-		const auto wheel_path = (fs::path(plugin_dir) / ".onnxruntime_gpu.whl").string();
-		FetchFile(artifact.wheel_url, wheel_path, artifact.wheel_bytes, timeout_ms, function,
-		          "the ONNX Runtime GPU runtime (" + DecideFormatBytes((idx_t)artifact.wheel_bytes) + ")",
-		          "the ONNX Runtime GPU runtime is no longer available at its pinned address",
-		          "update the extension (FORCE INSTALL anofox_decide FROM community;)");
-		if (!artifact.wheel_sha256.empty() && DecideSha256FileHex(wheel_path) != artifact.wheel_sha256) {
-			fs::remove(wheel_path, ec);
-			Fail(function, "the downloaded ONNX Runtime GPU runtime does not match its pinned sha256; it was deleted",
-			     "retry the call; if it recurs the source changed, update the extension "
-			     "(FORCE INSTALL anofox_decide FROM community;)");
-		}
-		auto discard_runtime = [&]() {
-			fs::remove(wheel_path, ec);
-			for (auto &entry : artifact.wheel_entries) {
-				fs::remove(fs::path(plugin_dir) / entry.dest_name, ec); // no half-extracted runtime stays behind
-			}
-		};
-		try {
-			DecideExtractWheelEntries(wheel_path, artifact.wheel_entries, plugin_dir, function);
-			for (auto &entry : artifact.wheel_entries) {
-				if (!entry.sha256.empty() && !EntryIntact(entry, (fs::path(plugin_dir) / entry.dest_name).string())) {
-					Fail(function,
-					     "'" + entry.dest_name + "' extracted from the ONNX Runtime GPU runtime does not match its pinned sha256; "
-					     "the extracted files were deleted",
-					     "retry the call; if it recurs the source changed, update the extension "
-					     "(FORCE INSTALL anofox_decide FROM community;)");
-				}
-			}
-		} catch (...) {
-			discard_runtime();
-			throw;
-		}
-		fs::remove(wheel_path, ec); // scratch, not a cache entry
-	}
 	// Verified before anything dlopens these bytes, on a cached hit as well as on a fresh download: the
 	// "already present" decision is existence-only, so without this one corrupt file would be trusted for as
 	// long as it sat there. (A plugin dropped in by hand is replaced or refused here as well: it is checked
@@ -625,7 +365,7 @@ vector<DecideRuntimeFile> DecideInstallRuntime(ClientContext &context, const Dec
 		// matched. Every failure on the way deletes it.
 		const auto quarantine = plugin_path + ".verify." + ProcessSuffix();
 		try {
-			FetchFile(artifact.plugin_url, quarantine, -1, timeout_ms, function,
+			FetchFile(artifact.plugin_url, quarantine, timeout_ms, function,
 			          "the '" + artifact.backend + "' plugin",
 			          "the release " + string(DECIDE_PLUGIN_RELEASE_TAG) + " has no '" + artifact.plugin_name +
 			              "' asset: this release was published without GPU plugins",
@@ -641,7 +381,7 @@ vector<DecideRuntimeFile> DecideInstallRuntime(ClientContext &context, const Dec
 		if (ec) {
 			fs::remove(quarantine, ec);
 			Fail(function, "cannot move the verified plugin into '" + plugin_path + "' (" + ec.message() + ")",
-			     "check the permissions of the plugin directory (anofox_decide_plugin_dir)");
+			     "check the permissions of the plugin directory (anofox_decide_ep_path)");
 		}
 	}
 	DecideBumpPluginProbeGeneration(); // a plugin that has just arrived is visible to this session now
@@ -678,7 +418,7 @@ void RequireExternalAccess(ClientContext &context, const char *function) {
 	if (!Settings::Get<EnableExternalAccessSetting>(context)) {
 		throw PermissionException(DecideMsg(function, "fetching a GPU plugin is not allowed because enable_external_access is off",
 		                                    "SET enable_external_access = true; (or install the plugin into "
-		                                    "anofox_decide_plugin_dir yourself)"));
+		                                    "anofox_decide_ep_path yourself)"));
 	}
 }
 
@@ -743,8 +483,8 @@ void RuntimeScan(ClientContext &context, TableFunctionInput &data, DataChunk &ou
 // decide_accelerate(): one call from "installed" to "using the GPU"
 //
 // The manual path is: know that plugins exist, know which one this machine wants, download it, point
-// anofox_decide_plugin_dir at it. Verification stops at loading the plugin and checking its ABI; it does not
-// run a model (a MIGraphX compile takes minutes, so an onboarding command that proved itself by scoring would
+// anofox_decide_ep_path at it. Verification stops at loading the plugin and checking its ABI; it does not
+// run a model (a first run builds the model's graphs, so an onboarding command that proved itself by scoring would
 // look hung). Per-model servability is a query away in decide_backends().
 //===----------------------------------------------------------------------===//
 
@@ -850,20 +590,14 @@ unique_ptr<GlobalTableFunctionState> AccelerateInit(ClientContext &context, Tabl
 	} else {
 		string detail = "the plugin at " + plugin_path + " cannot be used: " +
 		                (!probe.exists ? string("it is missing") : probe.problem) + ".";
-		if (probe.problem.find("libmigraphx") != string::npos) {
-			detail += " MIGraphX is not installed: install the ROCm MIGraphX runtime, then run CALL decide_accelerate(); again.";
-		} else if (probe.problem.find("libcud") != string::npos || probe.problem.find("libonnxruntime") != string::npos ||
-		           probe.problem.find("libanofoxort") != string::npos) {
-			detail += " A runtime library it needs is missing (CUDA 12.8+ with cuDNN 9 is the user's to install).";
-		} else if (probe.problem.find("libmlx") != string::npos) {
-			detail += " Apple MLX is not installed: brew install mlx mlx-c, then run CALL decide_accelerate(); again.";
+		const auto install = probe.exists ? DecideMissingRuntimeHint(backend, probe.problem) : string();
+		if (!install.empty()) {
+			detail += " A runtime library it links is missing: " + install + ", then run CALL decide_accelerate(); again.";
 		}
 		add("verify", "failed", detail + " Scoring continues on the CPU.");
 	}
 	if (backend == "rocm") {
-		add("note", "first-run cost",
-		    "MIGraphX compiles once per shape bucket, which takes minutes on first use. The compiled programs are "
-		    "cached under anofox_decide_cache_dir.");
+		add("note", "prerequisite", "the ROCm plugin links the system's HIP, hipBLAS and rocBLAS (ROCm 7)");
 	} else if (backend == "mlx") {
 		add("note", "prerequisite", "the MLX plugin links Apple's own libmlx and libmlxc: brew install mlx mlx-c");
 	}
@@ -892,10 +626,9 @@ void RegisterDecideAccelerate(ExtensionLoader &loader) {
 		                   DECIDE_GUARD(RuntimeBind), DECIDE_GUARD(RuntimeInit));
 		RegisterTableFunctionWithAlias(
 		    loader, std::move(func), "decide_download_runtime",
-		    DecideDocs("Download the GPU plugin for 'cuda', 'rocm' or 'mlx' into anofox_decide_plugin_dir (default "
+		    DecideDocs("Download the GPU plugin for 'cuda', 'rocm' or 'mlx' into anofox_decide_ep_path (default "
 		               "<cache dir>/plugins) and verify it against the sha256 published with the release before it is "
-		               "moved into place, and again on every later call of this function (a mismatch deletes it). CUDA "
-		               "also fetches the pinned ONNX Runtime GPU runtime. Refuses a "
+		               "moved into place, and again on every later call of this function (a mismatch deletes it). Refuses a "
 		               "platform nothing is published for before downloading. Columns: file, bytes, status (cached / "
 		               "downloaded).",
 		               "devices", {{{"backend"}, {LogicalType::VARCHAR}, "CALL decide_download_runtime('cuda');"}}));

@@ -4,7 +4,7 @@
 // bad file) and decide_models()/decide_doctor() (which report readiness), so the two can never disagree.
 //
 // "Can be opened" is not enough: a weights file or a README registers fine as a graph and only fails at
-// the first score with an ONNX Runtime error. The checks here are cheap and reject the common mix-ups
+// the first score with an engine error. The checks here are cheap and reject the common mix-ups
 // with a message that says what the file is and what to pass instead.
 
 #include "decide_provider.hpp"
