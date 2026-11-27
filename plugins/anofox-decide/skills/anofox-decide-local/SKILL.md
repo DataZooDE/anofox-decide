@@ -13,13 +13,13 @@ description: >
   anofox_decide_plugin_dir, deprecated) and anofox_decide_gpu_precision. Use when the user wants no
   API key, no data leaving the machine, an offline or air-gapped setup, a Julia-1 / Laya model, a
   GPU, or hits "not downloaded", "tokens but the local model reads at most" or GPU plugin errors.
-version: 2026.11.24
+version: 2026.11.27
 user-invocable: false
 ---
 
 # Anofox Decide — Local Models & GPU
 
-**Extension:** `anofox_decide` v2026.11.24 | **DuckDB:** v1.5.6 / v2.0 | **Runtime:** built-in ggml engine, linked
+**Extension:** `anofox_decide` v2026.11.27 | **DuckDB:** v1.5.6 / v2.0 | **Runtime:** built-in ggml engine, linked
 in | **Dual naming:** `decide_*` and `anofox_decide_*`
 
 A local model runs inside DuckDB. After the one-time download nothing leaves the machine: no key, no

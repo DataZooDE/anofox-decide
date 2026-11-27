@@ -6,6 +6,8 @@ All notable changes to `anofox_decide` are documented here. The format follows
 
 ## [Unreleased]
 
+## [2026.11.27] - 2026-11-27
+
 ### Added
 - `anofox_decide_ep_path`: the directory the GPU plugins are installed in and loaded from (default: `plugins` inside
   the cache directory), the same name as in anofox-tabfm.
