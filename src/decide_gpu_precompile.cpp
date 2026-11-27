@@ -1,10 +1,9 @@
-// decide_gpu_precompile.cpp — decide_gpu_precompile(model [, seq := N]): compile the shape buckets of a model
-// ahead of time on a GPU backend that compiles per shape (ROCm / MIGraphX).
+// decide_gpu_precompile.cpp — decide_gpu_precompile(model [, seq := N]), deprecated.
 //
-// MIGraphX needs a program compiled for each concrete shape, which takes 2-4 minutes and leaves 0.6-1.7 GB in the
-// cache; done lazily it would stall the first query that meets a new shape. This function walks the buckets the
-// plugin serves (decide_gpu_buckets.hpp) and warms each one, so the stall happens when the user chose it. Cached
-// buckets cost a few seconds (the program is loaded), so running it again is cheap.
+// It compiled a model's shape buckets ahead of time for the former ROCm plugin, which needed minutes per shape. The GPU plugins of
+// anofox-ggml-adapter build a shape's graph on its first use, so nothing is compiled: on ROCm it still loads the model onto the GPU and
+// returns one row per bucket of decide_gpu_buckets.hpp (the plugin's precompile is a no-op), and it is refused on CUDA, MLX and the CPU,
+// until it is removed.
 
 #include "anofox_function_alias.hpp"
 #include "decide_devices.hpp"
@@ -86,8 +85,7 @@ unique_ptr<GlobalTableFunctionState> PrecompileInit(ClientContext &context, Tabl
 	if (device.backend == "cpu") {
 		throw InvalidInputException(DecideMsg(
 		    function, "'" + entry.id + "' runs on the CPU under the current settings, and the CPU compiles nothing",
-		    "CALL decide_accelerate(); then SET anofox_decide_device = 'rocm'; (decide_backends() shows what serves "
-		    "which model)"));
+		    "nothing to do: decide_gpu_precompile is deprecated and compiles nothing; decide_backends() shows what serves which model"));
 	}
 	// Only a backend that compiles per shape has anything to warm: on CUDA and MLX the plugin's precompile is a
 	// no-op, and a row per bucket would claim compilation that never happened.
@@ -96,7 +94,7 @@ unique_ptr<GlobalTableFunctionState> PrecompileInit(ClientContext &context, Tabl
 		    function,
 		    "the '" + device.backend + "' backend does not compile per shape, so there is nothing to precompile for '" +
 		        entry.id + "' on " + device.device_id,
-		    "only ROCm (MIGraphX) needs it: SET anofox_decide_device = 'rocm'; on a machine with an AMD GPU"));
+		    "nothing to do: the plugins build a shape's graph on its first use (decide_gpu_precompile is deprecated)"));
 	}
 	const auto plan = decide_gpu::PlanBuckets(entry.catalog_id, data.seq);
 	if (plan.empty()) {
@@ -104,7 +102,7 @@ unique_ptr<GlobalTableFunctionState> PrecompileInit(ClientContext &context, Tabl
 		throw InvalidInputException(DecideMsg(
 		    function,
 		    "seq = " + std::to_string(data.seq) + " is longer than the largest bucket of '" + entry.id + "' (" +
-		        std::to_string(largest) + " tokens), so no program serves it",
+		        std::to_string(largest) + " tokens)",
 		    "CALL decide_gpu_precompile('" + data.model + "', seq := " + std::to_string(largest) + "); (or omit seq to compile every bucket)"));
 	}
 	auto session = DecideLocalSession::Open(context, entry, function);
@@ -149,12 +147,10 @@ void RegisterDecideGpuPrecompile(ExtensionLoader &loader) {
 	duckdb_compat::AddNamedParameter(func, "seq", LogicalType::BIGINT);
 	RegisterTableFunctionWithAlias(
 	    loader, std::move(func), "decide_gpu_precompile",
-	    DecideDocs("Compile a local model's shape buckets ahead of time on the ROCm (MIGraphX) backend, so no query "
-	               "stalls on a first-use compile. Each bucket takes 2-4 minutes once and leaves 0.6-1.7 GB in the "
-	               "cache (progress is printed while it runs); a cached bucket only loads. Compiles one row and a full "
-	               "batch for every token bucket (Laya: 256 and 1024; Julia-1: 256 to 8192), or only the bucket that "
-	               "holds `seq` tokens. Needs the model on a compile-per-shape GPU device (SET anofox_decide_device = "
-	               "'rocm';). Columns: model, device, batch, seq, markers, seconds.",
+	    DecideDocs("Deprecated: compiled a local model's shape buckets ahead of time for the former ROCm plugin. The GPU "
+	               "plugins build a shape's graph on its first use, so nothing is compiled. Still accepted with the model on "
+	               "ROCm (SET anofox_decide_device = 'rocm';), where it loads the model onto the GPU and returns one row per "
+	               "bucket; refused on CUDA, MLX and the CPU. Columns: model, device, batch, seq, markers, seconds.",
 	               "devices",
 	               {{{"model"}, {LogicalType::VARCHAR}, "CALL decide_gpu_precompile('laya-multilingual');"},
 	                {{"model", "seq"},

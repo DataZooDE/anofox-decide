@@ -110,13 +110,19 @@ static string ShapeText(const vector<int64_t> &shape) {
 	return out + "]";
 }
 
-// float32, untransposed, 4-byte aligned tensors are handed to ONNX Runtime straight from the mapped file.
-static bool NeedsCopy(const DecideTensorInfo &t, const DecideMapEntry &e) {
-	return t.dtype != DecideDtype::F32 || e.transpose || reinterpret_cast<uintptr_t>(t.data) % alignof(float) != 0;
+// The type a tensor is served in: float32, or with keep_16bit a 16-bit checkpoint's own type.
+static DecideDtype ServedDtype(const DecideTensorInfo &t, bool keep_16bit) {
+	return keep_16bit && t.dtype != DecideDtype::F32 ? t.dtype : DecideDtype::F32;
+}
+
+// Untransposed, aligned tensors already in the served type are read straight from the mapped file.
+static bool NeedsCopy(const DecideTensorInfo &t, const DecideMapEntry &e, bool keep_16bit) {
+	const DecideDtype served = ServedDtype(t, keep_16bit);
+	return t.dtype != served || e.transpose || reinterpret_cast<uintptr_t>(t.data) % DecideDtypeSize(served) != 0;
 }
 
 unique_ptr<DecideLoadedWeights> DecideLoadWeights(const DecideTensorMap &map, const string &path,
-                                                  const string &model_id, const char *function) {
+                                                  const string &model_id, const char *function, bool keep_16bit) {
 	const string refetch = "CALL decide_download('" + model_id + "'); (re-checks the file and fetches it again if it is damaged)";
 	auto out = make_uniq<DecideLoadedWeights>();
 	try {
@@ -160,8 +166,8 @@ unique_ptr<DecideLoadedWeights> DecideLoadWeights(const DecideTensorMap &map, co
 			                  " but the graph expects " + ShapeText(e.shape),
 			    refetch));
 		}
-		if (NeedsCopy(*t, e)) {
-			arena_need += t->ElementCount() * sizeof(float);
+		if (NeedsCopy(*t, e, keep_16bit)) {
+			arena_need += t->ElementCount() * DecideDtypeSize(ServedDtype(*t, keep_16bit));
 		}
 		tensors.push_back(t);
 	}
@@ -176,17 +182,29 @@ unique_ptr<DecideLoadedWeights> DecideLoadWeights(const DecideTensorMap &map, co
 		auto t = tensors[i];
 		out->names.push_back(e.initializer);
 		out->shapes.push_back(e.shape);
-		const idx_t nbytes = t->ElementCount() * sizeof(float);
-		if (!NeedsCopy(*t, e)) {
+		const DecideDtype served = ServedDtype(*t, keep_16bit);
+		const idx_t nbytes = t->ElementCount() * DecideDtypeSize(served);
+		if (!NeedsCopy(*t, e, keep_16bit)) {
 			out->data.push_back(t->data);
 			out->passthrough_bytes += nbytes;
-		} else {
+		} else if (served == DecideDtype::F32) {
 			auto dst = reinterpret_cast<float *>(out->arena.get() + cursor);
 			DecideCopyAsF32(*t, dst, e.transpose);
 			out->data.push_back(dst);
 			cursor += nbytes;
+		} else { // a 16-bit tensor the graph reads transposed: transposed into the arena, still 16-bit
+			auto dst = reinterpret_cast<uint16_t *>(out->arena.get() + cursor);
+			const int64_t rows = t->shape[0], cols = t->shape[1]; // 2-D (the map refuses a transpose of anything else)
+			for (int64_t i = 0; i < rows; i++) {
+				for (int64_t j = 0; j < cols; j++) {
+					std::memcpy(dst + j * rows + i, t->data + (i * cols + j) * 2, 2);
+				}
+			}
+			out->data.push_back(dst);
+			cursor += nbytes;
 		}
 		out->bytes.push_back(nbytes);
+		out->dtypes.push_back(served);
 	}
 	if (out->passthrough_bytes == 0) {
 		// Everything was copied into the arena (float16 checkpoints): drop the mapping so its pages leave memory.

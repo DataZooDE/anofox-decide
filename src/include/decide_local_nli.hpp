@@ -1,10 +1,9 @@
 #pragma once
 
-// DecideLocalNli — Julia-1 local scoring (plan step 5).
+// DecideLocalNli — local scoring of the in-process models.
 //
-// Owns the ORT session cache, the data.sequence collation port, and the
-// softmax/answer mapping. onnxruntime_cxx_api.h is included ONLY by
-// decide_local_nli.cpp so ORT compiles exactly once.
+// Owns the session cache (the ggml engine on the CPU, a GPU plugin elsewhere), the data.sequence collation port, and the
+// softmax/answer mapping.
 //
 // Collation mirrors julia/data.py sequence() (non-strict: truncate, sanitize
 // mask tokens) and julia/typed.py question mapping: noul markers are the
@@ -31,7 +30,7 @@ struct DecideQuestion;
 class DecideTokenizer;
 class DecideGgmlModel;
 
-// Padded batch in ORT feed order.
+// Padded batch in the graph's input order.
 struct DecideLocalBatch {
 	vector<int64_t> ids;
 	vector<int64_t> mask;
@@ -87,7 +86,9 @@ DecideCollatedRow DecideCollateRow(const DecideTokenizer &tok, const string &sta
                                   const string &question, const vector<string> &options,
                                   int qtype, int64_t max_length, int64_t head_length,
                                   bool allow_empty_state_room = false, const string &function = "decide",
-                                  const string &question_id = "");
+                                  const string &question_id = "", const std::vector<int32_t> *state_ids = nullptr);
+// `state_ids`, when given, is `state` already encoded (DecideEncodeState): a text asked several questions is tokenised once.
+std::vector<int32_t> DecideEncodeState(const DecideTokenizer &tok, const string &state);
 
 // The project-style error for a row that collation had to cut ("" when nothing was cut). `laya` selects
 // the wording for models whose limits come from rl_agent_config.json instead of the settings.
@@ -104,14 +105,30 @@ int64_t DecideLocalTokenCount(ClientContext &context, const DecideModelEntry &en
 void DecideEnsureTokenizer(ClientContext &context, const string &path, const string &function);
 void DecideEnsureLayaConfig(ClientContext &context, const string &path, const string &function);
 
-// ORT session handle (per graph path, cached per database instance).
-//! The engine that runs local models (anofox_decide_local_engine): "ort" or "ggml". Throws, naming the fix, for a
-//! mistyped ANOFOX_DECIDE_LOCAL_ENGINE.
-string DecideLocalEngine(ClientContext &context, const string &function);
+//! The threads the ggml CPU engine runs a local model with: DuckDB's thread count, at most one per physical core (SMT siblings add
+//! no arithmetic and slow every op's barrier; measured 25-30% faster on the evaluation). Read when a session is created.
+int DecideLocalEngineThreads(ClientContext &context);
+
+//! How a batch's shape is padded for the engine serving it (see DecideShapePolicyFor).
+struct DecideShapePolicy {
+	bool bucket_lengths = true; // pad the token length to a bucket (few compiled lengths)
+	bool fine_lengths = false;  // 8-token steps instead of 32 (DecidePaddedLength): a compile is cheap, padding is not
+	bool round_markers = true;  // round the marker count up to a multiple of 4
+	bool pow2_rows = false;     // pad a batch's rows to a power of two (padding rows are cheap on a GPU, compiles are not)
+};
+//! The padded length a batch of rows of at most `len` tokens runs at, never above `max_length` (and never below `len`). Every distinct
+//! length is a graph the engine compiles and keeps, and every padded token is computed: the steps grow with the length (32 up to 512
+//! tokens, then 64, 128 and 256; `fine` divides them by 4) so few lengths cover every text while padding stays a small part of the work.
+int64_t DecidePaddedLength(int64_t len, int64_t max_length, bool fine);
+
+//! The shape policy for the backend serving a session ("" for the in-process CPU engine, else the plugin's name): the ggml engine
+//! compiles a graph per shape, so its shapes are bucketed (and a ggml GPU's rows padded to powers of two); MLX compiles nothing per shape,
+//! so it runs the exact shapes.
+DecideShapePolicy DecideShapePolicyFor(const string &backend);
 
 class DecideLocalSession {
 public:
-	//! `function` is the user-facing function named in errors (ONNX Runtime failures go through DecideMapOrtError).
+	//! A session per graph path, cached per database instance. `function` is the user-facing function named in errors.
 	static shared_ptr<DecideLocalSession> Open(ClientContext &context, const string &graph_path,
 	                                           const char *function = "decide");
 	//! Catalog models: the embedded weight-free graph + the downloaded safetensors injected as initializers;
@@ -129,7 +146,7 @@ public:
 	//! Warms a shape bucket of a GPU backend that compiles per shape (a no-op on the CPU and on backends that do
 	//! not). Compiling can take minutes; the backend reports its progress itself.
 	void Precompile(int64_t batch, int64_t seq, int64_t markers, const char *function = "decide");
-	//! The GPU backend serving this session ("migraphx", "cuda", ...), "" on the CPU.
+	//! The GPU backend serving this session ("cuda", "rocm", "mlx"), "" on the CPU.
 	string PluginBackend() const;
 
 	const string &GraphPath() const {
@@ -138,6 +155,8 @@ public:
 	const string &Engine() const {
 		return engine;
 	}
+	//! Graphs the CPU engine compiled so far (0 for a plugin session): a diagnostic for the shape buckets.
+	int64_t Compiles() const;
 	int64_t Runs() const {
 		return runs.load();
 	}
@@ -148,7 +167,7 @@ private:
 	string graph_path;
 	string engine;
 	std::atomic<int64_t> runs {0};
-	shared_ptr<DecideGgmlModel> ggml; // the ggml engine's model (anofox_decide_local_engine = 'ggml'), else impl is ONNX Runtime
+	shared_ptr<DecideGgmlModel> ggml; // a CPU session's model; a GPU session has impl (its plugin) instead
 	struct Impl;
 	shared_ptr<Impl> impl;
 };
@@ -166,7 +185,7 @@ struct DecideLocalRequest {
 	const vector<DecideQuestion> *questions;
 };
 
-// Scores many requests against one local model in as few ORT runs as the token budget allows: every
+// Scores many requests against one local model in as few engine runs as the token budget allows: every
 // (text, question) row is collated exactly as DecideLocalScore does (so truncation behaves the same),
 // rows are sorted by length and cut into batches of at most `batch_tokens` padded tokens (batch size times
 // padded length; one row always fits), padded to the ladder 128..8192 (capped by the model window) and the

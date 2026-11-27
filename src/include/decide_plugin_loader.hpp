@@ -1,7 +1,8 @@
 //===----------------------------------------------------------------------===//
 // decide_plugin_loader.hpp — load a GPU backend from a shared library.
 //
-// The loader side of decide_plugin_abi.h. It is the trust boundary: on the far side of it a mismatched ABI is
+// The host side of anofox-ggml-adapter's plugin ABI v3 (the adapter's plugin_host checks the ABI version and struct layout before
+// anything else). It is the trust boundary: on the far side of it a mismatched ABI is
 // undefined behaviour rather than a wrong answer, so every failure it can meet has a message naming what to do
 // about it (a missing file, a library that is not a plugin, a plugin built against another ABI, a backend that
 // refuses to initialise). Messages follow the project shape: <function>: <what>. Fix: <what to run>.
@@ -10,7 +11,6 @@
 #pragma once
 
 #include "decide_local_nli.hpp" // DecideLocalBatch
-#include "decide_plugin_abi.h"
 
 #include "duckdb/common/common.hpp"
 
@@ -19,6 +19,11 @@ namespace anofox {
 
 //! Where a plugin call failed: building the backend (CREATE) or scoring a batch (RUN).
 enum class DecidePluginStage { CREATE, RUN };
+
+//! What to install when `message` says a library the `backend` plugin links is missing ("" when it says nothing of the kind):
+//! the adapter's CUDA plugin carries its runtime and needs only the NVIDIA driver, the ROCm plugin links the system's HIP, hipBLAS and
+//! rocBLAS, the MLX plugin Apple's libmlx and libmlxc from Homebrew.
+string DecideMissingRuntimeHint(const string &backend, const string &message);
 
 //! The project-style error text for a failure a plugin reported (the plugin's own text is echoed, bounded to
 //! its first line). `kind` receives "memory" or "plugin"; the first is a resource problem (IOException), the
@@ -50,7 +55,26 @@ string DecidePluginFileIdentity(const string &path);
 //! DecideLoadPlugin before they dlopen; the residual TOCTOU is described at the definition.
 bool DecideVerifyPluginBeforeLoad(const string &library_path, string &problem);
 
-//! Load `library_path` and construct its backend with `params`.
+struct DecideLoadedWeights;
+
+//! What a plugin session is built from: the model's weight-free graph (its bytes, e.g. the embedded resource) and the weights its
+//! external initializers read (DecideLoadWeights: float32, renamed and transposed per the tensor map), which the session keeps alive.
+struct DecidePluginRequest {
+	const void *graph_data = nullptr;
+	idx_t graph_size = 0;
+	//! A graph that carries its own weights (a model registered with its own .onnx). The plugin ABI reads graph bytes during create
+	//! only, so they are released once the session exists. When set, graph_data / graph_size are ignored and `weights` is empty.
+	shared_ptr<const string> graph_bytes;
+	unique_ptr<DecideLoadedWeights> weights;
+	string model; //!< the catalog id, or the registered model's id
+	string backend; //!< the device backend the plugin serves ("cuda", "rocm", "mlx"): names it in errors (a plugin's own name may be shared)
+	string arch;
+	string precision = "fp32";
+	string cache_dir;
+	int device_ordinal = 0;
+};
+
+//! Load `library_path` and construct its backend from `request`.
 //!
 //! Throws IOException when the library cannot be loaded, does not export the entry point, or was built against
 //! a different ABI version; InvalidInputException (or IOException on memory exhaustion) when the backend itself
@@ -59,12 +83,14 @@ bool DecideVerifyPluginBeforeLoad(const string &library_path, string &problem);
 //! The library is deliberately never unloaded once create() has run: a GPU backend leaves a driver context and
 //! thread-locals behind it, and dlclose'ing underneath those turns shutdown into a crash in an unrelated
 //! destructor.
-unique_ptr<DecidePluginSession> DecideLoadPlugin(const string &library_path, const DecidePluginCreateParams &params,
-                                                 const string &function);
+//! `graph_refused`, when given, is set when the plugin's create refused the graph itself (an op or layout it cannot run): not a device,
+//! memory or loading failure. Only such a refusal may send a registered model to the CPU for good (DecideRememberPluginRefusal).
+unique_ptr<DecidePluginSession> DecideLoadPlugin(const string &library_path, DecidePluginRequest request, const string &function,
+                                                 bool *graph_refused = nullptr);
 
 //! Can this library be loaded as a plugin of an ABI we speak? Loads it and checks the entry point and
-//! abi_version, and stops there: it never calls create(), which reaches the driver, can take minutes (a
-//! MIGraphX compile) and can fail on a busy card. Never throws: a missing or unreadable file is false, with the
+//! abi_version, and stops there: it never calls create(), which reaches the driver, loads the weights onto the
+//! device and can fail on a busy card. Never throws: a missing or unreadable file is false, with the
 //! loader's own text in `error` (usually the missing dependency, which is a different problem from a missing
 //! file).
 bool DecidePluginLoadable(const string &library_path, string *error = nullptr);

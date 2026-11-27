@@ -42,9 +42,9 @@ EXTENSION_NAME = "anofox_decide"
 SMOKE_QUERY = "SELECT count(*) AS n FROM decide_models();"
 
 # End-to-end local inference on the shipped artifact. decide_models() proves
-# functions are callable; it never touches ONNX Runtime. This registers the
+# functions are callable; it never touches the engine. This registers the
 # committed weight-free fixture graph + tiny tokenizer (no network, no license
-# gate) and scores through the ORT session -- the code path a user hits first,
+# gate) and scores through the engine session -- the code path a user hits first,
 # and one an artifact can ship broken (resolve lazily, fail at Run). The
 # stub provider line proves the default surface as well.
 _FIXTURES = "{fixtures}"  # substituted with an absolute path at runtime
@@ -205,7 +205,7 @@ def run_smoke_test(extension_path: str, duckdb_version: str, arch: str) -> None:
             _fail("the smoke query returned no output", proc)
         print(f"      -> {proc.stdout.strip()}")
 
-        # 4. Real inference through ONNX Runtime on the fixture model.
+        # 4. Real inference through the ggml engine on the fixture model.
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         fixtures = os.path.join(repo_root, "test", "fixtures").replace("\\", "/")
         if not os.path.isdir(fixtures):

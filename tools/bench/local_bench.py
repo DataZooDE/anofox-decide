@@ -43,10 +43,14 @@ WRAPPER = ("import resource, subprocess, sys\n"
            "sys.exit(r.returncode)\n")
 
 
-def cell(duckdb, ext, model, tokens, rows, batch, extra):
+# Which engine served (a released build has no __anofox_decide_local_sessions: --no-engine-probe reports '?').
+ENGINE_PROBE = "(SELECT coalesce(string_agg(DISTINCT engine, ',' ORDER BY engine), 'none') FROM __anofox_decide_local_sessions())"
+
+
+def cell(duckdb, ext, model, tokens, rows, batch, extra, engine_probe=True):
     texts = ",".join("('" + text_of(tokens, i).replace("'", "''") + "')" for i in range(rows))
     query = (f"SELECT count(*) FROM (SELECT unnest(decide_answers(text, '{QUESTIONS}', model := '{model}'), recursive := true) FROM t);\n"
-             f"SELECT 'engine=' || (SELECT coalesce(string_agg(DISTINCT engine, ',' ORDER BY engine), 'none') FROM __anofox_decide_local_sessions()) || ' tokens=' || round(avg(decide_token_count(text, '{model}'))) FROM t;")
+             f"SELECT 'engine=' || {ENGINE_PROBE if engine_probe else repr('?')} || ' tokens=' || round(avg(decide_token_count(text, '{model}'))) FROM t;")
     sql = (f"LOAD '{ext}';\n{extra}\nSET anofox_decide_batch_tokens = {batch};\n"
            f"CREATE TABLE t AS SELECT * FROM (VALUES {texts}) v(text);\n"
            + query + "\n")
@@ -71,15 +75,17 @@ def main():
     ap.add_argument("--tokens", default="128,512,2048")
     ap.add_argument("--rows", type=int, default=64)
     ap.add_argument("--batch-tokens", default="0")
-    ap.add_argument("--set", default="", help="extra SET statements, e.g. \"SET anofox_decide_local_engine='ggml';\"")
+    ap.add_argument("--set", default="", help="extra SET statements, e.g. \"SET threads = 4;\"")
     ap.add_argument("--duckdb", default=str(ROOT / "build/release/duckdb"))
     ap.add_argument("--extension", default=str(ROOT / "build/release/extension/anofox_decide/anofox_decide.duckdb_extension"))
+    ap.add_argument("--no-engine-probe", action="store_true",
+                    help="for a build without __anofox_decide_local_sessions (a released extension): the engine is reported as '?'")
     a = ap.parse_args()
     print("model\tengine\ttokens\tbatch_tokens\trows\twall_s\tcpu_s\tpeak_rss_gb\trows_per_s")
     for m in a.models.split(","):
         for t in map(int, a.tokens.split(",")):
             for b in map(int, a.batch_tokens.split(",")):
-                print(cell(a.duckdb, a.extension, m, t, a.rows, b, a.set), flush=True)
+                print(cell(a.duckdb, a.extension, m, t, a.rows, b, a.set, not a.no_engine_probe), flush=True)
 
 
 if __name__ == "__main__":

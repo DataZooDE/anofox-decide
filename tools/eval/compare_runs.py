@@ -31,7 +31,9 @@ def main():
     ap.add_argument("candidate")
     ap.add_argument("--models", default="julia-1,laya-multilingual,laya-typed-decisions")
     ap.add_argument("--max-dp", type=float, default=1e-3)
-    ap.add_argument("--ref-engine", default="ort")
+    # The engine each run must have been served by (__anofox_decide_local_sessions): "ggml" on the CPU, "plugin:<device>" on a GPU,
+    # "?" for a build without the probe (a released extension); "any" skips the check.
+    ap.add_argument("--ref-engine", default="any")
     ap.add_argument("--cand-engine", default="ggml")
     a = ap.parse_args()
     ref_dir, cand_dir = Path(a.reference), Path(a.candidate)
@@ -74,7 +76,8 @@ def main():
         for line in flips + metrics:
             print("   ", line)
         served = [(which, want, res.get("local_engine")) for which, want, res in
-                  (("reference", a.ref_engine, res_r), ("candidate", a.cand_engine, res_c)) if res.get("local_engine") != want]
+                  (("reference", a.ref_engine, res_r), ("candidate", a.cand_engine, res_c))
+                  if want != "any" and res.get("local_engine") != want]
         for which, want, got in served:
             print(f"    the {which} run was served by '{got}', not '{want}'")
         if max_diff > a.max_dp:

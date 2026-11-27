@@ -4,12 +4,11 @@ Clone with submodules (`git clone --recurse-submodules`; they include the shared
 `datazoo-banner` libraries), then:
 
 ```bash
-# vcpkg is required: vcpkg.json depends on openssl, and ONNX Runtime is built from the vcpkg overlay port.
+# vcpkg is required: vcpkg.json depends on openssl. The in-process engine (ggml) is vendored and built with the extension.
 git clone https://github.com/microsoft/vcpkg && ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
 export VCPKG_TOOLCHAIN_PATH=$PWD/vcpkg/scripts/buildsystems/vcpkg.cmake
 
-GEN=ninja make release                # release build; ONNX Runtime built via vcpkg (the first build is slow)
-GEN=ninja make release DECIDE_ORT_VCPKG=0 CMAKE_PREFIX_PATH=<ort-install>   # faster local build against an existing ONNX Runtime
+GEN=ninja make release                # release build
 make test_release                     # offline suite: SQL tests + Catch2 (no network, no weights)
 make test-live                        # live TypeSafe + Liquid D1 tests; SKIP without TYPESAFE_API_KEY / LIQUID_API_KEY
 ./build/release/test/unittest test/sql/decide_contract.test       # a single file
@@ -56,4 +55,5 @@ to bump: `vcpkg.json`, `src/anofox_decide_extension.cpp`, `DECIDE_PLUGIN_RELEASE
 (`plugins/anofox-decide/.claude-plugin/plugin.json` and the `version:` line of every
 `plugins/anofox-decide/skills/*/SKILL.md`). The docs tests fail when the plugin's versions lag behind.
 
-The GPU plugins are built separately; see [GPU_BACKENDS.md](GPU_BACKENDS.md) and [`plugins/cuda`](../plugins/cuda/README.md).
+The GPU plugins are anofox-ggml-adapter's, built and released from [its repository](https://github.com/DataZooDE/anofox-ggml-adapter);
+see [GPU_BACKENDS.md](GPU_BACKENDS.md).

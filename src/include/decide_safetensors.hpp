@@ -7,7 +7,7 @@
 // buffer (a memory mapping or a plain read) and never copies tensor data.
 //
 // Supported dtypes: F32, F16, BF16 (the upstream checkpoints are F32 and F16).
-// Floats are upcast to F32 on demand: ONNX Runtime receives F32 initializers.
+// Floats are upcast to F32 on demand: the CPU engine reads F32 initializers.
 // Adapted from anofox-tabfm's tabfm_safetensors (same format contract), with
 // F16 added.
 //===----------------------------------------------------------------------===//
@@ -120,6 +120,10 @@ public:
 	bool Mapped() const {
 		return mapped;
 	}
+	//! Lets the OS drop the mapping's resident pages (a plugin copied or uploaded the weights at create). The mapping stays valid: a later
+	//! read pages the bytes in again from the file. A no-op for a non-mapped (read) file and on Windows. On macOS (an in-place re-map)
+	//! it throws IOException if the re-map fails, after which the data must not be read.
+	void ReleaseResidentPages();
 
 private:
 	void Reset();

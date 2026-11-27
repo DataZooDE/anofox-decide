@@ -1,6 +1,9 @@
-// DecideLocalNli — Julia-1 local scoring. ONLY TU including onnxruntime.
+// DecideLocalNli — local scoring: the in-process models on the ggml engine (CPU) or a GPU plugin.
 
 #include "decide_local_nli.hpp"
+#include "decide_interrupt.hpp"
+#include "decide_keyed_cache.hpp"
+#include "anofox_ggml_adapter/devices.hpp"
 #include "duckdb_compat.hpp"
 #include "decide_bundled_resources.hpp"
 #include "decide_catalog.hpp"
@@ -8,14 +11,12 @@
 #include "decide_errors.hpp"
 #include "decide_local_ggml.hpp"
 #include "decide_local_weights.hpp"
-#include "decide_ort_errors.hpp"
 #include "decide_plugin_loader.hpp"
 #include "decide_provider.hpp"
 #include "decide_registration.hpp"
 #include "decide_remote.hpp" // DecideQuestion/DecideAnswer (provider-neutral structs)
 #include "decide_tokenizer.hpp"
 
-#include "onnxruntime_cxx_api.h"
 #include "yyjson.hpp"
 
 #include "duckdb/main/client_context.hpp"
@@ -57,11 +58,14 @@ struct DecideLocalCache : public ObjectCacheEntry {
 	std::string GetObjectType() override {
 		return ObjectType();
 	}
+	//! The host memory the cached sessions hold (weights, full graphs), so DuckDB can account for it and evict this cache.
 	optional_idx GetEstimatedCacheMemory() const override {
-		return optional_idx();
+		return optional_idx(sessions.Bytes());
 	}
-	std::mutex lock;
-	std::map<string, shared_ptr<DecideLocalSession>> sessions;
+	//! One session per (model, variant): built once outside any shared lock, and a new variant (another thread count or
+	//! device) replaces the model's old one (see decide_keyed_cache.hpp).
+	DecideKeyedCache<DecideLocalSession, shared_ptr<DecideLocalSession>> sessions;
+	std::mutex lock; // tokenizers and Laya configs (small, quick to load)
 	std::map<string, shared_ptr<DecideTokenizer>> tokenizers;
 	std::map<string, shared_ptr<LayaConfig>> laya_configs;
 };
@@ -184,58 +188,45 @@ string LayaTempBucket(int qtype, size_t k) {
 } // namespace
 
 struct DecideLocalSession::Impl {
-	// Member DECLARATION ORDER is the destruction contract: members are destroyed in reverse order, so the
-	// session (declared last) goes first and the buffers it borrows (graph bytes, injected weights, the
-	// values wrapping them) are still alive while it shuts down. ORT keeps references to injected
-	// initializers for the whole session lifetime (anofox-tabfm learned this the hard way).
-	Ort::Env env {ORT_LOGGING_LEVEL_WARNING, "anofox_decide"};
-	Ort::MemoryInfo mem {nullptr};
-	Ort::AllocatorWithDefaultOptions alloc;
-	// Graph bytes backing the from-memory session (BYO graphs read from disk; embedded graphs point at static
-	// storage instead).
-	string model_bytes;
-	unique_ptr<DecideLoadedWeights> weights; // catalog models: the downloaded safetensors, upcast to float32
-	vector<Ort::Value> injected;
-	Ort::Session session {nullptr};
-	// GPU sessions: the plugin backend scores instead of `session`; it holds its own weights on the device.
+	// GPU sessions: the plugin backend scores; it holds its own weights on the device.
 	unique_ptr<DecidePluginSession> plugin;
 };
 
-string DecideLocalEngine(ClientContext &context, const string &function) {
-	Value v;
-	string engine = "ort";
-	if (context.TryGetCurrentSetting("anofox_decide_local_engine", v) && !v.IsNull()) {
-		engine = StringValue::Get(v);
-	}
-	if (engine.rfind("invalid:", 0) == 0) {
-		throw InvalidInputException(DecideMsg(
-		    function, "the environment variable ANOFOX_DECIDE_LOCAL_ENGINE is '" + engine.substr(8) +
-		                  "', which names no engine ('ort' or 'ggml')",
-		    "fix or unset ANOFOX_DECIDE_LOCAL_ENGINE, or SET anofox_decide_local_engine = 'ort';"));
-	}
-	return engine;
+int DecideLocalEngineThreads(ClientContext &context) {
+	const int duckdb_threads = static_cast<int>(TaskScheduler::GetScheduler(context).NumberOfThreads());
+	return std::max(1, std::min(duckdb_threads, ::anofox::ggml_adapter::PhysicalCpuCores()));
 }
 
 namespace {
 
-//! The ggml engine's threads: DuckDB's own thread count (anofox_decide runs one forward pass at a time per model).
+//! The ggml engine's threads (anofox_decide runs one forward pass at a time per model).
 int EngineThreads(ClientContext &context) {
-	return static_cast<int>(TaskScheduler::GetScheduler(context).NumberOfThreads());
+	return DecideLocalEngineThreads(context);
 }
 
 const vector<string> kGraphInputs = {"input_ids", "attention_mask", "marker_pos", "marker_mask", "qtype"};
 
-//! A CPU session belongs to the engine that built it: the engine is part of its cache key, so switching anofox_decide_local_engine never
-//! hands back a session of the other engine (tabfm's device-switch rule). GPU sessions run in a plugin whatever the setting.
-string EngineKey(const string &engine, const string &key) {
-	return engine + "|" + key;
+//! The ggml engine's thread count is fixed when a CPU session is built, so it is part of the session's key: SET threads takes effect
+//! on the next call instead of being ignored until the database restarts.
+string EngineKey(ClientContext &context, const string &key) {
+	return "ggml@" + std::to_string(EngineThreads(context)) + "|" + key;
+}
+
+using SessionBuilt = DecideKeyedCache<DecideLocalSession, shared_ptr<DecideLocalSession>>::Built;
+
+idx_t WeightBytes(const DecideLoadedWeights &w) {
+	idx_t total = 0;
+	for (auto b : w.bytes) {
+		total += b;
+	}
+	return total;
 }
 
 // The session cache is keyed by what the session runs on: the CPU session of a graph is not the CUDA session
 // of the same graph, and a different precision is a different session.
 // A GPU session also names the plugin it was created from (path and file identity): a plugin replaced by
 // decide_accelerate(), or copied over by hand, must not be answered by a session built from the old one, and a
-// different anofox_decide_plugin_dir is a different plugin.
+// different anofox_decide_ep_path is a different plugin.
 string SessionKey(const string &base, const DecideDeviceChoice &device, const string &precision,
                   const string &plugin_path = "") {
 	if (device.backend == "cpu") {
@@ -255,82 +246,78 @@ shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, 
 		                                      "register it with the graph as the 3rd argument: SELECT "
 		                                      "decide_register_model('<id>', 'local', '<model.onnx path>')"));
 	}
-	const string engine = DecideLocalEngine(context, function);
 	auto cache = LocalCache(context);
-	std::lock_guard<std::mutex> guard(cache->lock);
-	const string key = EngineKey(engine, SessionKey(graph_path, DecideDeviceChoice(), "fp32"));
-	auto it = cache->sessions.find(key);
-	if (it != cache->sessions.end()) {
-		return it->second;
-	}
-	auto handle = shared_ptr<DecideLocalSession>(new DecideLocalSession(graph_path, engine));
-	if (engine == "ggml") {
+	const string key = EngineKey(context, SessionKey(graph_path, DecideDeviceChoice(), "fp32"));
+	return cache->sessions.GetOrBuild(key, "graph:" + graph_path, [&]() -> SessionBuilt {
+		auto handle = shared_ptr<DecideLocalSession>(new DecideLocalSession(graph_path, "ggml"));
 		// Read through DuckDB's filesystem (F4): same access gate as read_csv.
-		handle->ggml = DecideGgmlOpenFull(DecideReadLocalFile(context, graph_path, "graph"), graph_path, kGraphInputs, EngineThreads(context),
-		                                  function);
-		cache->sessions[key] = handle;
-		return handle;
-	}
-	handle->impl = make_shared_ptr<Impl>();
-	// Read through DuckDB's filesystem (F4): same access gate as read_csv.
-	handle->impl->model_bytes = DecideReadLocalFile(context, graph_path, "graph");
-	vector<string> input_names;
-	try {
-		Ort::SessionOptions opts;
-		opts.SetIntraOpNumThreads(0);
-		auto &bytes = handle->impl->model_bytes;
-		handle->impl->session =
-		    Ort::Session(handle->impl->env, (const void *)bytes.data(), bytes.size(), opts);
-		handle->impl->mem = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-		for (size_t i = 0; i < handle->impl->session.GetInputCount(); i++) {
-			input_names.push_back(handle->impl->session.GetInputNameAllocated(i, handle->impl->alloc).get());
-		}
-	} catch (const Ort::Exception &e) {
-		DecideMapOrtError(e, function, graph_path, DecideOrtStage::LOAD);
-	}
-	// Contract check: the Julia scores graph takes exactly our 5 inputs; name the difference.
-	DecideRequireGraphInputs(input_names, {"input_ids", "attention_mask", "marker_pos", "marker_mask", "qtype"},
-	                         function, graph_path);
-	cache->sessions[key] = handle;
-	return handle;
+		string bytes = DecideReadLocalFile(context, graph_path, "graph");
+		const idx_t size = bytes.size(); // the full graph carries its weights: what the session holds
+		handle->ggml = DecideGgmlOpenFull(std::move(bytes), graph_path, kGraphInputs, EngineThreads(context), function);
+		return {handle, size};
+	});
 }
 
 void DecideLocalSession::InvalidateGpuSessions(ClientContext &context) {
-	auto cache = LocalCache(context);
-	std::lock_guard<std::mutex> guard(cache->lock);
-	for (auto it = cache->sessions.begin(); it != cache->sessions.end();) {
-		// Sessions already handed out keep their own reference and finish; new calls build from the new plugin.
-		if (it->second->impl && it->second->impl->plugin) {
-			it = cache->sessions.erase(it);
-		} else {
-			++it;
-		}
-	}
+	// Sessions already handed out keep their own reference and finish; new calls build from the new plugin.
+	LocalCache(context)->sessions.EraseIf([](const DecideLocalSession &s) { return s.impl && s.impl->plugin; });
 }
 
 shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, const DecideModelEntry &entry,
                                                         const char *function_name) {
 	const string function = function_name;
 	// Where this call runs: anofox_decide_device, the discovered hardware and the installed plugins. An explicit
-	// device that cannot serve the model throws here, with the fix; a model registered with its own graph can
-	// only run on the CPU (the check is the shared servability predicate).
+	// device that cannot serve the model throws here, with the fix (the check is the shared servability predicate).
 	const auto device = DecideResolveDevice(context, entry, function.c_str());
+	if (entry.bundled_graph.empty() && device.backend == "cpu") {
+		return Open(context, entry.graph_path, function.c_str());
+	}
 	if (entry.bundled_graph.empty()) {
+		// A model registered with its own .onnx, on a GPU: the plugin gets the whole graph, which carries its weights (read during
+		// create only, then released). Read through DuckDB's filesystem, as for the CPU.
+		const string precision = DecideGpuPrecision(context);
+		const string plugin_path = DecidePluginPath(DecidePluginDir(context), device.backend);
+		const string key = SessionKey(entry.graph_path, device, precision, plugin_path);
+		auto cache = LocalCache(context);
+		bool graph_refused = false;
+		try {
+			return cache->sessions.GetOrBuild(key, "graph:" + entry.graph_path, [&]() -> SessionBuilt {
+		DecidePluginRequest request;
+		request.graph_bytes = make_shared_ptr<string>(DecideReadLocalFile(context, entry.graph_path, "graph"));
+		request.model = entry.id;
+		request.backend = device.backend;
+		request.arch = device.arch;
+		request.precision = precision;
+		request.cache_dir = (std::filesystem::path(DecideCacheDir(context, function.c_str())) / "gpu-cache").string();
+		request.device_ordinal = device.ordinal;
+		auto handle = shared_ptr<DecideLocalSession>(new DecideLocalSession(entry.graph_path, "plugin:" + device.backend));
+		handle->impl = make_shared_ptr<Impl>();
+		handle->impl->plugin = DecideLoadPlugin(plugin_path, std::move(request), function, &graph_refused);
+		return {handle, 0}; // the plugin keeps the graph's weights on the device; the host's copy was released after create
+			});
+		} catch (const std::exception &e) {
+			// A user's graph the plugin cannot run (an op it lacks, weights in an external file, other inputs) is not servable there:
+			// remember why, so decide_models() and decide_backends() say so and 'auto' scores it on the CPU from now on. An explicit
+			// device keeps the error. A failure of the device itself (out of memory, a driver error) is not about the graph: it is
+			// raised as for a catalog model and not remembered.
+			if (!graph_refused) {
+				throw;
+			}
+			DecideRememberPluginRefusal(plugin_path, entry.graph_path, ErrorData(e).RawMessage());
+			if (DecideDeviceSetting(context) != "auto") {
+				throw;
+			}
+		}
 		return Open(context, entry.graph_path, function.c_str());
 	}
 	const string precision = DecideGpuPrecision(context);
 	const string base = "weights:" + entry.bundled_graph + "|" + entry.weights_path;
 	const string plugin_path =
 	    device.backend == "cpu" ? string() : DecidePluginPath(DecidePluginDir(context), device.backend);
-	const string engine = DecideLocalEngine(context, function);
-	const string key = device.backend == "cpu" ? EngineKey(engine, SessionKey(base, device, precision, plugin_path))
+	const string key = device.backend == "cpu" ? EngineKey(context, SessionKey(base, device, precision, plugin_path))
 	                                           : SessionKey(base, device, precision, plugin_path);
 	auto cache = LocalCache(context);
-	std::lock_guard<std::mutex> guard(cache->lock);
-	auto it = cache->sessions.find(key);
-	if (it != cache->sessions.end()) {
-		return it->second;
-	}
+	return cache->sessions.GetOrBuild(key, base, [&]() -> SessionBuilt {
 	auto graph = DecideLookupResource(entry.bundled_graph);
 	auto map_resource = DecideLookupResource(entry.bundled_map);
 	if (!graph.data || !map_resource.data) {
@@ -346,76 +333,50 @@ shared_ptr<DecideLocalSession> DecideLocalSession::Open(ClientContext &context, 
 		// not openable: DecideLoadWeights reports it with the right fix
 	}
 	if (device.backend != "cpu") {
-		// GPU: the plugin gets the staged weight-free graph, the tensor map and the PATH of the safetensors file,
-		// maps and uploads the weights itself. No host float32 arena exists for this session.
-		const auto staged = DecideStageGraph(context, entry, function.c_str());
-		const auto cache_dir = (std::filesystem::path(DecideCacheDir(context, function.c_str())) / "gpu-cache").string();
-		std::error_code ec;
-		std::filesystem::create_directories(cache_dir, ec);
-		DecidePluginCreateParams params {};
-		params.graph_path = staged.graph_path.c_str();
-		params.safetensors_path = entry.weights_path.c_str();
-		params.tensor_map_path = staged.tensor_map_path.c_str();
-		params.cache_dir = cache_dir.c_str();
-		params.arch = device.arch.c_str();
-		params.precision = precision.c_str();
-		params.device_ordinal = device.ordinal;
+		// GPU: the plugin (anofox-ggml-adapter, ABI v3) gets the embedded weight-free graph's bytes and the weights its initializers
+		// read, loaded here exactly as for the CPU (renamed and transposed per the tensor map); the session keeps them alive.
+		auto gpu_map = DecideParseTensorMap(map_resource.data, map_resource.size, entry.bundled_map);
+		DecidePluginRequest request;
+		request.graph_data = graph.data;
+		request.graph_size = graph.size;
+		request.weights = DecideLoadWeights(gpu_map, entry.weights_path, entry.id, function.c_str(), /*keep_16bit=*/true);
+		// What the session holds in host memory: the checkpoint itself leaves the resident set once the plugin has it (the plugin
+		// loader), only an arena of transposed or upcast tensors stays.
+		const idx_t host_bytes = request.weights->arena_bytes;
+		request.model = entry.id;
+		request.backend = device.backend;
+		request.arch = device.arch;
+		request.precision = precision;
+		request.cache_dir = (std::filesystem::path(DecideCacheDir(context, function.c_str())) / "gpu-cache").string();
+		request.device_ordinal = device.ordinal;
 		auto handle = shared_ptr<DecideLocalSession>(new DecideLocalSession(base, "plugin:" + device.backend));
 		handle->impl = make_shared_ptr<Impl>();
-		handle->impl->plugin = DecideLoadPlugin(plugin_path, params, function);
-		cache->sessions[key] = handle;
-		return handle;
+		handle->impl->plugin = DecideLoadPlugin(plugin_path, std::move(request), function);
+		return {handle, host_bytes};
 	}
 	auto map = DecideParseTensorMap(map_resource.data, map_resource.size,
 	                                entry.bundled_map);
-	auto handle = shared_ptr<DecideLocalSession>(new DecideLocalSession(base, engine));
-	if (engine == "ggml") {
-		auto weights = DecideLoadWeights(map, entry.weights_path, entry.id, function.c_str());
-		handle->ggml = DecideGgmlOpenWeightFree(graph.data, graph.size, std::move(weights), entry.bundled_graph, kGraphInputs,
-		                                        EngineThreads(context), function);
-		cache->sessions[key] = handle;
-		return handle;
-	}
-	handle->impl = make_shared_ptr<Impl>();
-	auto &im = *handle->impl;
-	im.weights = DecideLoadWeights(map, entry.weights_path, entry.id, function.c_str());
-	im.mem = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-	vector<string> input_names;
-	try {
-		Ort::SessionOptions opts;
-		opts.SetIntraOpNumThreads(0);
-		static auto owner_info = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
-		auto &w = *im.weights;
-		im.injected.reserve(w.names.size());
-		for (idx_t i = 0; i < w.names.size(); i++) {
-			im.injected.push_back(Ort::Value::CreateTensor(owner_info, const_cast<void *>(w.data[i]), w.bytes[i],
-			                                               w.shapes[i].data(), w.shapes[i].size(),
-			                                               ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT));
-		}
-		if (!w.names.empty()) {
-			opts.AddExternalInitializers(w.names, im.injected);
-		}
-		im.session = Ort::Session(im.env, (const void *)graph.data, graph.size, opts);
-		for (size_t i = 0; i < im.session.GetInputCount(); i++) {
-			input_names.push_back(im.session.GetInputNameAllocated(i, im.alloc).get());
-		}
-	} catch (const Ort::Exception &e) {
-		DecideMapOrtError(e, function, entry.bundled_graph, DecideOrtStage::LOAD);
-	}
-	DecideRequireGraphInputs(input_names, {"input_ids", "attention_mask", "marker_pos", "marker_mask", "qtype"},
-	                         function, entry.bundled_graph);
-	cache->sessions[key] = handle;
-	return handle;
+	auto handle = shared_ptr<DecideLocalSession>(new DecideLocalSession(base, "ggml"));
+	auto weights = DecideLoadWeights(map, entry.weights_path, entry.id, function.c_str());
+	const idx_t bytes = WeightBytes(*weights);
+	handle->ggml = DecideGgmlOpenWeightFree(graph.data, graph.size, std::move(weights), entry.bundled_graph, kGraphInputs,
+	                                        EngineThreads(context), function);
+	return {handle, bytes};
+	});
 }
 
 void DecideLocalSession::Precompile(int64_t batch, int64_t seq, int64_t markers, const char *function_name) {
-	if (impl->plugin) {
+	if (impl && impl->plugin) {
 		impl->plugin->Precompile(batch, seq, markers, function_name);
 	}
 }
 
+int64_t DecideLocalSession::Compiles() const {
+	return ggml ? DecideGgmlCompiles(*ggml) : 0;
+}
+
 string DecideLocalSession::PluginBackend() const {
-	return impl->plugin ? impl->plugin->Backend() : string();
+	return impl && impl->plugin ? impl->plugin->Backend() : string(); // a CPU session has no impl
 }
 
 vector<vector<float>> DecideLocalSession::Score(const DecideLocalBatch &batch, const char *function_name) {
@@ -428,52 +389,10 @@ vector<vector<float>> DecideLocalSession::Score(const DecideLocalBatch &batch, c
 	if (impl && impl->plugin) {
 		return impl->plugin->Run(batch, function);
 	}
-	if (ggml) {
-		return DecideGgmlScore(*ggml, batch, function);
+	if (!ggml) {
+		throw InternalException("anofox_decide: a local session has neither a ggml model nor a plugin");
 	}
-	auto &im = impl->mem;
-	std::vector<int64_t> shape_bm {batch.batch, batch.markers};
-	std::vector<int64_t> shape_bt {batch.batch, batch.seq};
-	std::vector<int64_t> shape_b {batch.batch};
-	std::vector<Ort::Value> inputs;
-	inputs.reserve(5);
-	inputs.push_back(Ort::Value::CreateTensor<int64_t>(im, const_cast<int64_t *>(batch.ids.data()), batch.ids.size(),
-	                                                   shape_bt.data(), 2));
-	inputs.push_back(Ort::Value::CreateTensor<int64_t>(im, const_cast<int64_t *>(batch.mask.data()),
-	                                                   batch.mask.size(), shape_bt.data(), 2));
-	inputs.push_back(Ort::Value::CreateTensor<int64_t>(im, const_cast<int64_t *>(batch.marker_pos.data()),
-	                                                   batch.marker_pos.size(), shape_bm.data(), 2));
-	inputs.push_back(Ort::Value::CreateTensor<bool>(im, reinterpret_cast<bool *>(
-	                                                       const_cast<uint8_t *>(batch.marker_mask.data())),
-	                                                batch.marker_mask.size(), shape_bm.data(), 2));
-	inputs.push_back(Ort::Value::CreateTensor<int64_t>(im, const_cast<int64_t *>(batch.qtype.data()),
-	                                                   batch.qtype.size(), shape_b.data(), 1));
-	const char *in_names[5] = {"input_ids", "attention_mask", "marker_pos", "marker_mask", "qtype"};
-	const char *out_names[1] = {"scores"};
-	std::vector<Ort::Value> out;
-	try {
-		out = impl->session.Run(Ort::RunOptions {nullptr}, in_names, inputs.data(), 5, out_names, 1);
-	} catch (const Ort::Exception &e) {
-		DecideMapOrtError(e, function, graph_path, DecideOrtStage::RUN);
-	}
-	auto info = out[0].GetTensorTypeAndShapeInfo();
-	auto dims = info.GetShape();
-	if (dims.size() != 2 || dims[0] != batch.batch || dims[1] != batch.markers) {
-		throw InvalidInputException(DecideMsg(
-		    function,
-		    "the graph '" + graph_path + "' returned scores of shape [" +
-		        std::to_string(dims.size() > 0 ? dims[0] : -1) + ", " + std::to_string(dims.size() > 1 ? dims[1] : -1) +
-		        "], expected [" + std::to_string(batch.batch) + ", " + std::to_string(batch.markers) + "]",
-		    "export the model again with tools/export_julia (see "
-		    "https://github.com/DataZooDE/anofox-decide/blob/main/docs/api/03-local-models.md#your-own-exported-model"
-		    ") and register the .onnx file it writes"));
-	}
-	const float *scores = out[0].GetTensorData<float>();
-	vector<vector<float>> rows;
-	for (int64_t b = 0; b < batch.batch; b++) {
-		rows.emplace_back(scores + b * batch.markers, scores + (b + 1) * batch.markers);
-	}
-	return rows;
+	return DecideGgmlScore(*ggml, batch, function);
 }
 
 //--- Collation (data.sequence port, non-strict) ------------------------------
@@ -522,11 +441,15 @@ static string Preview(const string &text) {
 	return text.substr(0, cut) + "...";
 }
 
+std::vector<int32_t> DecideEncodeState(const DecideTokenizer &tok, const string &state) {
+	return tok.Encode(CleanText(tok, state));
+}
+
 DecideCollatedRow DecideCollateRow(const DecideTokenizer &tok, const std::string &state,
                                    const std::string &question, const duckdb::vector<string> &options,
                                    int qtype, int64_t max_length, int64_t head_length,
                                    bool allow_empty_state_room, const string &function,
-                                   const string &question_id) {
+                                   const string &question_id, const std::vector<int32_t> *state_ids_given) {
 	const auto label = QuestionLabel(question_id);
 	const string subject = label.empty() ? string("the question") : label;
 	if (options.size() < 2 || options.size() > 20) {
@@ -613,7 +536,7 @@ DecideCollatedRow DecideCollateRow(const DecideTokenizer &tok, const std::string
 		row.ids.insert(row.ids.end(), o.begin(), o.end());
 	}
 	row.ids.push_back(sp.sep);
-	auto state_ids = tok.Encode(CleanText(tok, state));
+	auto state_ids = state_ids_given ? *state_ids_given : DecideEncodeState(tok, state);
 	trunc.state_tokens = (int64_t)state_ids.size();
 	int64_t room = max_length - (int64_t)row.ids.size() - 1;
 	if (room < 1 && !allow_empty_state_room) {
@@ -752,6 +675,7 @@ vector<LocalRow> CollateQuestions(const LocalSettings &st, const string &state, 
 	}
 	const bool laya = st.laya;
 	vector<LocalRow> rows;
+	const auto state_ids = DecideEncodeState(*st.tok, state); // once for all of this text's questions
 	for (auto &q : questions) {
 		vector<string> options;
 		int qtype = 0;
@@ -784,7 +708,7 @@ vector<LocalRow> CollateQuestions(const LocalSettings &st, const string &state, 
 			    "use 'binary', 'choice' or 'score'"));
 		}
 		rows.push_back({DecideCollateRow(*st.tok, state, q.instruction, options, qtype, st.max_length, st.head_length,
-		                                 laya, function, q.id),
+		                                 laya, function, q.id, &state_ids),
 		                &q});
 		if (st.fail_on_truncate && rows.back().c.truncation.Any()) {
 			throw InvalidInputException(
@@ -794,14 +718,20 @@ vector<LocalRow> CollateQuestions(const LocalSettings &st, const string &state, 
 	return rows;
 }
 
-//! Pads the rows to [B, T] and [B, M] (masked slots carry the pad token and zeros).
-DecideLocalBatch BuildLocalBatch(const LocalSettings &st, const vector<const LocalRow *> &rows, int64_t T) {
+//! Pads the rows to [B, T] and [B, M] (masked slots carry the pad token and zeros). For an engine that compiles per shape, M (one marker
+//! per option, 2..20) is rounded up to a multiple of 4 (`round_markers`), and B to `rows_to` when that is larger (a GPU pads batches to
+//! powers of two: an all-padding row costs it little, a compile a lot). A padding marker or row is masked and never read.
+DecideLocalBatch BuildLocalBatch(const LocalSettings &st, const vector<const LocalRow *> &rows, int64_t T, int64_t rows_to = 0,
+                                 bool round_markers = true) {
 	int64_t M = 0;
 	for (auto *r : rows) {
 		M = std::max<int64_t>(M, r->c.markers.size());
 	}
+	if (round_markers) {
+		M = (M + 3) / 4 * 4;
+	}
 	DecideLocalBatch batch;
-	batch.batch = (int64_t)rows.size();
+	batch.batch = std::max<int64_t>((int64_t)rows.size(), rows_to);
 	batch.seq = T;
 	batch.markers = M;
 	batch.ids.assign(batch.batch * T, st.tok->Specials().pad);
@@ -879,18 +809,43 @@ DecideAnswer BuildLocalAnswer(const LocalSettings &st, const DecideModelEntry &e
 	return a;
 }
 
-//! Smallest padded length of the fixed ladder that holds `len`, never above the model window.
-int64_t PaddedLength(int64_t len, int64_t max_length) {
-	static const int64_t kLadder[] = {128, 256, 512, 1024, 2048, 4096, 8192};
-	for (auto b : kLadder) {
-		if (b >= len) {
-			return std::max<int64_t>(len, std::min(b, max_length));
-		}
+//! The rows a batch runs with: a GPU session pads to the next power of two (an all-padding row costs it little, a new compiled shape a
+//! lot); the CPU runs exactly the rows it has (a padding row there costs as much as a real one).
+int64_t BatchRowsFor(const DecideLocalSession &session, int64_t rows) {
+	if (!DecideShapePolicyFor(session.PluginBackend()).pow2_rows) {
+		return rows;
 	}
-	return len;
+	int64_t p = 1;
+	while (p < rows) {
+		p *= 2;
+	}
+	return p;
 }
 
 } // namespace
+
+int64_t DecidePaddedLength(int64_t len, int64_t max_length, bool fine) {
+	int64_t step = len <= 512 ? 32 : len <= 1024 ? 64 : len <= 2048 ? 128 : 256;
+	if (fine) {
+		step /= 4;
+	}
+	const int64_t bucket = (len + step - 1) / step * step;
+	return std::max<int64_t>(len, std::min(bucket, max_length));
+}
+
+DecideShapePolicy DecideShapePolicyFor(const string &backend) {
+	DecideShapePolicy p;
+	if (backend == "mlx") {
+		p.bucket_lengths = false;
+		p.round_markers = false;
+		return p;
+	}
+	// The CPU compiles a shape in ~7 ms, so 32-token steps cost more in padding than they save in compiles: on the 200-ticket evaluation
+	// the Laya models ran ~20% slower than with 8-token steps (or exact lengths, which measured the same). A GPU compile costs more.
+	p.fine_lengths = backend.empty();
+	p.pow2_rows = !backend.empty();
+	return p;
+}
 
 vector<DecideAnswer> DecideLocalScore(ClientContext &context, const DecideModelEntry &entry,
                                            const string &state, const vector<DecideQuestion> &questions,
@@ -908,8 +863,11 @@ vector<DecideAnswer> DecideLocalScore(ClientContext &context, const DecideModelE
 		ptrs.push_back(&r);
 		T = std::max<int64_t>(T, r.c.ids.size());
 	}
-	const auto batch = BuildLocalBatch(st, ptrs, T);
 	auto session = DecideLocalSession::Open(context, entry, function.c_str());
+	// padded to a bucket: a table of texts of every length compiles a few dozen graphs, not one per length (MLX: exact)
+	const auto shapes = DecideShapePolicyFor(session->PluginBackend());
+	const auto batch = BuildLocalBatch(st, ptrs, shapes.bucket_lengths ? DecidePaddedLength(T, st.max_length, shapes.fine_lengths) : T,
+	                                   BatchRowsFor(*session, (int64_t)ptrs.size()), shapes.round_markers);
 	auto scores = session->Score(batch, function.c_str());
 	vector<DecideAnswer> out;
 	for (size_t b = 0; b < rows.size(); b++) {
@@ -974,25 +932,33 @@ void DecideLocalScoreMany(ClientContext &context, const DecideModelEntry &entry,
 		// cut a new batch whenever one more row at the padded length of the longest would exceed the token budget.
 		// One row always fits, however long it is.
 		std::stable_sort(slots.begin(), slots.end(), [](const Slot &a, const Slot &b) { return a.len < b.len; });
+		const auto shapes = DecideShapePolicyFor(session->PluginBackend());
+		auto padded_length = [&](int64_t len) {
+			return shapes.bucket_lengths ? DecidePaddedLength(len, st.max_length, shapes.fine_lengths) : len;
+		};
 		size_t begin = 0;
 		while (begin < slots.size()) {
 			size_t end = begin + 1;
 			while (end < slots.size()) {
-				const int64_t padded = PaddedLength(slots[end].len, st.max_length);
+				const int64_t padded = padded_length(slots[end].len);
 				if ((int64_t)(end - begin + 1) * padded > batch_tokens) {
 					break;
 				}
 				end++;
 			}
-			const int64_t T = PaddedLength(slots[end - 1].len, st.max_length);
+			const int64_t T = padded_length(slots[end - 1].len);
 			vector<const LocalRow *> ptrs;
 			size_t first_request = slots[begin].request;
 			for (size_t i = begin; i < end; i++) {
 				ptrs.push_back(&collated[slots[i].request][slots[i].question]);
 				first_request = std::min(first_request, slots[i].request);
 			}
+			if (DecideInterrupted(context)) { // a chunk of long texts is many runs: Ctrl-C stops between them
+				throw InterruptException();
+			}
 			try {
-				auto batch_scores = session->Score(BuildLocalBatch(st, ptrs, T), function.c_str());
+				auto batch_scores = session->Score(BuildLocalBatch(st, ptrs, T, BatchRowsFor(*session, (int64_t)ptrs.size()), shapes.round_markers),
+				                                  function.c_str());
 				for (size_t i = begin; i < end; i++) {
 					scores[slots[i].request][slots[i].question] = std::move(batch_scores[i - begin]);
 				}
@@ -1051,23 +1017,21 @@ int64_t DecideLocalTokenCount(ClientContext &context, const DecideModelEntry &en
 namespace {
 
 struct LocalSessionsState : public GlobalTableFunctionState {
-	vector<std::tuple<string, string, int64_t>> rows; // model (graph or weights key), engine, forward passes
+	vector<std::tuple<string, string, int64_t, int64_t>> rows; // model (graph or weights key), engine, forward passes, compiled graphs
 	idx_t offset = 0;
 };
 
 unique_ptr<FunctionData> LocalSessionsBind(ClientContext &, TableFunctionBindInput &, vector<LogicalType> &types,
                                            duckdb_compat::BindNames &names) {
-	duckdb_compat::AssignBindNames(names, {"model", "engine", "runs"});
-	types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::BIGINT};
+	duckdb_compat::AssignBindNames(names, {"model", "engine", "runs", "compiles"});
+	types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::BIGINT};
 	return make_uniq<TableFunctionData>();
 }
 
 unique_ptr<GlobalTableFunctionState> LocalSessionsInit(ClientContext &context, TableFunctionInitInput &) {
 	auto state = make_uniq<LocalSessionsState>();
-	auto cache = LocalCache(context);
-	std::lock_guard<std::mutex> guard(cache->lock);
-	for (auto &kv : cache->sessions) {
-		state->rows.emplace_back(kv.second->GraphPath(), kv.second->Engine(), kv.second->Runs());
+	for (auto &kv : LocalCache(context)->sessions.Entries()) {
+		state->rows.emplace_back(kv.second->GraphPath(), kv.second->Engine(), kv.second->Runs(), kv.second->Compiles());
 	}
 	return std::move(state);
 }
@@ -1080,6 +1044,7 @@ void LocalSessionsScan(ClientContext &, TableFunctionInput &data, DataChunk &out
 		output.SetValue(0, n, Value(std::get<0>(row)));
 		output.SetValue(1, n, Value(std::get<1>(row)));
 		output.SetValue(2, n, Value::BIGINT(std::get<2>(row)));
+		output.SetValue(3, n, Value::BIGINT(std::get<3>(row)));
 		n++;
 	}
 	output.SetCardinality(n);

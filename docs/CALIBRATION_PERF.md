@@ -1,7 +1,10 @@
 # AnoFox Decide — calibration and performance report
 
+> **Status (2026-11-25):** measured with the former engine (ONNX Runtime, removed since). The calibration results hold; for the
+> current engine's speed and memory see [GGML_DECIDE.md](GGML_DECIDE.md) and [GPU_BACKENDS.md](GPU_BACKENDS.md#measured).
+
 Date: 29 Sept 2026. Machine: 32× AMD Ryzen 9 3950X, 125 GB RAM.
-Build: release, DuckDB v1.5.5, `CMAKE_PREFIX_PATH` at a prebuilt ONNX Runtime tree.
+Build: release, DuckDB v1.5.5, linked against a prebuilt ONNX Runtime tree (the former engine).
 Method: single-user `EXPLAIN ANALYZE`, median of 5 runs unless noted.
 Telemetry disabled (`DATAZOO_DISABLE_TELEMETRY=1`).
 
@@ -66,13 +69,12 @@ Notes:
   single-question enrichment over large tables should use the scalars;
   `decide_many`/`decide_table` pay off at ≥10 questions/row by sharing one
   parse and (for remote) one request.
-- `tiny-local` is ~10× the stub per row (BPE tokenize + micro-graph ORT
-  run). Real Julia-1 weights (144M params) will be orders of magnitude
+- `tiny-local` is ~10× the stub per row (BPE tokenize + micro-graph run on the former engine). Real Julia-1 weights (144M params) will be orders of magnitude
   slower than this fixture — re-run this table after export before quoting
   local-model SLAs.
 - `decide_table` evaluates once per scan (bind parses, init-global scores,
   scan emits rows): batching N questions over one state costs one provider
-  round trip for remote, one ORT session run per row for local.
+  round trip for remote, one session run per row for local.
 
 ## 3. Reliability (no partial success as complete)
 

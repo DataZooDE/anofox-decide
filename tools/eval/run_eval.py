@@ -122,7 +122,13 @@ def models(env, kev_url, strands_url):
     }
 
 
-def run_model(name, spec, tickets, out, duckdb, ext, env, concurrency=None, batch_tokens=None, device=None):
+# the engine that SERVED (a GPU plugin session says plugin:<backend>; a remote model has no local session: none); a released build
+# without the diagnostic function is run with --no-engine-probe (its engine is then recorded as '?')
+ENGINE_PROBE = ("SELECT '@@engine ' || (SELECT coalesce(string_agg(DISTINCT engine, ',' ORDER BY engine), 'none') "
+                "FROM __anofox_decide_local_sessions());")
+
+
+def run_model(name, spec, tickets, out, duckdb, ext, env, concurrency=None, batch_tokens=None, device=None, engine_probe=True):
     """Score one model. Returns (seconds, serving device) or None on a failure or skip. With `device` set, raises
     DeviceRefused when the model was not served on it (its results file is removed first)."""
     display, register, model_id, keys = spec
@@ -153,8 +159,7 @@ COPY (
   ORDER BY 1, 2
 ) TO '{esc(str(res))}' (HEADER);
 {serving_sql}
--- the engine that SERVED (a GPU plugin session says plugin:<backend>; a remote model has no local session: none)
-SELECT '@@engine ' || (SELECT coalesce(string_agg(DISTINCT engine, ',' ORDER BY engine), 'none') FROM __anofox_decide_local_sessions());
+{ENGINE_PROBE if engine_probe else ""}
 """
     e = dict(env, DATAZOO_DISABLE_TELEMETRY="1")
     t0 = time.time()
@@ -168,7 +173,9 @@ SELECT '@@engine ' || (SELECT coalesce(string_agg(DISTINCT engine, ',' ORDER BY 
                        capture_output=True, text=True, env=e)
     dt = time.time() - t0
     usage = [l.split() for l in p.stderr.splitlines() if l.startswith("@@usage ")]
-    if p.returncode != 0 or not res.exists():
+    # A released build without the engine diagnostic fails only at that last query, after scoring: the run counts (engine '?').
+    probe_missing = engine_probe and "__anofox_decide_local_sessions does not exist" in p.stderr
+    if (p.returncode != 0 and not probe_missing) or not res.exists():
         err = "\n".join(l for l in p.stderr.splitlines() if "Schema error" not in l and not l.startswith("@@usage") and l.strip())[:600]
         if device not in (None, "auto") and "anofox_decide_device" in err:
             # An explicit device that cannot serve the model is a hard error of the extension, never a CPU run.
@@ -373,6 +380,8 @@ def main():
                     help="anofox_decide_max_concurrency for hosted models (0 = automatic, the extension default)")
     ap.add_argument("--batch-tokens", type=int, default=None,
                     help="anofox_decide_batch_tokens for local models (0 = off, the extension default)")
+    ap.add_argument("--no-engine-probe", action="store_true",
+                    help="do not ask __anofox_decide_local_sessions() which engine served (a released build that lacks it: a baseline)")
     ap.add_argument("--device", choices=DEVICES, default=None,
                     help="anofox_decide_device for local models; the run is refused unless decide_models().device "
                          "agrees (auto accepts any); records the serving device and wall time")
@@ -394,7 +403,7 @@ def main():
         for n in names:
             try:
                 r = run_model(n, specs[n], a.tickets, out, a.duckdb, a.extension, env, a.concurrency,
-                              a.batch_tokens, a.device)
+                              a.batch_tokens, a.device, engine_probe=not a.no_engine_probe)
             except DeviceRefused as e:
                 print(str(e), file=sys.stderr)
                 refused.append(n)

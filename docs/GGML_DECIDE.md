@@ -12,8 +12,9 @@ Order: feature parity on the CPU, then on GPUs (CUDA, ROCm, MLX), then performan
 | Parity (GPU, fp32) | 0 label flips, probabilities within 1e-3 |
 | Performance | faster (evaluation wall time) and lower peak RSS than ONNX Runtime, per model |
 
-During the move, `SET anofox_decide_local_engine = 'ort' | 'ggml'` picks the engine (default from the
-`ANOFOX_DECIDE_LOCAL_ENGINE` environment variable, else `'ort'`). It goes away with ONNX Runtime.
+During the move, `SET anofox_decide_local_engine = 'ort' | 'ggml'` picked the engine (default from the
+`ANOFOX_DECIDE_LOCAL_ENGINE` environment variable). Both were removed with ONNX Runtime after the gate below passed: ggml is the
+only engine. The measurements in this file name the engine each run used.
 
 ## Phase 0: the ONNX Runtime baseline (2026-11-23)
 
@@ -73,14 +74,12 @@ expected answers were captured from ONNX Runtime; any engine must reproduce them
 
 ```
 # DuckDB's unittest gives each SQL test its own HOME, so the downloaded models are passed in with DECIDE_CACHE_DIR
-DECIDE_REAL_WEIGHTS=1 DECIDE_CACHE_DIR=~/.cache/anofox-decide ANOFOX_DECIDE_LOCAL_ENGINE=ort  ./build/release/test/unittest test/sql/decide_local_e2e.test
-DECIDE_REAL_WEIGHTS=1 DECIDE_CACHE_DIR=~/.cache/anofox-decide ANOFOX_DECIDE_LOCAL_ENGINE=ggml ./build/release/test/unittest test/sql/decide_local_e2e.test
-make e2e_local ANOFOX_DECIDE_LOCAL_ENGINE=ggml   # both E2E files and the real-weight C++ goldens; fails if anything is missing
+DECIDE_REAL_WEIGHTS=1 DECIDE_CACHE_DIR=~/.cache/anofox-decide ./build/release/test/unittest test/sql/decide_local_e2e.test
+make e2e_local   # both E2E files and the real-weight C++ goldens; fails if anything is missing
 ```
 
-The engine is required, never defaulted: each file sets it and checks with `__anofox_decide_local_sessions()` (a
-development diagnostic: the cached sessions, their engine and forward passes) that this engine, and only it, answered.
-A mistyped `ANOFOX_DECIDE_LOCAL_ENGINE` is an error, not a silent ONNX Runtime run.
+Each file pins the CPU (`anofox_decide_device = 'cpu'`) and checks with `__anofox_decide_local_sessions()` (a development
+diagnostic: the cached sessions, their engine and forward passes) that the ggml engine, and only it, answered.
 
 ```
 ```
@@ -109,3 +108,161 @@ Environment for the real-weight tests: `DECIDE_REAL_WEIGHTS=1`, `DECIDE_EXPORTS_
 `LAYA_MULTILINGUAL_DIR` / `LAYA_ML_DIR=<dir>/weights/laya/multilingual`, `LAYA_ONNX=<dir>/out/laya-multilingual/julia1.onnx`,
 `LAYA_TYPED_DIR` / `LAYA_TD_DIR=<dir>/weights/laya/typed-decisions`, `LAYA_TYPED_ONNX=<dir>/out/laya-typed-decisions/julia1.onnx`.
 On ONNX Runtime all of them pass with nothing skipped (103 C++ cases, 2,937 assertions).
+
+## Performance: ggml against ONNX Runtime (2026-11-24)
+
+Same machine as the baseline (AMD Ryzen AI 9 HX 370: 12 cores, 24 threads, 46 GB), the same 200 Bitext tickets with two
+questions each, the extension built from `feat/ggml-gpu`. Protocol: three rounds, engines alternating, a round starts only
+when the machine's one-minute load is below 4, the best run counts.
+
+| Model | ggml wall | ONNX Runtime wall | ggml peak RSS | ONNX Runtime peak RSS | ggml CPU | ONNX Runtime CPU |
+|---|---|---|---|---|---|---|
+| julia-1 | **4.7 s** | 5.4 s | **0.49 GB** | 1.45 GB | 44 s | 103 s |
+| laya-multilingual | **10.7 s** | 13.0 s | **1.94 GB** | 3.13 GB | 112 s | 266 s |
+| laya-typed-decisions | **25.9 s** | 30.8 s | **2.44 GB** | 4.89 GB | 296 s | 657 s |
+
+Every ggml run was faster than every ONNX Runtime run, at about half the memory and less than half the CPU time. The
+answers: 0 label flips against the ONNX Runtime oracle on all 400 answers per model, metrics identical, largest
+probability difference 2.4e-5 (`tools/eval/compare_runs.py`).
+
+**What made the difference: one engine thread per physical core.** The engine used to run with DuckDB's thread count,
+here 24 (12 cores with SMT). A second thread per core adds no arithmetic, and every op ends on a barrier that waits for
+the slowest thread. Measured with the evaluation's own query (`SET threads = N`, laya-typed-decisions): 34.6 s at 24
+threads, 26.0 s at 16, **25.4 s at 12**, 27.6 s at 8; julia-1 5.8 s at 24, 4.7 s at 12; laya-multilingual 12.0 s at 24,
+10.1 s at 12. The engine now runs `min(DuckDB threads, physical cores)` threads (`DecideLocalEngineThreads`, using the
+adapter's `PhysicalCpuCores()`, which honours a taskset/cpuset).
+
+**Contention.** A barrier-per-op engine degrades sharply when other processes compete for the cores: with a parallel
+C++ build on the same machine laya-typed-decisions took 78-186 s at 24 threads, against ONNX Runtime's 31 s. The earlier
+"643 s" figure for it was measured that way. Leaving the SMT siblings free also leaves headroom for such load.
+
+Not done: F16 weights on the CPU, shape bucketing. Per-length compiles cost about 7 ms each (72 compiles for the 200
+tickets, under 1 s of 26 s).
+
+**Long texts and fused attention.** Measured on the idle machine (one-minute load 0.2 at the start) with
+`tools/bench/local_bench.py --rows 16`, both engines at their defaults, engine order alternated, wall time min–max:
+
+| Model | Tokens | ggml, unfused | ggml, fused attention | ORT | ggml RSS | ORT RSS |
+|---|---|---|---|---|---|---|
+| julia-1 | 489 | 5.6–6.2 s | **4.4–4.7 s** | 5.3–7.2 s | 0.60 GB | 1.48 GB |
+| julia-1 | 1,951 | 47.1–50.3 s | **22.3–25.7 s** | 39.5–48.9 s | 2.36 GB | 2.61 GB |
+| laya-multilingual | 489 | 12.9–13.0 s | **9.5–9.8 s** | 12.2–14.0 s | 1.93 GB | 3.27 GB |
+| laya-typed-decisions | 470 | 25.8–28.6 s | **21.7–23.1 s** | 30.4–32.9 s | 2.44 GB | 4.88 GB |
+
+Without fusion julia-1 at about 2,000 tokens was about 12% slower than ONNX Runtime: two thirds of the compute was the
+`[heads, S, S]` attention scores (QKᵀ, scale, mask, softmax, PV; `ANOFOX_GGML_PROFILE=2`). The adapter now lowers the
+exported attention pattern to one `ggml_flash_attn_ext` on the CPU (every encoder layer of the three models; the GPU
+plugins keep the unfused lowering): compute per 2k-token row 1.52 s -> 0.66 s. With it ggml is faster than ONNX Runtime in
+every cell and lower in peak RSS. The Laya models read at most 1,024 tokens, so only julia-1 reaches 2,000.
+Parity with fused attention: the C++ real-weight goldens, `decide_local_e2e.test` and `decide_local_e2e_registered.test` pass, and
+the 200-ticket evaluation gives 0 flips against ONNX Runtime on all three models (max |dp| 2.1e-5, metrics identical) at
+4.4 / 10.1 / 25.0 s.
+
+### On a GPU (RTX 4090, RunPod, 2026-11-24)
+
+The same 200-ticket evaluation through the adapter's CUDA plugin (`anofox_decide_device = 'cuda'`, every model served by
+`plugin:cuda`) against the ggml CPU engine on the same pod (a shared host: its CPU numbers are not comparable with the
+table above):
+
+| Model | CUDA wall | CPU (pod) wall | CUDA peak host RSS |
+|---|---|---|---|
+| julia-1 | 66 s | 149 s | 4.43 GB |
+| laya-multilingual | 122 s | 218 s | 8.00 GB |
+| laya-typed-decisions | 54 s | 456 s | 4.15 GB |
+
+The GPU is faster than the CPU for every model (no regression). laya-typed-decisions: 0 label flips against the CPU run,
+largest probability difference 2.6e-5, metrics identical. Every text length compiles its own graph on first use, which
+dominates the smaller models' GPU time on 200 short tickets; the host RSS includes the weights' host copy that the plugin
+keeps next to its device copy.
+
+**Re-run on the final commits (2026-11-25, fused attention on the CPU, adapter 5c98f18), another RTX 4090 pod** (128 cores):
+
+| Model | CUDA wall | CPU (pod, fused attention) wall | CUDA peak host RSS |
+|---|---|---|---|
+| julia-1 | 27 s | 10 s | 4.50 GB |
+| laya-multilingual | 56 s | 17 s | 8.14 GB |
+| laya-typed-decisions | 28 s | 34 s | 4.23 GB |
+
+Every suite passed and every model was served by `plugin:cuda`; laya-typed-decisions 0 flips against the CPU (max |dp|
+2.4e-5). The GPU path itself is faster than on the first pod, but on this host the fused CPU engine now beats CUDA for the
+two smaller models on 200 short tickets: their GPU time is mostly the per-length graph compile and the host-device
+round trips, not arithmetic. On a GPU the large model and long texts gain; for the small models on short texts the CPU
+is the better device. Shape bucketing (fewer distinct lengths, fewer compiles) is the lever if that matters.
+
+## The ONNX Runtime removal gate (2026-11-25)
+
+The bar before ONNX Runtime goes: the same features, the same or better speed, the same or less memory, on every platform decide
+ships and against every GPU path decide released. Every row below is the 200-ticket evaluation (two questions each, 400 answers per
+model), warm, run on one machine per row with the engines alternating; "ORT" is the released decide v2026.11.24 (official DuckDB CLI
+plus the community extension, or on the RTX 4090 the same code built on the pod with its ORT-CUDA plugin v2026.11.13). Every
+candidate row was served by the device it names (`__anofox_decide_local_sessions`).
+
+**Features:** all 352 SQL and C++ tests give identical results under both engines. **Answers:** 0 label flips in every row, metrics
+identical, largest probability difference 9e-5 (M3 CPU vs MLX), elsewhere below 4e-5.
+
+Wall time and peak RSS, julia-1 / laya-multilingual / laya-typed-decisions:
+
+| Platform | Baseline | ggml engine | Baseline wall | ggml wall | Baseline RSS | ggml RSS |
+|---|---|---|---|---|---|---|
+| Linux x64 CPU (Ryzen AI 9 HX 370) | ORT CPU | CPU | 5.6 / 12.5 / 32.2 s | 4.5 / 10.2 / 25.9 s | 1.42 / 3.24 / 4.84 GB | 0.41 / 1.93 / 2.44 GB |
+| macOS arm64 CPU (M3) | ORT CPU | CPU (P-cores, Accelerate) | 11 / 34 / 88 s | 5 / 13 / 35 s | 1.49 / 3.12 / 4.91 GB | 0.39 / 2.00 / 2.42 GB |
+| NVIDIA RTX 4090 | ORT CUDA | ggml-CUDA plugin | 11 / 15 / 18 s | 4 / 6 / 7 s | 1.78 / 4.02 / 6.05 GB | 1.04 / 1.21 / 1.35 GB |
+| AMD gfx1201 (RX 9070) | ORT MIGraphX | ggml-ROCm plugin | 16 / 26 / 43 s | 4 / 5 / 9 s | 2.59 / 4.61 / 5.74 GB | 1.01 / 1.06 / 1.20 GB |
+| Apple M3 GPU | decide's MLX plugin | adapter MLX plugin | 8 / 11 / 17 s | 6 / 8 / 14 s | 1.30 / 1.27 / 1.28 GB | 1.29 / 1.27 / 1.27 GB |
+
+Notes:
+
+- **AMD gfx1150** (Radeon 890M, the laptop's integrated GPU): the released MIGraphX path does not support it; the ggml-ROCm plugin
+  serves it. A new capability, no baseline: 6 / 11 / 27 s at 1.03 / 1.10 / 1.23 GB, 0 flips against ONNX Runtime (max |dp| 8.4e-5),
+  every model served by `plugin:rocm`; it shares the CPU's memory bandwidth, so it is not faster than the 12-core CPU beside it.
+- **Host CPU time on a GPU.** The ggml GPU plugins spend more host CPU time than ORT: on the RTX 4090 16 / 23 / 37 s against
+  12 / 16 / 20 s, on gfx1201 about 1.6x MIGraphX's. Wall time and memory are better in every row; the extra CPU is the per-op
+  launch work on the host.
+- **`SET threads` now limits the local models.** The CPU engine runs `min(DuckDB threads, physical cores)` threads, so `SET threads = 1`
+  or `4` is slower than ORT was at those settings (ORT ignored the setting). Accepted: honouring the setting is the behaviour.
+- **MLX.** The three fixes that closed the gap against decide's own plugin (adapter PR #5): shape arithmetic on MLX's CPU stream
+  (the GPU-stream read-backs were 58% of the time), 16-bit weights widened on the GPU, the buffer cache released after load and after
+  each run. With decide 0b2279b the host also drops its mapped checkpoint from the resident set once a plugin has the weights.
+  Physical footprint, laya-typed-decisions: 1.73 GB against the old plugin's 1.79 GB.
+- **The released v2026.11.24 has no working ORT-CUDA download** (its release carries no CUDA plugin); the RTX 4090 baseline used the
+  v2026.11.13 plugin, the last that was released.
+
+### Re-run on the final code (2026-11-25, after the ONNX Runtime removal)
+
+The Phase 3 and Phase 4 checks again on anofox-decide 0cd7fab (ggml only), this machine, released plugin v2026.11.25:
+
+- **Phase 4 (CPU), 200-ticket evaluation, 2 rounds alternating with ONNX Runtime (decide v2026.11.24):** ggml 4.5 / 10.2-10.5 /
+  25.9-26.2 s against 5.6 / 12.5-13.0 / 32.2-32.4 s; peak RSS 0.41 / 1.93 / 2.44 GB against 1.42 / 3.24 / 4.84 GB; CPU time 46 / 109 /
+  296 s against 103 / 252 / 684 s; 0 flips, max |dp| 3.3e-5. Against the Phase 0 baseline (21 / 48 / 87 s, 1.5 / 3.4 / 5.1 GB) every
+  model is faster and smaller.
+  The first re-run found a regression: the crew review's 32-token length buckets made the Laya models ~20% slower on the CPU (short
+  tickets padded by up to 31 tokens, against a ~7 ms compile per shape), so ggml merely tied ONNX Runtime. The CPU now pads to
+  8-token steps (measured the same as exact lengths); the GPU plugins keep 32-token steps, MLX exact lengths.
+- **Phase 3 (gfx1150, ROCm):** `test/sql/decide_local_e2e_gpu.test` passes (85 assertions, every block served by `plugin:rocm`); the
+  evaluation as above. The RTX 4090 was measured on the same plugin release earlier the same day (table above), the M3 MLX row with
+  the adapter's merged MLX fixes.
+- **Phase 3 (gfx1201, bigfox, ROCm 7.2), decide 4e3e699, released plugin v2026.11.25:** `test/sql/decide_local_e2e_gpu.test` passes
+  (85 assertions, every block served by `plugin:rocm`). The evaluation, warm: 4 / 5 / 9 s at 1.01 / 1.06 / 1.20 GB (cold 6 / 7 / 10 s);
+  0 flips against the ggml CPU on the same machine (7 / 15 / 33 s) and against the earlier ORT-MIGraphX baseline (16 / 26 / 43 s at
+  2.59 / 4.61 / 5.74 GB), max |dp| 5.2e-5. The gate table's gfx1201 row shows these numbers.
+
+**Local bench on the final code** (`tools/bench/local_bench.py`, fresh process per cell, CPU, 2 rounds alternating with ONNX Runtime
+from decide v2026.11.24 via `--no-engine-probe`; wall min–max, peak RSS, CPU time; two questions per row):
+
+| Cell | Model | Tokens | ggml wall | ORT wall | ggml RSS | ORT RSS | ggml CPU | ORT CPU |
+|---|---|---|---|---|---|---|---|---|
+| 32 rows | julia-1 | 128 | 2.1–2.3 s | 4.7–4.9 s | 0.39 GB | 1.44 GB | 22 s | 91 s |
+| 32 rows | julia-1 | 489 | 6.9–7.5 s | 9.7–16.5 s | 0.44 GB | 1.47 GB | 77 s | 207 s |
+| 16 rows | julia-1 | 1,951 | 18.9–19.0 s | 40.2–41.7 s | 0.78 GB | 2.58 GB | 222 s | 915 s |
+| 32 rows | laya-multilingual | 128 | 5.2–5.3 s | 6.2–10.4 s | 1.92 GB | 3.28 GB | 54 s | 110 s |
+| 32 rows | laya-multilingual | 489 | 16.2–16.5 s | 22.1–33.9 s | 1.93 GB | 3.28 GB | 182 s | 484 s |
+| 32 rows | laya-typed-decisions | 121 | 11.9–12.4 s | 15.8–22.9 s | 2.42 GB | 4.83 GB | 135 s | 315 s |
+| 32 rows | laya-typed-decisions | 470 | 38.8–39.0 s | 58.0–79.3 s | 2.43 GB | 4.83 GB | 454 s | 1,295 s |
+| 64 rows, batch 16384 | julia-1 | 127 | 4.7–4.8 s | 10.4–11.7 s | 0.69 GB | 2.27 GB | 52 s | 227 s |
+| 64 rows, batch 16384 | laya-multilingual | 127 | 11.8–12.0 s | 22.7–23.5 s | 1.93 GB | 4.82 GB | 142 s | 491 s |
+| 64 rows, batch 16384 | laya-typed-decisions | 121 | 26.4–26.6 s | 58.0–59.0 s | 2.44 GB | 5.98 GB | 305 s | 1,242 s |
+| cold, 1 row | julia-1 | 23 | 0.4–0.5 s | 0.8–0.9 s | 0.38 GB | 1.44 GB | 1 s | 3 s |
+| cold, 1 row | laya-multilingual | 23 | 1.0–1.1 s | 1.5–1.6 s | 1.92 GB | 3.23 GB | 2 s | 4 s |
+| cold, 1 row | laya-typed-decisions | 21 | 0.7–0.8 s | 2.7–2.9 s | 2.43 GB | 4.83 GB | 2 s | 7 s |
+
+In every cell the slowest ggml run is faster than the fastest ONNX Runtime run, at lower peak RSS and less CPU time.

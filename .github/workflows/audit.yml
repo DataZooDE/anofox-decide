@@ -1,0 +1,31 @@
+#
+# Static audits: no build. Separate from MainDistributionPipeline.yml so a failure here names the audit rather than a build.
+#
+name: Static audits
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  no-onnx-runtime:
+    name: No ONNX Runtime and no removed GPU plugin in the extension, its build, CI, tools or docs
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # The in-process models run on vendor/anofox-ggml-adapter; ONNX Runtime stays only in tools/export_julia (the exporter's
+      # reference). A reintroduced include, link, build switch or old plugin fails here, with the lines that carry it.
+      - name: No ONNX Runtime outside the exporter
+        run: scripts/check_no_ort.sh

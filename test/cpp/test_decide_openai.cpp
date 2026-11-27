@@ -3,6 +3,8 @@
 // answer type), everything else (keys, gate, retries, limits) is the shared remote path. The answer bodies follow
 // the examples of the OpenAI Decisions guide.
 #include "catch.hpp"
+
+#include <initializer_list>
 #include "anofox_decide_extension.hpp"
 #include "decide_errors.hpp"
 #include "decide_remote.hpp"
@@ -41,6 +43,9 @@ void SetEnv(const char *name, const char *value) {
 
 // Sets env vars for one test and restores the earlier values afterwards.
 struct EnvGuard {
+	// an initializer list too: a braced single pair, EnvGuard({{"K", "v"}}), is ambiguous on GCC 11/12 with the vector alone
+	EnvGuard(std::initializer_list<std::pair<const char *, const char *>> list) : EnvGuard(std::vector<std::pair<const char *, const char *>>(list)) {
+	}
 	explicit EnvGuard(std::vector<std::pair<const char *, const char *>> vars) : vars(std::move(vars)) {
 		for (auto &kv : this->vars) {
 			const char *old = std::getenv(kv.first);

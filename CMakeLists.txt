@@ -25,13 +25,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # HTTPS via cpp-httplib (third_party/httplib) needs system OpenSSL.
 find_package(OpenSSL REQUIRED)
 
-# ONNX Runtime for the local NLI provider (cmake/ort.cmake: vcpkg package,
-# else prebuilt archive download). Local dev against tabfm's tree:
-#   CMAKE_PREFIX_PATH=../anofox-tabfm/build/release/vcpkg_installed/x64-linux
-include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/ort.cmake)
-
-# The ggml engine shared with anofox-tabfm (vendor/anofox-ggml-adapter, ggml as its submodule): the in-process models move to it from
-# ONNX Runtime (docs/GGML_DECIDE.md; anofox_decide_local_engine picks the engine until ONNX Runtime is removed).
+# The ggml engine shared with anofox-tabfm (vendor/anofox-ggml-adapter, ggml as its submodule): the in-process models run on it
+# (docs/GGML_DECIDE.md).
 include(${CMAKE_CURRENT_SOURCE_DIR}/vendor/anofox-ggml-adapter/cmake/anofox_ggml_adapter.cmake)
 
 # Weight-free graphs + tensor maps from resources/ compiled into the extension.
@@ -64,7 +59,6 @@ set(EXTENSION_SOURCES
         src/decide_tokenizer.cpp
         src/decide_local_nli.cpp
         src/decide_local_ggml.cpp
-        src/decide_ort_errors.cpp
         src/decide_local_validate.cpp
         src/decide_metrics.cpp
         src/decide_secret.cpp
@@ -96,7 +90,6 @@ foreach(_tgt ${EXTENSION_NAME} ${LOADABLE_EXTENSION_NAME})
         datazoo_banner
         OpenSSL::SSL
         OpenSSL::Crypto
-        decide_onnxruntime
         anofox_ggml)
     add_dependencies(${_tgt} ggml)
 endforeach()
@@ -142,38 +135,31 @@ set(DECIDE_CPP_TEST_SOURCES
     test/cpp/test_decide_calibration.cpp
     test/cpp/test_decide_catalog.cpp
     test/cpp/test_decide_plugin.cpp
-    test/cpp/test_decide_migraphx.cpp
 )
-# GPU backend plugins build from their own directories (each only where its SDK exists).
-add_subdirectory(plugins/migraphx)
 if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.19")
     # GPU plugin fixtures. The real backends need hardware CI does not have, which would leave the loader (the
     # trust boundary: a wrong ABI is undefined behaviour, not a wrong answer) and everything behind it untested.
     # These stand in for them: real shared libraries, one correct and one built with a deliberately wrong ABI.
     add_library(anofox_decide_fake_plugin SHARED test/cpp/plugin_fixture/fake_plugin.cpp)
-    target_include_directories(anofox_decide_fake_plugin PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/include)
+    target_include_directories(anofox_decide_fake_plugin PRIVATE "${ANOFOX_GGML_ADAPTER_INCLUDE_DIR}")
     target_compile_features(anofox_decide_fake_plugin PRIVATE cxx_std_17)
     set_target_properties(anofox_decide_fake_plugin PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
     add_library(anofox_decide_fake_plugin_bad_abi SHARED test/cpp/plugin_fixture/fake_plugin.cpp)
-    target_include_directories(anofox_decide_fake_plugin_bad_abi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/include)
+    target_include_directories(anofox_decide_fake_plugin_bad_abi PRIVATE "${ANOFOX_GGML_ADAPTER_INCLUDE_DIR}")
     target_compile_features(anofox_decide_fake_plugin_bad_abi PRIVATE cxx_std_17)
     target_compile_definitions(anofox_decide_fake_plugin_bad_abi PRIVATE DECIDE_FAKE_PLUGIN_BAD_ABI=1)
     set_target_properties(anofox_decide_fake_plugin_bad_abi PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
     add_library(anofox_decide_unittest_tests OBJECT ${DECIDE_CPP_TEST_SOURCES})
     add_dependencies(anofox_decide_unittest_tests anofox_decide_fake_plugin anofox_decide_fake_plugin_bad_abi)
-    if(DECIDE_MIGRAPHX_PLUGIN_BUILT)
-        add_dependencies(anofox_decide_unittest_tests anofox_decide_migraphx_plugin)
-        target_compile_definitions(anofox_decide_unittest_tests PRIVATE
-            DECIDE_MIGRAPHX_PLUGIN_PATH="$<TARGET_FILE:anofox_decide_migraphx_plugin>")
-    endif()
     target_compile_definitions(anofox_decide_unittest_tests PRIVATE
         DECIDE_FAKE_PLUGIN_PATH="$<TARGET_FILE:anofox_decide_fake_plugin>"
         DECIDE_FAKE_PLUGIN_BAD_ABI_PATH="$<TARGET_FILE:anofox_decide_fake_plugin_bad_abi>")
     target_compile_features(anofox_decide_unittest_tests PRIVATE cxx_std_17)
     target_include_directories(anofox_decide_unittest_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/include
+        "${ANOFOX_GGML_ADAPTER_INCLUDE_DIR}"
         ${CMAKE_SOURCE_DIR}/third_party/catch
         ${CMAKE_SOURCE_DIR}/third_party/miniz
         ${CMAKE_SOURCE_DIR}/third_party/yyjson/include
@@ -190,11 +176,9 @@ if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.
     cmake_language(DEFER DIRECTORY ${CMAKE_SOURCE_DIR} CALL anofox_decide_register_cpp_tests)
 endif()
 
-# --- GPU backend plugins (separate shared libraries, never linked into the extension) ---
-# MLX: Apple silicon only, needs `brew install mlx mlx-c`; plugins/mlx/CMakeLists.txt skips itself cleanly elsewhere.
-if(APPLE)
-    add_subdirectory(plugins/mlx)
-endif()
+# --- GPU backend plugins ---
+# The CUDA, ROCm and MLX plugins are anofox-ggml-adapter's (vendor/anofox-ggml-adapter), built and released from its repository;
+# decide_accelerate() downloads them. Nothing here builds a plugin.
 
 # --- Installation ---
 
