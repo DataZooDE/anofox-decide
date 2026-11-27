@@ -11,7 +11,8 @@ All notable changes to `anofox_decide` are documented here. The format follows
   the cache directory), the same name as in anofox-tabfm.
 
 ### Changed
-- The GPU plugins come from anofox-ggml-adapter v2026.11.26 (MLX: faster and lighter; Apple CPU: performance cores and Accelerate).
+- The engine and the GPU plugins come from anofox-ggml-adapter v2026.11.27 (MLX: faster and lighter; Apple CPU: performance cores
+  and Accelerate; CPU: RMSNorm, GELU and matmul fusions). The 200-ticket evaluation on a 12-core CPU: 4 / 10 / 24 s, 0 flips.
 - **The in-process models run on the ggml engine** (vendor/anofox-ggml-adapter, shared with anofox-tabfm) instead of ONNX Runtime.
   Same answers (0 label flips on the 200-ticket evaluation against ONNX Runtime, on every platform and GPU path), faster and with
   less memory: on a Linux x64 CPU 4.5 / 10.2 / 25.9 s instead of 5.6 / 12.5 / 32.2 s at 0.4 / 1.9 / 2.4 GB instead of 1.4 / 3.2 /
